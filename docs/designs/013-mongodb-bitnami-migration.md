@@ -66,19 +66,14 @@ We decided to migrate from the Bitnami Helm chart to the **Percona Operator for 
 
 A key factor in this decision was Percona's commitment to open source, which differs significantly from MongoDB's own licensing strategy.
 
-- **Percona Operator & Tools (Apache 2.0):** The 
-`percona-server-mongodb-operator` itself, along with key ecosystem 
-tools like `percona-backup-mongodb`, are licensed under the permissive 
-Apache 2.0 license. This provides maximum flexibility and avoids vendor 
-lock-in for the management layer. References:
+- **Percona Operator & Tools (Apache 2.0):** The `percona-server-mongodb-operator` itself, along with key ecosystem tools like `percona-backup-mongodb`, are licensed under the permissive Apache 2.0 license. This provides maximum flexibility and avoids vendor lock-in for the management layer. References:
   - Operator license: https://github.com/percona/percona-server-mongodb-operator/blob/main/LICENSE
   - PBM license: https://github.com/percona/percona-backup-mongodb/blob/main/LICENSE
 - **Percona Server for MongoDB (SSPL):** The underlying database server, `Percona Server for MongoDB`, is distributed under the **Server Side Public License (SSPL)** (Percona describes it as “source-available”). Citation:
   - PSMDB license: https://github.com/percona/percona-server-mongodb/blob/v8.0/LICENSE-Community.txt
 - **MongoDB's Licensing:** MongoDB's Community Operator is Apache 2.0, but the database it deploys is SSPL. More advanced operator features (e.g., integrated backup orchestration) live behind the Enterprise/Ops Manager/Atlas ecosystem.
 
-**SSPL Compliance Note:**
-Percona Server for MongoDB is licensed under SSPL. This requires that if the software is offered as a service to third parties, the Service Source Code must be made available.
+**SSPL Compliance Note:** Percona Server for MongoDB is licensed under SSPL. This requires that if the software is offered as a service to third parties, the Service Source Code must be made available.
 
 - **Review Status:** This architecture is intended for the NVSentinel platform. Users deploying this stack must verify their usage compliance with SSPL, especially if offering the platform as a managed service to external customers.
 - **Risk Assessment:** For internal platform usage, SSPL obligations are generally contained. Multi-tenant or public-facing service deployments should undergo legal review.
@@ -155,8 +150,7 @@ Instead of directly templating a `StatefulSet`, we now create a high-level `Perc
   - **Argo CD Compatibility:** Using a Job for secret management avoids the usage of Helm `lookup` functions, which are often problematic in GitOps/Argo CD environments (as they fail during dry-runs or template generation if the cluster is not accessible or if the resource doesn't exist yet). This approach ensures that secret generation logic is executed reliably on the cluster.
 - This hybrid approach simplifies our Helm templates by removing the complex per-replica server certificate loop while maintaining cert-manager integration for client authentication
 
-**Simplification Achieved:**
-The removal of the per-replica server certificate generation (the `{{- range $i := until $replicaCount }}` loop in `certmanager.yaml`) significantly reduced template complexity. The operator now handles server certificate provisioning and rotation automatically, while we retain full control over client certificate issuance via our existing cert-manager infrastructure.
+**Simplification Achieved:** The removal of the per-replica server certificate generation (the `{{- range $i := until $replicaCount }}` loop in `certmanager.yaml`) significantly reduced template complexity. The operator now handles server certificate provisioning and rotation automatically, while we retain full control over client certificate issuance via our existing cert-manager infrastructure.
 
 ### 4. Architectural Shift Summary
 

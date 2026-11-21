@@ -1,20 +1,8 @@
 # HealthEvent Data Model Reference
 
-This document is the authoritative reference for the `HealthEvent` data model — the
-fundamental unit of data that flows through NVSentinel. Every fault detected by any
-health monitor is represented as a `HealthEvent`, and every downstream module
-(quarantine, drain, remediation, export) consumes and enriches this structure.
+This document is the authoritative reference for the `HealthEvent` data model. A health event is the fundamental unit of data that flows through NVSentinel. Each health monitor represents every fault that it detects as a `HealthEvent`. Every downstream module (quarantine, drain, remediation, export) consumes and enriches this structure.
 
-> **Audience**: Developers building custom health monitors, writing CEL quarantine
-> rules, integrating external systems via the event exporter, or debugging the
-> fault-remediation pipeline.
->
-> **Document type**: Reference. Expected lifetime: same as the proto schema it
-> describes. This document must be updated in the same PR that modifies
-> `data-models/protobufs/health_event.proto` or
-> `data-models/protobufs/external_remediation.proto`. If you change a field,
-> enum value, or status transition in those files, update the corresponding
-> section here before merging.
+> **Audience**: Developers who build custom health monitors, write CEL quarantine rules, integrate external systems through the event exporter, or debug the fault-remediation pipeline.
 
 ## Table of Contents
 
@@ -42,7 +30,7 @@ health monitor is represented as a `HealthEvent`, and every downstream module
 | Protobuf definition | `data-models/protobufs/health_event.proto` | Wire format and CRD generation source |
 | Generated Go types | `data-models/pkg/protos/health_event.pb.go` | Import as `github.com/nvidia/nvsentinel/data-models/pkg/protos` |
 | Go extensions | `data-models/pkg/model/health_event_extentions.go` | Helper constants and `GetEffectiveActionName()` |
-| gRPC service | `data-models/protobufs/health_event.proto` → `PlatformConnector` service | Ingestion RPC used by all health monitors |
+| gRPC service | `data-models/protobufs/health_event.proto` → `PlatformConnector` service | Ingestion RPC that all health monitors use |
 | External remediation | `data-models/protobufs/external_remediation.proto` | CRD for handoff to external repair systems |
 
 ---
@@ -76,49 +64,46 @@ message HealthEvent {
 
 ## Field Reference
 
-If you are building a custom health monitor, the table below shows what happens
-when a field is omitted or left at its zero value. See
-[Writing a Health Monitor](./tutorials/writing-a-health-monitor.md) for the
-end-to-end walkthrough.
+If you build a custom health monitor, use the table below. It shows what happens when you omit a field or leave it at its zero value. For the end-to-end walkthrough, see [Writing a Health Monitor](./tutorials/writing-a-health-monitor.md).
 
 | # | Field | Type | Description | If omitted / zero value |
 |---|-------|------|-------------|------------------------|
-| 1 | `version` | `uint32` | Protocol version. Currently `1`. | Ingestion may reject the event. Always set to `1`. |
-| 2 | `agent` | `string` | Name of the health monitor that produced the event (e.g. `"gpu-health-monitor"`, `"syslog-health-monitor"`, `"csp-health-monitor"`). Used in metrics labels, log correlation, and fault-quarantine rule matching for cordon/taint actions. This field should always be set to a stable identifier (e.g., the monitor's deployment name) so that quarantine rules can reliably match on it. | Metrics and logs lose source attribution. Quarantine rules that match on `agent` will not fire. Event is still accepted. |
-| 3 | `componentClass` | `string` | Category of the affected component. Common values: `"GPU"`, `"gce_instance"`, `"EC2"`, `"Software"`, `"NIC"`. Consumed by CEL quarantine rules for filtering. | CEL rules that filter on `componentClass` will not match. Quarantine may not trigger. |
-| 4 | `checkName` | `string` | Identifier of the specific check that fired (e.g. `"xid-check"`, `"sxid-check"`, `"CSPMaintenance"`). The deduplication transformer uses this as its suppression key. | Deduplication cannot suppress repeats. Every poll produces a new actionable event. |
-| 5 | `isFatal` | `bool` | Whether the fault is considered fatal (remediation required; the node/component can no longer process user workloads). Quarantine rules typically require `isFatal == true` to cordon a node. | Defaults to `false`. Most quarantine rules will not match — the node stays schedulable. |
-| 6 | `isHealthy` | `bool` | `false` for fault events, `true` for recovery events. A recovery event can un-quarantine a node if all active faults have cleared. | Defaults to `false` (treated as a fault). A recovery monitor **must** set this to `true` or it will re-quarantine instead of clearing. |
-| 7 | `message` | `string` | Human-readable description of the fault. Surfaced in Kubernetes node conditions and exported CloudEvents. | Node condition shows an empty message. Operators see the fault but not what it is. |
-| 8 | `recommendedAction` | `RecommendedAction` | Enum directing what remediation should occur. See [RecommendedAction Enum](#recommendedaction-enum). | Defaults to `NONE`. Event is stored but no remediation CR is created. |
-| 9 | `errorCode` | `repeated string` | Machine-readable error identifiers (e.g. `["XID_48", "XID_79"]`). Used in CEL rules and alerting. | CEL rules matching on `errorCode` will not fire. Alerting integrations lose granularity. |
-| 10 | `entitiesImpacted` | `repeated Entity` | Specific hardware entities affected. See [Entity](#entity-impacted-resources). | GPU Reset cannot target a specific GPU — falls back to node-level action or skips. |
-| 11 | `metadata` | `map<string, string>` | Arbitrary key-value pairs. Monitors attach diagnostic context (driver version, PCI address, XID details). Propagated to CloudEvents export. | No diagnostic context in exported events. Debugging requires correlating with monitor logs. |
-| 12 | `generatedTimestamp` | `Timestamp` | When the monitor detected the fault. Used for deduplication windows and metric duration calculations. | Dedup window anchoring and remediation-duration metrics become inaccurate. |
-| 13 | `nodeName` | `string` | Kubernetes node name where the fault was detected. The primary routing key for all downstream modules. | **Required.** Platform connector rejects events without a node name. |
+| 1 | `version` | `uint32` | Protocol version. The value is `1`. | Ingestion does not check this field. Always set it to `1`. |
+| 2 | `agent` | `string` | Name of the health monitor that produced the event, for example `"gpu-health-monitor"`, `"syslog-health-monitor"` or `"csp-health-monitor"`. NVSentinel uses it in metrics labels, log correlation, and the fault-quarantine rule matching for cordon and taint actions. Always set this field to a stable identifier, for example the deployment name of the monitor. Then quarantine rules can reliably match on it. | Metrics and logs lose source attribution. Quarantine rules that match on `agent` do not fire. The platform connector still accepts the event. |
+| 3 | `componentClass` | `string` | Category of the affected component. Common values: `"GPU"`, `"gce_instance"`, `"EC2"`, `"Software"`, `"NIC"`. CEL quarantine rules use it for filtering. | CEL rules that filter on `componentClass` do not match. It is possible that quarantine does not trigger. |
+| 4 | `checkName` | `string` | Identifier of the specific check that fired, for example `"xid-check"`, `"sxid-check"` or `"CSPMaintenance"`. The deduplication transformer uses this field as its suppression key. | Deduplication skips the health event if `platformConnector.dedup.includeChecks` lists only other check names, as the default list does. Every poll then produces a new actionable event. If `includeChecks` is empty, deduplication applies to every check and downgrades repeats with an empty name too. |
+| 5 | `isFatal` | `bool` | Whether the monitor considers the fault fatal: remediation is required, and the node or component cannot process user workloads. Quarantine rules typically require `isFatal == true` to cordon a node. | Defaults to `false`. Most quarantine rules do not match, and the node stays schedulable. |
+| 6 | `isHealthy` | `bool` | `false` for fault events, `true` for recovery events. If all active faults have cleared, a recovery event can un-quarantine a node. | Defaults to `false` (NVSentinel treats the event as a fault). A recovery monitor **must** set this field to `true`. Otherwise, the event re-quarantines the node instead of clearing it. |
+| 7 | `message` | `string` | Human-readable description of the fault. NVSentinel shows it in Kubernetes node conditions and exported CloudEvents. | The node condition shows an empty message. Operators see the fault but not what it is. |
+| 8 | `recommendedAction` | `RecommendedAction` | Enum that specifies the remediation to do. See [RecommendedAction Enum](#recommendedaction-enum). | Defaults to `NONE`. NVSentinel stores the event but does not create a maintenance CR. |
+| 9 | `errorCode` | `repeated string` | Machine-readable error identifiers, for example `["XID_48", "XID_79"]`. CEL rules and alerting use them. | CEL rules that match on `errorCode` do not fire. Alerting integrations lose granularity. |
+| 10 | `entitiesImpacted` | `repeated Entity` | The specific hardware entities that the fault affects. See [Entity](#entity-impacted-resources). | GPU Reset cannot target a specific GPU. It uses a node-level action instead, or it skips the reset. |
+| 11 | `metadata` | `map<string, string>` | Arbitrary key-value pairs. Monitors attach diagnostic context (driver version, PCI address, XID details). NVSentinel propagates the metadata to the CloudEvents export. | Exported events have no diagnostic context. Debugging requires correlation with the monitor logs. |
+| 12 | `generatedTimestamp` | `Timestamp` | When the monitor detected the fault. NVSentinel uses it for deduplication windows and metric duration calculations. | Deduplication window anchoring and remediation-duration metrics become inaccurate. |
+| 13 | `nodeName` | `string` | Name of the Kubernetes node where the monitor detected the fault. It is the primary routing key for all downstream modules. | **Required** for an allowlisted cross-node publisher: the platform connector rejects its event without a node name (`missing_node_name`). For a node-local publisher, the platform connector sets this field to the node of the publisher. These rules apply when `global.platformConnectorAuth.enabled` is `true` (the default). |
 | 14 | `quarantineOverrides` | `BehaviourOverrides` | Per-event override for quarantine behavior. See [BehaviourOverrides](#behaviouroverrides). | No override — CEL rules evaluate normally. |
 | 15 | `drainOverrides` | `BehaviourOverrides` | Per-event override for drain behavior. See [BehaviourOverrides](#behaviouroverrides). | No override — per-namespace eviction strategies apply normally. |
-| 16 | `processingStrategy` | `ProcessingStrategy` | Controls whether downstream modules may modify cluster state. See [ProcessingStrategy Enum](#processingstrategy-enum). | `UNSPECIFIED` is normalized to `EXECUTE_REMEDIATION` at ingestion. Full remediation pipeline runs. |
-| 17 | `id` | `string` | Unique event identifier. Assigned by the platform connector on ingestion if not set by the monitor. | Platform connector generates a UUID. No action needed from the monitor. |
-| 18 | `customRecommendedAction` | `string` | Free-form action name when `recommendedAction == CUSTOM`. Must be non-empty (validated at ingestion). Maps to a Helm-configured remediation action. | **Rejected at ingestion** if `recommendedAction == CUSTOM` and this field is empty. |
+| 16 | `processingStrategy` | `ProcessingStrategy` | Controls whether downstream modules are allowed to modify cluster state. See [ProcessingStrategy Enum](#processingstrategy-enum). | The platform connector normalizes `UNSPECIFIED` to `EXECUTE_REMEDIATION` at ingestion. The full remediation pipeline runs. |
+| 17 | `id` | `string` | Unique event identifier. If the monitor does not set it, the platform connector assigns it at ingestion. | The platform connector generates a UUID. No action needed from the monitor. |
+| 18 | `customRecommendedAction` | `string` | Free-form action name when `recommendedAction == CUSTOM`. It must not be empty, and the platform connector validates it at ingestion. It maps to a Helm-configured remediation action. | If `recommendedAction == CUSTOM` and this field is empty, the platform connector **rejects the event at ingestion**. |
 
 ---
 
 ## RecommendedAction Enum
 
-Directs the fault-remediation module on what repair action to trigger.
+Tells the fault-remediation module which repair action to trigger.
 
 | Value | Numeric | Meaning | Typical Remediation |
 |-------|---------|---------|---------------------|
-| `NONE` | 0 | No remediation action recommended | No repair CR created. Storage and cluster mutations (quarantine, drain) remain governed by `processingStrategy`. |
-| `COMPONENT_RESET` | 2 | Reset a specific component (GPU, NIC) | GPU Reset CRD targeting `entitiesImpacted` |
-| `CONTACT_SUPPORT` | 5 | Automated remediation not possible; human intervention required | Alert / ticket creation; human action ranges from pod restart to hardware escalation |
+| `NONE` | 0 | No remediation action recommended | No maintenance CR created. `processingStrategy` still controls storage and cluster mutations (quarantine, drain). |
+| `COMPONENT_RESET` | 2 | Reset a specific component (GPU, NIC) | GPU Reset CR that targets `entitiesImpacted` |
+| `CONTACT_SUPPORT` | 5 | Automated remediation is not possible. Human intervention is required. | Alert or ticket creation. The human action can be anything from a pod restart to a hardware escalation. |
 | `RUN_FIELDDIAG` | 6 | Run field diagnostics | Diagnostic job |
-| `RESTART_VM` | 15 | Restart virtual machine | CSP reboot via janitor-provider |
+| `RESTART_VM` | 15 | Restart virtual machine | CSP reboot through janitor-provider |
 | `RESTART_BM` | 24 | Reboot bare-metal node | CSP reboot or generic Job-based reboot |
-| `REPLACE_VM` | 25 | Terminate and replace VM | CSP terminate via janitor-provider |
+| `REPLACE_VM` | 25 | Terminate and replace VM | CSP terminate through janitor-provider |
 | `RUN_DCGMEUD` | 26 | Run DCGM End-User Diagnostics | Diagnostic pod |
-| `CUSTOM` | 27 | User-defined action | Resolved via `customRecommendedAction` → Helm `maintenance.actions` map |
+| `CUSTOM` | 27 | Action that you define | Resolved through `customRecommendedAction` → Helm `maintenance.actions` map |
 | `UNKNOWN` | 99 | Unrecognized action | Logged and skipped |
 
 **Routing logic** (in `fault-remediation`):
@@ -133,29 +118,27 @@ func GetEffectiveActionName(he *protos.HealthEvent) string {
 }
 ```
 
-The effective action name is looked up in the Helm-configured `maintenance.actions`
-map to find the CRD template, API group, kind, and completion condition to create.
+The fault-remediation module finds the effective action name in the Helm-configured `maintenance.actions` map. From that entry, it gets the CR template, the API group, the kind, and the completion condition of the CR to create.
 
 ---
 
 ## ProcessingStrategy Enum
 
-Controls whether downstream modules (fault-quarantine, node-drainer,
-fault-remediation) may modify cluster state in response to this event.
+Controls whether the downstream modules (fault-quarantine, node-drainer, fault-remediation) are allowed to modify cluster state in response to this event.
 
 | Value | Numeric | Behavior |
 |-------|---------|----------|
-| `UNSPECIFIED` | 0 | **Normalized to `EXECUTE_REMEDIATION`** by the platform connector at ingestion. Custom monitors that omit this field get full remediation. |
-| `EXECUTE_REMEDIATION` | 1 | Normal behavior. All downstream modules process the event and may cordon, drain, and remediate. |
-| `STORE_ONLY` | 2 | Observability only. Event is persisted and exported but **no module modifies cluster resources**. |
-| `STORE_AND_ANALYSE` | 3 | Event is persisted, exported, and available to the health-events-analyzer, but **no direct cluster modifications** (no cordon/drain/remediate). |
+| `UNSPECIFIED` | 0 | The platform connector **normalizes it to `EXECUTE_REMEDIATION`** at ingestion. Custom monitors that omit this field get full remediation. |
+| `EXECUTE_REMEDIATION` | 1 | Normal behavior. All downstream modules process the event and can cordon, drain, and remediate. |
+| `STORE_ONLY` | 2 | Observability only. NVSentinel persists and exports the event, but **no module modifies cluster resources**. |
+| `STORE_AND_ANALYSE` | 3 | NVSentinel persists and exports the event, and the health-events-analyzer can use it. There are **no direct cluster modifications** (no cordon, no drain, no remediation). |
 
-**Where strategy is enforced**:
+**Where NVSentinel enforces the strategy**:
 
 - **Platform connector** normalizes `UNSPECIFIED` → `EXECUTE_REMEDIATION` at ingestion.
-- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window (see [ADR-039](./designs/039-health-event-deduplication.md)).
+- **Deduplication transformer** downgrades repeated unhealthy events to `STORE_AND_ANALYSE` within a suppression window.
 - **Fault-quarantine** skips events where `processingStrategy != EXECUTE_REMEDIATION`.
-- **Health-events-analyzer** queries for `STORE_AND_ANALYSE` events specifically.
+- **Health-events-analyzer** queries specifically for `STORE_AND_ANALYSE` events.
 
 ---
 
@@ -174,18 +157,17 @@ Per-event overrides that let a health monitor bypass default pipeline behavior.
 
 | Field | Effect |
 |-------|--------|
-| `force = true` | Quarantine the node regardless of CEL rule evaluation. |
-| `skip = true` | Do not quarantine even if rules would normally match. |
+| `force = true` | fault-quarantine quarantines the node, regardless of the CEL rule evaluation. |
+| `skip = true` | fault-quarantine does not quarantine the node, even if the rules match. |
 
 ### `drainOverrides`
 
 | Field | Effect |
 |-------|--------|
-| `force = true` | Force immediate eviction for **all** namespaces, ignoring per-namespace eviction strategies (allow-completion timeouts are bypassed). |
-| `skip = true` | Skip drain entirely. The event's `UserPodsEvictionStatus` is marked `AlreadyDrained` so fault-remediation proceeds immediately. |
+| `force = true` | With the built-in eviction, node-drainer uses `Immediate` for every pod that it drains, and ignores the configured eviction modes. It does not add pods that no `userNamespaces` entry or `podDrainPolicies` policy selects. With custom drain, node-drainer does not use this field. The drain template can pass it to the [drain plugin](./tutorials/writing-a-drain-plugin.md), which decides how to evict the pods. |
+| `skip = true` | node-drainer skips the drain entirely. It marks the `UserPodsEvictionStatus` of the event as `AlreadyDrained`, so fault-remediation proceeds immediately. |
 
-> **Use case**: Debug/test events (e.g. fault-injection demos) set `drainOverrides.skip = true`
-> to exercise the remediation pipeline without waiting for pod eviction.
+> **Use case**: Debug and test events, for example fault-injection demos, set `drainOverrides.skip = true`. This lets them exercise the remediation pipeline without waiting for pod eviction.
 
 ---
 
@@ -198,25 +180,25 @@ message Entity {
 }
 ```
 
-Identifies specific hardware entities affected by the fault.
+Identifies the specific hardware entities that the fault affects.
 
 | `entityType` | `entityValue` example | Used by |
 |--------------|----------------------|---------|
-| `"GPU"` | `"0"`, `"GPU-a1b2c3d4-..."` | GPU Reset CRD (targets specific GPU UUID) |
+| `"GPU"` | `"0"`, `"GPU-a1b2c3d4-..."` | GPU Reset CR (targets a specific GPU UUID) |
 | `"PCI"` | `"0000:17:00.0"` | Tracing span attributes, diagnostics |
 | `"NIC"` | `"mlx5_0"` | NIC health correlation |
 
-The `entitiesImpacted` array is propagated to:
+NVSentinel propagates the `entitiesImpacted` array to:
 
 - **Tracing**: each entity becomes a span attribute `health_event.entities_impacted.<type>`.
 - **Event exporter**: serialized into the CloudEvents payload.
-- **GPU Reset**: the janitor uses GPU UUIDs from entities to target the reset CRD.
+- **GPU Reset**: the janitor uses the GPU UUIDs from the entities as the targets of the GPU Reset CR.
 
 ---
 
 ## Storage Wrapper: HealthEventWithStatus
 
-Events are stored in MongoDB (or PostgreSQL) wrapped in a status envelope:
+NVSentinel stores events in MongoDB (or PostgreSQL), wrapped in a status envelope:
 
 ```go
 // data-models/pkg/model/health_event_extentions.go
@@ -227,9 +209,7 @@ type HealthEventWithStatus struct {
 }
 ```
 
-The `HealthEvent` portion is **immutable after ingestion** (except for dedup
-strategy downgrade). The `HealthEventStatus` portion is **progressively enriched**
-by each downstream module as it processes the event.
+The `HealthEvent` portion is **immutable after ingestion**, except for the strategy downgrade by deduplication. Each downstream module **progressively enriches** the `HealthEventStatus` portion when it processes the event.
 
 ---
 
@@ -249,7 +229,7 @@ message HealthEventStatus {
 }
 ```
 
-Each field is written by a specific module at a specific pipeline stage:
+A specific module writes each field at a specific pipeline stage:
 
 | Field | Written by | Values / Meaning |
 |-------|-----------|------------------|
@@ -257,11 +237,11 @@ Each field is written by a specific module at a specific pipeline stage:
 | `quarantineFinishTimestamp` | **fault-quarantine** | When quarantine processing completed |
 | `userPodsEvictionStatus` | **node-drainer** | `OperationStatus{status, message}` — see below |
 | `drainFinishTimestamp` | **node-drainer** | When drain processing completed |
-| `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not yet processed; `true` = repair CR created and confirmed; `false` = repair failed or skipped |
-| `lastRemediationTimestamp` | **fault-remediation** | When the remediation CR was last created |
-| `spanIds` | **all modules** | Distributed tracing span IDs per service (e.g. `{"platform-connector": "abc123", "fault-quarantine": "def456"}`) |
-| `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` once, only when no decision is stored, and before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. See [ADR-064](designs/064-node-and-device-selection.md) |
-| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event, written before the log collector and the maintenance CR. See [ADR-064](designs/064-node-and-device-selection.md) |
+| `faultRemediated` | **fault-remediation** | `BoolValue` — `nil` (absent) = not processed; `true` = maintenance CR created and confirmed; `false` = repair failed or skipped |
+| `lastRemediationTimestamp` | **fault-remediation** | When fault-remediation last created the maintenance CR |
+| `spanIds` | **all modules** | Distributed tracing span IDs for each service, for example `{"platform-connector": "abc123", "fault-quarantine": "def456"}` |
+| `drainDecision` | **node-drainer** | The drain method chosen for the event. node-drainer writes `ruleSet`, `method` and `scope` one time, and only when no decision is stored. It writes them before it reads or evicts pods or creates a custom drain CR. Every drain action follows the stored record. |
+| `remediationDecision` | **fault-remediation** | The remediation action chosen for the event. fault-remediation writes it before it runs the log collector and creates the maintenance CR. |
 
 ### Drain and Remediation Decisions
 
@@ -273,9 +253,11 @@ Each field is written by a specific module at a specific pipeline stage:
 - `scope`: the entity type and value of a partial drain. Empty for a drain of the full node.
 - `reusedFrom`: the event of the quarantine session whose method this event uses. Empty when this event selected it.
 
-node-drainer writes `ruleSet`, `method` and `scope` before it acts. `ruleSet` is `custom-drain-node-selector` when `customDrain.nodeSelector` selects `Custom`. It is empty when the default method is used. `scope` is the entity of a partial drain. node-drainer writes no `scope` for a drain of the full node.
+node-drainer writes `ruleSet`, `method` and `scope` before it acts. `ruleSet` is `custom-drain-node-selector` when `customDrain.nodeSelector` selects `Custom`. It is empty when node-drainer uses the default method. `scope` is the entity of a partial drain. node-drainer writes no `scope` for a drain of the full node.
 
-An event marked `AlreadyDrained` because an earlier drain covered it records `scope` only, when the event has no decision yet. `method` is then empty because this event did not drain the node. An empty `scope` means the earlier drain covered the full node. An event that already has a decision, such as `BuiltIn` or `Custom`, keeps that decision. The already-drained check reads this record. It derives the scope only for an event that has no record.
+node-drainer marks an event `AlreadyDrained` when an earlier drain covered it. If that event has no decision, node-drainer records only `scope` for it. `method` is then empty because this event did not drain the node. An empty `scope` means the earlier drain covered the full node.
+
+An event that already has a decision, such as `BuiltIn` or `Custom`, keeps that decision. The already-drained check reads this record. It derives the scope only for an event that has no record.
 
 `remediationDecision` is the remediation decision that fault-remediation records for an event before it acts:
 
@@ -291,11 +273,11 @@ MongoDB and PostgreSQL store these field names in lowercase, as they store the o
 
 | Status | Meaning |
 |--------|---------|
-| `NotStarted` | Drain has not begun |
-| `InProgress` | Pods are being evicted |
+| `NotStarted` | Drain has not started |
+| `InProgress` | Pod eviction in progress |
 | `Succeeded` | All user pods evicted successfully |
-| `Failed` | Eviction encountered an error |
-| `AlreadyDrained` | Drain was skipped (via `drainOverrides.skip` or prior completion) |
+| `Failed` | Eviction had an error |
+| `AlreadyDrained` | node-drainer skipped the drain (because of `drainOverrides.skip` or an earlier completed drain) |
 
 ### Status progression diagram
 
@@ -334,17 +316,13 @@ message HealthEventResource {
 }
 ```
 
-The `spec` field holds the immutable `HealthEvent`; the `status` field holds the
-progressively-enriched `HealthEventStatus`. This mirrors the standard Kubernetes
-spec/status convention.
+The `spec` field holds the immutable `HealthEvent`. The `status` field holds the progressively enriched `HealthEventStatus`. This follows the standard Kubernetes spec and status convention.
 
 ---
 
 ## External Remediation Request
 
-When the configured remediation action produces an
-`ExternalRemediationRequest` (ExtRR) — for any `recommendedAction`, not only
-`CUSTOM` — the full `HealthEvent` is embedded in the CRD spec:
+The configured remediation action can produce an `ExternalRemediationRequest` (ExtRR) for any `recommendedAction`, not only `CUSTOM`. In that case, NVSentinel embeds the full `HealthEvent` in the spec of the ExtRR:
 
 ```protobuf
 message ExternalRemediationRequestSpec {
@@ -352,32 +330,26 @@ message ExternalRemediationRequestSpec {
 }
 ```
 
-The ExtRR is cluster-scoped (like RebootNode, TerminateNode, GPUReset CRDs) and
-carries status conditions for coordination with external repair systems:
+The ExtRR is cluster-scoped, like the RebootNode, TerminateNode, and GPUReset CRDs. It carries status conditions for coordination with external repair systems:
 
 | Condition Type | Set by | Meaning |
 |---------------|--------|---------|
 | `NVSentinelOwnershipReleased` | ExtRR reconciler | NVSentinel has released the node (taint applied, ready for external work) |
-| `ExternalRemediationComplete` | External system | External repair is done; NVSentinel can re-admit the node |
-
-See [ADR-040](./designs/040-external-remediation-request.md) for the full design.
+| `ExternalRemediationComplete` | External system | External repair is complete. NVSentinel can re-admit the node. |
 
 ---
 
 ## Tracing Correlation
 
-Each module that processes an event writes its span ID into
-`HealthEventStatus.spanIds[serviceName]`. This enables end-to-end trace correlation:
+Each module that processes an event writes its span ID into `HealthEventStatus.spanIds[serviceName]`. This enables end-to-end trace correlation:
 
-```
+```text
 platform-connector → fault-quarantine → node-drainer → fault-remediation
 ```
 
-The span ID written to the datastore becomes the **parent span** for the next
-module's processing, creating a causal chain across independent services that
-communicate only through MongoDB change streams.
+The span ID that a module writes to the datastore becomes the **parent span** for the processing in the next module. This creates a causal chain across independent services. These services communicate only through the change streams of the datastore.
 
-See [Distributed Tracing](./tracing.md) for setup and querying.
+For setup and queries, see [Distributed Tracing](./tracing.md).
 
 ---
 
@@ -450,8 +422,5 @@ See [Distributed Tracing](./tracing.md) for setup and querying.
 - [Platform Connectors](./platform-connectors.md) — ingestion and validation
 - [Fault Quarantine](./fault-quarantine.md) — CEL rule evaluation
 - [Node Drainer](./node-drainer.md) — eviction strategies
-- [Fault Remediation](./fault-remediation.md) — CRD creation and action routing
+- [Fault Remediation](./fault-remediation.md) — CR creation and action routing
 - [Event Exporter](./event-exporter.md) — CloudEvents transformation
-- [ADR-021: Health Event Property Overrides](./designs/021-health-event-property-overrides.md)
-- [ADR-025: Processing Strategy](./designs/025-processing-strategy-for-health-checks.md)
-- [ADR-039: Health Event Deduplication](./designs/039-health-event-deduplication.md)
