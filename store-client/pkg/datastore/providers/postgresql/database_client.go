@@ -1018,6 +1018,10 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 	// c.connString is populated via NewPostgreSQLDatabaseClientWithConnString()
 	watcher := NewPostgreSQLChangeStreamWatcher(c.db, tokenConfig.ClientName, c.tableName, c.connString, ModeHybrid)
 
+	if err := watcher.initializeResumePosition(ctx); err != nil {
+		return nil, fmt.Errorf("initialize PostgreSQL watcher position: %w", err)
+	}
+
 	// Apply pipeline filter if provided
 	// Two-layer filtering:
 	// 1. Server-side: SQL WHERE clause (built from w.pipeline in fetchNewChanges)
@@ -1042,6 +1046,24 @@ func (c *PostgreSQLDatabaseClient) NewChangeStreamWatcher(
 // Close closes the database connection
 func (c *PostgreSQLDatabaseClient) Close(ctx context.Context) error {
 	return c.db.Close()
+}
+
+// resetToHeadPositionQuery saves a start pair at the database clock with no margin. A new
+// watcher with no row starts slightly before the clock to cover writers in flight, but a
+// reset explicitly asks to skip accumulated events, so it starts exactly at the head.
+const resetToHeadPositionQuery = `INSERT INTO resume_tokens (client_name, resume_token, last_updated)
+	VALUES ($1, jsonb_build_object('timestamp', clock_timestamp(), 'eventID', 0), statement_timestamp())
+	ON CONFLICT (client_name) DO UPDATE
+	SET resume_token = EXCLUDED.resume_token, last_updated = EXCLUDED.last_updated`
+
+// ResetResumeTokenToHead replaces the client's resume token with the current database head.
+// Resume control uses it for reset-on-start and CREATE transitions instead of deleting the row.
+func (c *PostgreSQLDatabaseClient) ResetResumeTokenToHead(ctx context.Context, tokenConfig client.TokenConfig) error {
+	if _, err := c.db.ExecContext(ctx, resetToHeadPositionQuery, tokenConfig.ClientName); err != nil {
+		return fmt.Errorf("failed to reset resume token to head: %w", err)
+	}
+
+	return nil
 }
 
 func (c *PostgreSQLDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig client.TokenConfig) error {

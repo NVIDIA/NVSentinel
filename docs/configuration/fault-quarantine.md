@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Fault Quarantine module isolates nodes with detected hardware or software failures by cordoning and/or tainting them. This document covers all Helm configuration options available for system administrators.
+The fault-quarantine module isolates nodes with detected hardware or software failures. It cordons the nodes, taints the nodes, or does both. This document describes all the Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the fault-quarantine module is deployed in the cluster.
+Controls whether the chart deploys the fault-quarantine module in the cluster.
 
 ```yaml
 global:
@@ -16,7 +16,7 @@ global:
     enabled: true
 ```
 
-> Note: This module depends on the datastore being enabled. Therefore, ensure the datastore is also enabled.
+> Note: This module needs the datastore. Thus, also enable the datastore.
 
 ### Resources
 
@@ -44,7 +44,7 @@ fault-quarantine:
 
 ### Kubernetes API Rate Limits
 
-Fault Quarantine inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Fault Quarantine needs different limits:
+Fault-quarantine inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). If fault-quarantine needs different limits, set component values. Otherwise, keep the inherited limits. This example sets component values:
 
 ```yaml
 fault-quarantine:
@@ -52,49 +52,71 @@ fault-quarantine:
   burst: 80
 ```
 
-Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+Positive `qps` values enable client-side throttling. The value `0` uses the client-go default. A negative value disables client-side throttling. `burst` must be non-negative. A value of `0` uses the client-go default.
 
 ### Change Stream Resume Token
 
-To make fault-quarantine skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Fault-quarantine deletes only its own resume token and resets the key back to `RESUME` during startup.
+> **Important**: In step 4, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then discard the resume token that the first replica saved.
+
+To make fault-quarantine skip accumulated health events and start from the current stream head, do these steps:
+
+1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
+2. Scale fault-quarantine to zero. Wait until no pod of fault-quarantine exists.
+3. In the shared resume-control ConfigMap, set the key of fault-quarantine to `CREATE`.
+4. Scale fault-quarantine to one replica.
+5. After fault-quarantine sets the key back to `RESUME`, restore the replicas of fault-quarantine.
+6. If you stopped the reconciliation in step 1, start it again.
+
+During the startup in step 4, fault-quarantine resets only its own resume token, and sets the key back to `RESUME`. With MongoDB, it deletes the token. With PostgreSQL, it sets the token to the current head.
+
+These commands do steps 2 to 5. Run them one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment fault-quarantine -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/fault-quarantine --replicas=0
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=fault-quarantine --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"fault-quarantine":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/fault-quarantine --replicas=1
+kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.fault-quarantine}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/fault-quarantine --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/fault-quarantine --timeout=180s
 ```
 
-On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status and replays them before consuming live events. An event is suppressed only when later events collectively cover every check, entity, and error-code scope it could change; a check-wide event therefore requires a later check-wide event. This conservative rule prevents old failures or recoveries from temporarily overwriting newer node state. Recovery uses one current API-server node snapshot per replayed event instead of the informer cache. The live watcher opens first, so events inserted during recovery remain queued for normal processing.
+On a normal `RESUME` startup, fault-quarantine queries the datastore for processable health events that do not have a quarantine status. It replays these health events before it consumes live health events. Fault-quarantine suppresses a health event only when later health events together cover every check, entity, and error-code scope that the health event can change. Thus, only a later check-wide health event can suppress a check-wide health event. This conservative rule prevents old failures or recoveries from temporarily overwriting a newer node state.
 
-Skipped, invalid, and superseded documents receive a terminal fault-quarantine recovery marker in their status; the detailed result remains available through the recovery metric. Successful quarantine updates already carry a terminal quarantine status. Both forms are excluded from later scans. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ. If an installation has no persisted cutoff, as on the first upgrade to this behavior, the lower bound is initialized and persisted at the current startup boundary rather than scanning the cluster's entire history.
+For each replayed health event, recovery uses one current snapshot of the node from the API server. It does not use the informer cache. The live watcher opens first, so health events inserted during recovery stay queued for normal processing.
 
-A consumed `CREATE` request skips cold start and records its creation time. Later restarts only consider unresolved events created after that cutoff, so events that an operator deliberately abandoned are not revived.
+Skipped, invalid, and superseded documents receive a terminal fault-quarantine recovery marker in their status. The detailed result stays available through the recovery metric. Successful quarantine updates already carry a terminal quarantine status. Later scans exclude both forms. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ.
 
-Cold-start activity is exposed through `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
+If an installation has no persisted cutoff, fault-quarantine initializes and persists the lower bound at the current startup boundary. It does not scan the full history of the cluster.
+
+A consumed `CREATE` request skips cold start and records its creation time. Later restarts consider only unresolved health events created after that cutoff. Thus, fault-quarantine does not revive health events that an operator deliberately abandoned.
+
+These metrics show the cold-start activity: `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
 
 ### GPU Node Label
 
-Label selector, as `key=value`, that identifies GPU nodes. The node informer watches only matching nodes, and the circuit breaker counts only those nodes when it measures the cordoned percentage.
+Label selector, as `key=value`, that identifies GPU nodes. The circuit breaker counts only the matching nodes when it measures the cordoned percentage. Fault-quarantine watches all nodes, so that it can recover a quarantined node whose GPU label is temporarily absent.
 
 ```yaml
 fault-quarantine:
   gpuNodeLabel: "nvidia.com/gpu.present=true"
 ```
 
-The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
+The default matches the label that the NVIDIA GPU Operator applies. If your cluster labels GPU nodes differently, override it.
 
-A selector that matches no node gives the circuit breaker a node count of zero. With no cordons in the window, the breaker stays `CLOSED` and fault quarantine keeps running. A cordon in the window while no GPU nodes are counted trips it, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+A selector that matches no node gives the circuit breaker a node count of zero. If the window has no cordons, the breaker stays `CLOSED` and fault-quarantine continues to run. While the GPU node count is zero, a node cordoned in the window that is still in the cluster trips the breaker. Thus, if the breaker behaves unexpectedly on a cluster with non-standard labels, examine this value first.
 
 ### Label Prefix
 
-Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.
+Defines the prefix for all node labels that fault-quarantine creates to track the cordon and uncordon lifecycle.
 
 ```yaml
 fault-quarantine:
@@ -104,6 +126,7 @@ fault-quarantine:
 ### Generated Labels
 
 Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
+
 - `{labelPrefix}cordon-by` — Service that cordoned the node
 - `{labelPrefix}cordon-reason` — Reason for cordoning
 - `{labelPrefix}cordon-timestamp` — Cordon timestamp (format: 2006-01-02T15-04-05Z)
@@ -113,11 +136,11 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 
 ## Circuit Breaker
 
-Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
+Prevents fault-quarantine from quarantining too many nodes at the same time. This protects against cluster-wide cascading failures.
 
-With PostgreSQL, a breaker that is already tripped blocks watcher startup and keeps the pod NotReady until reset. A rollout or Helm upgrade can wait for this reset. A breaker that trips after watcher startup does not itself change datastore readiness.
+With PostgreSQL, a breaker that is already tripped blocks the startup of the watcher. It keeps the pod NotReady until someone resets the breaker. A rollout or Helm upgrade can wait for this reset. A breaker that trips after the watcher starts does not itself change datastore readiness.
 
-The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
+In dry-run mode, fault-quarantine does not create the breaker. Dry run cordons nothing. Thus, dry run does not count toward the breaker, and the breaker does not halt dry run. When you disable dry run, no trip remains from the dry-run period.
 
 ### Configuration
 
@@ -135,54 +158,73 @@ fault-quarantine:
 ### Parameters
 
 #### enabled
-Enables or disables circuit breaker protection. When disabled, unlimited nodes can be quarantined.
+
+Enables or disables circuit breaker protection. If you disable the breaker, fault-quarantine can quarantine an unlimited number of nodes.
 
 #### percentage
-Maximum percentage of GPU nodes that can be quarantined within the time window. When reached, the circuit breaker trips and blocks all new quarantine actions. Rounds up, so `1` on a 288-node cluster is 3 nodes, not 2. Set to `0` to bound by `maxNodes` alone.
+
+Maximum percentage of GPU nodes that fault-quarantine can quarantine within the time window. When the cordon count in the window reaches this limit, the circuit breaker trips and blocks all new quarantine actions. The value rounds up, so `1` on a 288-node cluster is 3 nodes, not 2. To bound by `maxNodes` alone, set it to `0`.
 
 #### maxNodes
-Maximum absolute number of nodes that can be quarantined within the time window, independent of cluster size. Defaults to `0`, which disables this bound and preserves the percentage-only behaviour.
 
-When both bounds are set, **the lower one binds**. This is the point of the setting: a percentage silently tracks fleet growth, so a limit chosen for a 100 node cluster becomes three times as permissive at 300 nodes, while an absolute bound does not move. Fleet-wide operators can therefore express "no more than X% *and* never more than N nodes" in one config that stays correct as clusters grow.
+Maximum absolute number of nodes that fault-quarantine can quarantine within the time window. This bound does not depend on the cluster size. Defaults to `0`, which disables this bound.
+
+If you set both bounds, **the lower one binds**. This is the purpose of the setting. A percentage silently follows fleet growth. Thus, a limit that you choose for a 100 node cluster becomes three times as permissive at 300 nodes. An absolute bound does not move. Fleet-wide operators can therefore express "no more than X% *and* never more than N nodes" in one configuration that stays correct as clusters grow.
 
 #### maxCordonedNodes
-Standing cap on how many nodes NVSentinel holds quarantined **at once**, counting only its own cordons. Defaults to `0`, which disables it.
 
-This is the only bound that limits a total. `percentage` and `maxNodes` both count cordon events inside `duration`, so they limit the *rate* of cordoning and not the number of nodes that end up cordoned: a rate that stays just under the threshold still reaches the whole fleet given enough windows. On a 300 node cluster, `maxNodes: 5` with a `5m` window permits 4 cordons every window indefinitely, which is the entire fleet in about six hours without ever tripping.
+Standing cap on the number of nodes that NVSentinel holds quarantined **at the same time**. It counts only the cordons of NVSentinel. Defaults to `0`, which disables it.
 
-Lengthening `duration` is not a substitute. The window is bucketed at one second, so `24h` allocates 86,400 buckets and the sliding-window advance is O(steps x buckets); it also trips on a day's accumulated churn rather than on how many nodes are actually out of service.
+This is the only bound that limits a total. `percentage` and `maxNodes` both count cordon events inside `duration`. Thus, they limit the *rate* of cordoning, and not the final number of cordoned nodes. A rate that stays slightly below the threshold still reaches the whole fleet after enough windows. On a 300 node cluster, `maxNodes: 5` with a `5m` window permits 4 cordons in every window, for an unlimited time. After about six hours, this cordons the entire fleet, and the breaker never trips.
 
-Nodes cordoned by anything other than NVSentinel are not counted, so a GPU operator upgrade or an operator's own `kubectl cordon` does not consume this budget.
+A longer `duration` is not a substitute. The breaker divides the window into one-second buckets, so `24h` allocates 86,400 buckets. The sliding-window advance is O(steps x buckets). A long window also trips on all the cordons of a day, and not on the real number of nodes that are out of service.
 
-The two kinds of bound compose rather than compete: keep `percentage` or `maxNodes` to bound a burst, and add `maxCordonedNodes` to bound the standing total. It is evaluated only when the window bounds have not already tripped, so it can add a reason to trip but never remove one.
+This bound does not count nodes that something other than NVSentinel cordoned. Thus, a GPU Operator upgrade or an operator's own `kubectl cordon` does not consume this budget.
 
-At least one of `percentage`, `maxNodes`, `maxCordonedNodes` and `maxCordonedPercentage` must be positive, and a negative value for any of them is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`.
+The two kinds of bound work together, and do not compete. To bound a burst, keep `percentage` or `maxNodes`. To bound the standing total, add `maxCordonedNodes`. The breaker evaluates this bound only when the window bounds did not already trip. Thus, this bound can add a reason to trip, but it cannot remove one.
 
-For the same reason, a **window** threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. This clamp applies to `percentage` and `maxNodes` only.
+At least one of `percentage`, `maxNodes`, `maxCordonedNodes` and `maxCordonedPercentage` must be positive, and none of them can be negative. If all four values are zero, or if one value is negative, the breaker refuses to start. It does not ignore a negative value. Thus, the breaker cannot silently become a no-op while `enabled: true`.
 
-The standing bounds are **not** clamped to the fleet size, because they are compared against the count of nodes NVSentinel holds quarantined, which is taken from an index over every watched node while the fleet total counts only GPU-labelled ones. That count can legitimately exceed the GPU total, for example when a quarantined node's GPU label is temporarily absent, so clamping would trip the breaker spuriously. `maxCordonedNodes` therefore never reports `fleetSize`. `maxCordonedPercentage` reports it only for a value above `100`, where the scaled result is capped before an unsafe float-to-int conversion.
+For the same reason, the breaker clamps a **window** threshold above the fleet size to the fleet size. It does not leave the threshold unreachable. When this occurs, the `bound` label (described below) reports `fleetSize`. This clamp applies only to `percentage` and `maxNodes`.
 
-To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
+The breaker does **not** clamp the standing bounds to the fleet size. The breaker compares these bounds against the count of nodes that NVSentinel holds quarantined. This count comes from an index over every watched node, but the fleet total counts only GPU-labeled nodes. Thus, the quarantined count can legitimately exceed the GPU total, for example when the GPU label of a quarantined node is temporarily absent. In that case, a clamp can cause a false trip of the breaker.
+
+For this reason, `maxCordonedNodes` never reports `fleetSize`. `maxCordonedPercentage` reports it only for a value above `100`. For such a value, the breaker caps the scaled result before an unsafe float-to-int conversion.
+
+To disable the breaker, use `enabled: false`. Do not use an unreachable threshold.
 
 #### maxCordonedPercentage
-The percentage form of `maxCordonedNodes`: the share of the GPU fleet NVSentinel may hold quarantined at once. Defaults to `0`, which disables it. Rounds up, so `25` on a 12-node cluster is 3 nodes.
 
-It pairs with `maxCordonedNodes` exactly as `percentage` pairs with `maxNodes`: when both are set **the lower one binds**, so growing the fleet cannot silently raise the standing limit.
+The percentage form of `maxCordonedNodes`: the share of the GPU fleet that NVSentinel can hold quarantined at the same time. Defaults to `0`, which disables it. The value rounds up, so `25` on a 12-node cluster is 3 nodes.
 
-Prefer this form when the blast radius you care about is a share of the fleet rather than a number of machines. An absolute count silently changes meaning when a cluster is resized: `maxCordonedNodes: 3` is a quarter of a 12-node cluster and 19% once it grows to 16, and nothing fails or warns at the resize. Prefer `maxCordonedNodes` when you genuinely mean a fixed number of machines, or when one value has to be shared across clusters of differing size.
+It pairs with `maxCordonedNodes` exactly as `percentage` pairs with `maxNodes`. If you set both, **the lower one binds**. Thus, a larger fleet cannot silently raise the standing limit.
 
-The denominator is the GPU node population, the same one `percentage` uses. The numerator counts only NVSentinel's own cordons, so the bound limits NVSentinel's own standing footprint rather than total out-of-service capacity; an operator cordon or a GPU operator upgrade neither consumes nor relaxes it. To alert on total capacity out of service, watch all unschedulable nodes separately.
+If your limit is a share of the fleet, not a count of machines, prefer this form. An absolute count silently changes meaning when you resize a cluster. For example, `maxCordonedNodes: 3` is a quarter of a 12-node cluster, and 19% when the cluster grows to 16 nodes. Nothing fails or warns at the resize. Prefer `maxCordonedNodes` in these cases:
+
+- Your limit is a fixed number of machines.
+- One value must apply to clusters of different sizes.
+
+The denominator is the GPU node population, the same one that `percentage` uses. The numerator counts only the cordons of NVSentinel. Thus, the bound limits the standing footprint of NVSentinel, and not the total capacity that is out of service. An operator cordon or a GPU Operator upgrade does not consume or relax this bound. To alert on the total capacity out of service, watch all unschedulable nodes separately.
 
 #### duration
+
 Time window for tracking cordon events. The circuit breaker counts unique node cordons within this sliding window.
 
 ### Observability
 
-`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, `maxCordonedNodes` or `maxCordonedPercentage` when the standing bound is what tripped, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
+`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes. The `bound` label names what produced the threshold:
+
+- `percentage` or `maxNodes`
+- `maxCordonedNodes` or `maxCordonedPercentage`, when the standing bound is what tripped
+- `fleetSize`, when a configured bound exceeded the cluster size and the breaker clamped it
+- `noGPUNodes`, when the GPU node count is zero. The metric then reports `1`, because one node cordoned in the window that is still in the cluster trips the breaker
+
+`fault_quarantine_breaker_utilization` reports the recent cordon count as a fraction of GPU nodes.
 
 ### Configuration Examples
 
 Aggressive:
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -191,6 +233,7 @@ circuitBreaker:
 ```
 
 Conservative:
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -199,6 +242,7 @@ circuitBreaker:
 ```
 
 Percentage with an absolute ceiling, for a fleet whose clusters vary in size:
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -207,7 +251,8 @@ circuitBreaker:
   duration: "5m"
 ```
 
-Absolute bound only, for "never cordon more than 2 nodes regardless of cluster size":
+Absolute burst bound only, for "never cordon more than 2 nodes in any 5 minutes, regardless of cluster size":
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -216,7 +261,8 @@ circuitBreaker:
   duration: "5m"
 ```
 
-Burst bound plus a standing bound, for "no more than 5 cordons in any 5 minutes, and never more than 20 nodes out of service at once":
+Burst bound plus a standing bound. It allows no more than 5 cordons in any 5 minutes. It also allows no more than 20 nodes that NVSentinel cordoned at the same time:
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -226,7 +272,8 @@ circuitBreaker:
   duration: "5m"
 ```
 
-The same standing bound as a share of the fleet, so it keeps its meaning as the cluster is resized:
+The same standing bound as a share of the fleet, so that it keeps its meaning when you resize the cluster:
+
 ```yaml
 circuitBreaker:
   enabled: true
@@ -237,6 +284,7 @@ circuitBreaker:
 ```
 
 Disabled:
+
 ```yaml
 circuitBreaker:
   enabled: false
@@ -244,7 +292,7 @@ circuitBreaker:
 
 ## Rule Sets
 
-Rule sets define conditions for quarantining nodes using CEL expressions. Each rule set specifies match conditions (when to trigger) and actions (what to do).
+Rule sets define the conditions for quarantining nodes with CEL expressions. Each rule set specifies match conditions (when to trigger) and actions (what to do).
 
 ### Rule Set Structure
 
@@ -284,36 +332,52 @@ fault-quarantine:
 ### Parameters
 
 #### enabled
-When `false`, the ruleset is skipped entirely. Use this to turn off a built-in ruleset without removing its definition.
+
+When `false`, fault-quarantine skips the rule set entirely. Use this to disable a built-in rule set without removing its definition.
 
 #### version
+
 Rule set format version for future compatibility.
 
 #### name
+
 Unique identifier used in logs, metrics, and as part of the cordon-reason label.
 
 #### priority
-Optional integer for resolving conflicts when multiple rule sets apply the same taint key-value pair or label key. Higher values take precedence. Label priority is preserved across all matching health events in the same quarantine session; a later lower-priority event cannot downgrade the current label. For labels with equal priority, the later rule set in configuration order wins.
+
+Optional integer that resolves conflicts when multiple rule sets apply the same taint key-value pair or label key. Higher values take precedence. Fault-quarantine keeps the label priority across all matching health events in the same quarantine session. A later health event with a lower priority cannot downgrade the current label. For labels with equal priority, the later rule set in configuration order wins.
 
 #### match
-Defines conditions that must be satisfied for the rule set to trigger. Supports `all` (AND) and `any` (OR) logic.
+
+Defines the conditions that must be true for the rule set to trigger. Supports `all` (AND) and `any` (OR) logic.
 
 #### kind
-Specifies the object type to evaluate in the CEL expression. Valid values: `HealthEvent` (evaluates against health event data) or `Node` (evaluates against Kubernetes node object).
+
+Specifies the object type to evaluate in the CEL expression. Valid values: `HealthEvent` (evaluates against health event data) or `Node` (evaluates against the Kubernetes node object).
 
 #### expression
-CEL (Common Expression Language) expression that evaluates to true or false. For `HealthEvent` kind, access fields via the `event` variable. For `Node` kind, access `node.metadata` and `node.spec`; `node.status` is not cached or available.
+
+CEL (Common Expression Language) expression that evaluates to true or false. For `HealthEvent` kind, access fields through the `event` variable. For `Node` kind, access `node.metadata` and `node.spec`. Fault-quarantine does not cache `node.status`, and the expression cannot read it.
 
 #### cordon
-Specifies whether to mark the node as unschedulable when the rule matches. A later health event that matches this rule set on a node that is already quarantined also cordons the node. If someone else already cordoned the node, fault-quarantine records the cordon as pre-existing and does not uncordon the node when the session ends.
+
+Specifies whether to mark the node as unschedulable when the rule matches. A later health event that matches this rule set on a node that is already quarantined also cordons the node. If someone else already cordoned the node, fault-quarantine records the cordon as pre-existing. Thus, it does not uncordon the node when the session ends.
 
 #### taint
-Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict existing pods based on the effect. A later health event that matches this rule set on a node that is already quarantined also applies its taint. If the session already applied a taint with the same key and effect, fault-quarantine keeps that taint unchanged. If the node already has the taint from another source, fault-quarantine records it as pre-existing and does not remove it. If the node has a taint with the same key and effect but a different value, fault-quarantine does not apply the rule taint, so that it does not overwrite the other value.
 
-Fault-quarantine removes the taints and the cordon that it applied when every health event in the session has recovered. It does not remove them earlier, when only some of the events recover.
+Optional Kubernetes taint to apply. Based on the effect, taints can prevent pod scheduling or evict existing pods. A later health event that matches this rule set on a node that is already quarantined also applies its taint. Fault-quarantine treats a taint that is already on the node as follows:
+
+- If the session already applied a taint with the same key and effect, fault-quarantine keeps that taint unchanged.
+- If the node already has the taint from another source, fault-quarantine records it as pre-existing and does not remove it.
+- If the node has a taint with the same key and effect but a different value, fault-quarantine does not apply the rule taint. Thus, it does not overwrite the other value.
+
+After every health event in the session recovers, fault-quarantine removes the taints and the cordon that it applied. It does not remove them earlier, when only some of the health events recover.
 
 #### label
-Optional Kubernetes label to apply for the lifetime of the quarantine session. If the key already exists, fault-quarantine overwrites its value. The label, priority, and configuration order are recorded in the `quarantineHealthEventAppliedLabels` node annotation so later events use the same conflict policy. The label is removed after every health event tracked in `quarantineHealthEvent` has recovered. Manual uncordon, manual untaint, and stale-state cleanup remove the tracking annotation but preserve the label itself, mirroring the existing applied-taint behavior. In dry-run mode, the intended label is recorded in annotations for observability, but Kubernetes Node labels are not added, overwritten, or removed.
+
+Optional Kubernetes label to apply for the lifetime of the quarantine session. If the key already exists, fault-quarantine overwrites its value. Fault-quarantine records the label, priority, and configuration order in the `quarantineHealthEventAppliedLabels` node annotation. Thus, later health events use the same conflict policy. Fault-quarantine removes the label after every health event tracked in `quarantineHealthEvent` recovers.
+
+Manual uncordon, manual untaint, and stale-state cleanup remove the tracking annotation, but keep the label itself. This is the same as the behavior for applied taints. In dry-run mode, fault-quarantine records the intended label in annotations for observability. It does not add, overwrite, or remove Kubernetes Node labels.
 
 ### Example Rule Sets
 
@@ -379,13 +443,16 @@ ruleSets:
 
 ### Adding and Modifying Rule Sets
 
-`fault-quarantine.ruleSets` is a **list**. When Helm merges multiple values files (`-f`), lists are replaced entirely — not merged by `name`. A file that sets only one ruleset replaces the whole list; built-in rulesets from [values.yaml](../../distros/kubernetes/nvsentinel/charts/fault-quarantine/values.yaml) are dropped unless you include them again. The chart has no keyed-merge for rulesets.
+`fault-quarantine.ruleSets` is a **list**. When Helm merges multiple values files (`-f`), Helm replaces lists entirely. It does not merge them by `name`. A file that sets only one rule set replaces the whole list. Helm drops the built-in rule sets from `charts/fault-quarantine/values.yaml` of the NVSentinel chart, unless you include them again. The chart has no keyed-merge for rule sets.
 
-Copy the default `ruleSets` from values.yaml into your values file, edit the full list, then upgrade:
+To change the rule sets, do these steps:
 
-- **Disable** a ruleset: set `enabled: false` on that entry in your complete list.
-- **Add** a ruleset: append an entry (see [examples above](#example-rule-sets)).
-- **Modify** a ruleset: change `match`, `cordon`, or `taint` on that entry in your complete list.
+1. Copy the default `ruleSets` from values.yaml into your values file.
+2. Edit the full list:
+   - **Disable** a rule set: set `enabled: false` on that entry in your complete list.
+   - **Add** a rule set: append an entry (see [examples above](#example-rule-sets)).
+   - **Modify** a rule set: change `match`, `cordon`, or `taint` on that entry in your complete list.
+3. Upgrade the Helm release:
 
 ```bash
 helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
@@ -394,25 +461,24 @@ helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
   --wait
 ```
 
-The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`); a config change triggers a pod restart.
+The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`). A configuration change triggers a pod restart.
 
-Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./README.md#dry-run-mode)). Confirm the rollout with `kubectl -n nvsentinel rollout status deployment/fault-quarantine` and check `kubectl -n nvsentinel logs deployment/fault-quarantine`.
+To test without cordoning nodes, use `global.dryRun: true` (see [Dry Run Mode](./README.md#dry-run-mode)). To confirm the rollout, use `kubectl -n nvsentinel rollout status deployment/fault-quarantine`. Then examine the logs with `kubectl -n nvsentinel logs deployment/fault-quarantine`.
 
-In dry run, fault-quarantine records what it would have done without cordoning, tainting or labelling:
+In dry run, fault-quarantine records its decisions, but it does not cordon, taint or label nodes:
 
-- An event that matches no ruleset is skipped, as it is with dry run off: no annotation, no datastore status and no dry-run count. Earlier versions recorded every unhealthy event in dry run.
-- The quarantine annotations are written as usual, plus `quarantineHealthEventDryRun: "True"`. They are kept across restarts and when something else cordons or uncordons the node.
-- `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the rest) count only applied actions.
-- Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
-- The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
+- Fault-quarantine skips a health event that matches no rule set, as it does with dry run off. It writes no annotation, no datastore status and no dry-run count.
+- Fault-quarantine writes the quarantine annotations as usual, and also `quarantineHealthEventDryRun: "True"`. The annotations stay across restarts, and when something else cordons or uncordons the node.
+- `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the others) count only applied actions.
+- The logs show `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
+- The datastore status is still `Quarantined`. Thus, to find the dry-run decisions, compare their time with the time when you enabled dry run.
 
-When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
+When you disable dry run, fault-quarantine discards the dry-run quarantines on startup. It cancels their quarantining health events, and then removes their annotations. Thus, node-drainer does not act on them. Fault-quarantine does not remove a cordon that someone else applied. For the next fault on the node, fault-quarantine quarantines the node for real.
 
-Cancelling the events is best-effort, as on the manual uncordon path. If it fails, fault-quarantine logs `Failed to cancel dry-run quarantining events` with the node name and increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`. The annotations are already gone, so a restart does not retry, and that node's events stay `Quarantined`, where node-drainer can still pick them up. After switching dry run off, check that counter. If it moved, set `healtheventstatus.nodequarantined` to `Cancelled` on the node's remaining `Quarantined` events before node-drainer acts on them.
+Fault-quarantine cancels these health events in the same way as when you uncordon a node manually. If the write fails, fault-quarantine does these actions:
 
-Before switching dry run off on a cluster that ran dry run on an earlier version:
+- It increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`.
+- It keeps the annotations on the node.
+- It tries the write again in the background, and again after a restart.
 
-- Check the circuit breaker ConfigMap. Earlier versions counted dry-run cordons, so the breaker may have tripped and persisted `TRIPPED`, which halts fault-quarantine at startup once dry run is off. Reset it as described in [Circuit Breaker](#circuit-breaker).
-- Switch dry run off before upgrading. Annotations written by an earlier version carry no dry-run marker, so after an upgrade a restart in dry run would still report them once as manual uncordons.
-
-Before rolling back to an earlier version, remove the marker from every node with `kubectl annotate nodes --all quarantineHealthEventDryRun-`. Earlier versions do not know it and leave it in place. A real quarantine made by the earlier version would then carry the marker, and after the next upgrade it would be discarded as a dry run, leaving the node cordoned with no record. A real quarantine made by this version removes any leftover marker.
+Until the write succeeds, node-drainer can still process the health events of the node. If a real fault occurs on the node during this time, fault-quarantine first discards the record and then quarantines the node. After you disable dry run, verify that `fault_quarantine_nodes_pending_cancellation` returns to zero. For more information, see [Cancelling Break-Fix Workflows](../cancelling-breakfix.md).

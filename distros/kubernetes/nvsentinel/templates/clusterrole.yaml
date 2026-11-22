@@ -26,6 +26,7 @@ rules:
   verbs:
   - get
   - list
+{{- if .Values.platformConnector.k8sConnector.enabled }}
 - apiGroups:
   - ""
   resources:
@@ -44,12 +45,7 @@ rules:
   - get
   - update
   - list
-- apiGroups:
-  - ""
-  resources:
-  - pods/eviction
-  verbs:
-  - create
+{{- end }}
 - apiGroups:
   - ""
   resources:
