@@ -367,6 +367,7 @@ These metrics track the performance of the internal ring buffer workqueue:
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
+| `metadata_collector_gpus_skipped_total` | Counter | - | GPUs skipped because NVML identity queries failed. Collection fails if all detected GPUs are skipped. The counter starts at 0 |
 | `metadata_collector_collection_completed_timestamp_seconds` | Gauge | - | Unix time when GPU metadata collection completed, or 0 while the collection still runs. Collection can block on a stuck GPU driver. So a value of 0 long after the process start means that the collection has stalled |
 
 ### Pod Mapper Metrics

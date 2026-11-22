@@ -4,6 +4,10 @@
 
 The Metadata Collector module collects GPU metadata with NVIDIA NVML (Management Library) and writes it to a shared file. Other modules read this file to add GPU serial numbers, UUIDs, and topology information to health events. This component also exposes the pod-to-GPU mapping as an annotation on each pod that requests GPUs. This document describes the main Helm configuration options for system administrators.
 
+If NVML cannot query the identity of one GPU, metadata-collector logs a warning and skips that GPU. It writes metadata for the GPUs that it can query, with their original GPU IDs. The `metadata_collector_gpus_skipped_total` counter counts skipped GPUs. Skipped GPUs have no entries in `gpu_metadata.json`.
+
+If every detected GPU fails its identity queries, collection fails and the collector leaves the existing file unchanged. A node with zero detected GPUs retains the normal empty-inventory behavior. If the topology matrix and collected GPU counts differ, metadata-collector omits NIC topology and sets GPU NUMA nodes to `-1`.
+
 ## Configuration Reference
 
 ### Module Enable/Disable

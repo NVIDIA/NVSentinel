@@ -18,12 +18,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nic"
@@ -74,12 +76,23 @@ type nvmlClient interface {
 
 // Collector gathers GPU metadata from a node using NVML and nvidia-smi.
 type Collector struct {
-	nvml    nvmlClient
-	nicTopo NICTopoCollector
+	nvml        nvmlClient
+	nicTopo     NICTopoCollector
+	skippedGPUs prometheus.Counter
 }
 
-func NewCollector(nvmlWrapper nvmlClient, topo NICTopoCollector) *Collector {
-	return &Collector{nvml: nvmlWrapper, nicTopo: topo}
+// WithSkippedGPUCounter records GPUs omitted because their identity cannot be queried.
+func WithSkippedGPUCounter(counter prometheus.Counter) func(*Collector) {
+	return func(c *Collector) { c.skippedGPUs = counter }
+}
+
+func NewCollector(nvmlWrapper nvmlClient, topo NICTopoCollector, options ...func(*Collector)) *Collector {
+	c := &Collector{nvml: nvmlWrapper, nicTopo: topo}
+	for _, option := range options {
+		option(c)
+	}
+
+	return c
 }
 
 // Collect gathers GPU metadata via NVML (device info, NVLink topology,
@@ -227,7 +240,7 @@ func (c *Collector) collectGPUData(
 	deviceMap map[string]gonvml.Device,
 	parsedTopology map[int]nvml.GPUNVLinkTopology,
 ) error {
-	nvswitchSet := make(map[string]bool)
+	nvswitchSet := make(map[string]struct{})
 
 	var chassisSerial *string
 
@@ -241,10 +254,12 @@ func (c *Collector) collectGPUData(
 	for i := range count {
 		nvmlGPUInfo, err := c.nvml.GetGPUInfo(i)
 		if err != nil {
-			return fmt.Errorf("failed to get GPU info for GPU %d: %w", i, err)
+			c.recordSkippedGPU(i, err)
+
+			continue
 		}
 
-		if i == 0 && collectChassisSerial {
+		if len(metadata.GPUs) == 0 && collectChassisSerial {
 			chassisSerial = c.nvml.GetChassisSerial(i)
 		}
 
@@ -252,12 +267,14 @@ func (c *Collector) collectGPUData(
 		if err != nil {
 			slog.Warn("Failed to collect NVLink topology for GPU", "gpu_id", i, "error", err)
 		} else {
-			for pci := range nvswitches {
-				nvswitchSet[pci] = true
-			}
+			maps.Copy(nvswitchSet, nvswitches)
 		}
 
 		metadata.GPUs = append(metadata.GPUs, *nvmlGPUInfo)
+	}
+
+	if count > 0 && len(metadata.GPUs) == 0 {
+		return fmt.Errorf("could not query identity for any of %d GPUs", count)
 	}
 
 	metadata.ChassisSerial = chassisSerial
@@ -268,6 +285,14 @@ func (c *Collector) collectGPUData(
 	}
 
 	return nil
+}
+
+func (c *Collector) recordSkippedGPU(index int, err error) {
+	slog.Warn("Skipping GPU because identity collection failed", "gpu_id", index, "error", err)
+
+	if c.skippedGPUs != nil {
+		c.skippedGPUs.Inc()
+	}
 }
 
 // supportsChassisSerial reports whether the driver version supports platform info queries (>= R560).
