@@ -23,7 +23,10 @@ from click import Parameter
 from click.testing import CliRunner, Result
 
 from gpu_health_monitor import cli as cli_module
-from gpu_health_monitor.cli import _parse_min_consecutive_polls, cli
+import click
+import configparser
+
+from gpu_health_monitor.cli import UptimeLimitConfig, _parse_min_consecutive_polls, _parse_uptime_limit, cli
 
 
 class TestParseMinConsecutivePolls:
@@ -97,6 +100,8 @@ def test_cli_passes_configuration_to_watcher_and_processor(
             "MinConsecutivePolls=DCGM_FR_NVLINK_DOWN=3\n"
             "ConnectivityFailureEscalationThreshold=9\n"
             "[dcgmconnectivity]\nFailureThreshold=4\nSuccessThreshold=2\n"
+            "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20, 580.82.07\n"
+            "AffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours=1512\n"
         )
     config_file.write_text(config_text)
     started: list[cli_module.dcgm.DCGMWatcher] = []
@@ -152,6 +157,12 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert watcher._power_brake_enabled is custom_settings
     assert watcher._power_brake_min_consecutive_polls == (4 if custom_settings else 1)
     assert watcher._imex_monitoring_enabled is custom_settings
+    assert watcher._uptime_limit_enabled is custom_settings
+    assert watcher._uptime_limit_driver_versions == (
+        frozenset({"570.133.20", "580.82.07"}) if custom_settings else frozenset()
+    )
+    assert watcher._uptime_limit_vbios_versions == (frozenset({"97.00.82.00.4b"}) if custom_settings else frozenset())
+    assert watcher._uptime_limit_max_uptime_seconds == (1512 * 3600 if custom_settings else 0)
     assert watcher._suppress_unbridged_pcie_nvlink_down is custom_settings
     assert watcher._suppressed_error_codes == (
         frozenset({"DCGM_FR_CONTAINED_ERROR"}) if custom_settings else frozenset()
@@ -171,7 +182,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
         else cli_module.platformconnector_pb2.EXECUTE_REMEDIATION
     )
     assert processor._store_only_checks == frozenset(
-        {"GpuThermalMarginWatch"} if custom_settings else {"GpuDcgmUnresponsive"}
+        {"GpuThermalMarginWatch", "GpuUptimeLimitWatch"} if custom_settings else {"GpuDcgmUnresponsive"}
     )
     assert processor._nvswitch_store_only is (not custom_settings)
     assert processor._connectivity_failure_escalation_threshold == (9 if custom_settings else 0)
@@ -253,3 +264,53 @@ def test_health_server_defaults_to_ipv4(tmp_path: Path) -> None:
     mock_start.assert_called_once()
     assert mock_start.call_args.args[0] == 2112
     assert mock_start.call_args.kwargs["addr"] == "0.0.0.0"
+
+
+def _uptime_config(body: str) -> configparser.ConfigParser:
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read_string(body)
+    return config
+
+
+class TestParseUptimeLimit:
+    def test_missing_section_disables_the_check(self) -> None:
+        assert _parse_uptime_limit(_uptime_config("[dcgm]\n")) == UptimeLimitConfig()
+
+    def test_disabled_check_is_not_validated(self) -> None:
+        uptime_limit = _parse_uptime_limit(_uptime_config("[uptimelimit]\nEnabled=false\nMaxUptimeHours=0\n"))
+
+        assert uptime_limit.enabled is False
+
+    def test_enabled_check_is_store_only_by_default(self) -> None:
+        uptime_limit = _parse_uptime_limit(
+            _uptime_config(
+                "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20,, 580.82.07 \nMaxUptimeHours=1512\n"
+            )
+        )
+
+        assert uptime_limit == UptimeLimitConfig(
+            enabled=True,
+            store_only=True,
+            affected_driver_versions=frozenset({"570.133.20", "580.82.07"}),
+            affected_vbios_versions=frozenset(),
+            max_uptime_hours=1512.0,
+        )
+
+    def test_enabled_check_without_versions_refuses_to_start(self) -> None:
+        with pytest.raises(click.BadParameter, match="at least one version"):
+            _parse_uptime_limit(
+                _uptime_config(
+                    "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=\nAffectedVbiosVersions= , \n"
+                    "MaxUptimeHours=1512\n"
+                )
+            )
+
+    @pytest.mark.parametrize("hours", ["0", "-1"])
+    def test_enabled_check_without_positive_limit_refuses_to_start(self, hours: str) -> None:
+        with pytest.raises(click.BadParameter, match="greater than 0"):
+            _parse_uptime_limit(
+                _uptime_config(
+                    f"[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours={hours}\n"
+                )
+            )

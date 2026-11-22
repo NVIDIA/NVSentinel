@@ -28,6 +28,11 @@ class ErrorDetails:
     message: str
 
 
+# Watch name of the uptime limit check. The platform connector derives the check
+# name GpuUptimeLimitWatch from it.
+UPTIME_LIMIT_WATCH_NAME = "DCGM_HEALTH_WATCH_UPTIME_LIMIT"
+
+
 # GPU keys remain integer IDs for compatibility. NVSwitch keys are
 # (entityGroupId, entityId) tuples because DCGM IDs are group-local.
 EntityKey = int | tuple[int, int]
@@ -48,6 +53,10 @@ class DCGMWatcherConfig:
     power_brake_min_consecutive_polls: int = 1
     health_check_min_consecutive_polls: dict[str, int] | None = None
     imex_monitoring_enabled: bool = False
+    uptime_limit_enabled: bool = False
+    uptime_limit_affected_driver_versions: frozenset[str] = frozenset()
+    uptime_limit_affected_vbios_versions: frozenset[str] = frozenset()
+    uptime_limit_max_uptime_hours: float = 0.0
 
 
 @dataclasses.dataclass

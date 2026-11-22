@@ -350,6 +350,49 @@ The GPU Health Monitor skips a GPU that has no usable sample, and that GPU keeps
 
 While the counter is below the threshold, the GPU Health Monitor reports the GPU neither as healthy nor as unhealthy. Thus, a restart cannot publish a healthy event for a GPU whose brake is still asserted.
 
+## Uptime Limit for Known Defects
+
+`GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU driver and firmware defects fail at a fixed node uptime. For example, a timer in the driver wraps after approximately 66 days, and NVLink communication then fails. Until you install a fixed version, the mitigation is to reboot each affected node before it reaches that uptime.
+
+When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the node uptime from `/proc/uptime`. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
+
+`GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel cordons, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
+
+The check uses the node uptime for every GPU. A driver reload or a GPU reset does not change the node uptime. Thus, the check can fire early, but it cannot fire late.
+
+```yaml
+gpu-health-monitor:
+  uptimeLimit:
+    enabled: true
+    storeOnly: true
+    affectedDriverVersions:
+      - "570.133.20"
+    affectedVbiosVersions: []
+    maxUptimeHours: 1512
+```
+
+If many affected nodes started at the same time, they pass the limit at the same time. Then the [circuit breaker](../runbooks/circuit-breaker.md) can trip and stop all remediation. To prevent this, keep `storeOnly` true first and examine which nodes fail. Then reboot some of these nodes before the limit, so that their uptimes are different.
+
+### enabled
+
+This value enables the check. By default, the check is off. If you enable the check, list at least one version and set `maxUptimeHours` to more than 0. Otherwise, the GPU Health Monitor does not start.
+
+### storeOnly
+
+This value enables a dry run for this check. When it is true, the GPU Health Monitor emits the health events of this check with `processingStrategy=STORE_ONLY`. NVSentinel persists these health events and exports them as metrics, but it excludes them from the remediation pipeline. Thus, there is no node condition, no cordon and no reboot. The default is true, so after you enable the check, you can observe it before it can act.
+
+### affectedDriverVersions and affectedVbiosVersions
+
+These values list the affected versions. Write each version exactly as `nvidia-smi` reports it. A GPU is affected when its driver version or its vBIOS version is in a list.
+
+The match is exact, but it ignores case and surrounding spaces. For example, `570.133` does not match `570.133.20`.
+
+If the GPU Health Monitor cannot read the versions of a GPU from DCGM, it logs a warning and does not evaluate that GPU. It reports that GPU neither as healthy nor as unhealthy.
+
+### maxUptimeHours
+
+This value is the maximum node uptime in hours for a node with an affected GPU. Set it below the uptime at which the defect occurs. Leave enough time to drain and reboot every affected node. For example, for a defect at 66 days (1584 hours), a value of `1512` leaves three days.
+
 ## DCGM Startup Gate
 
 In remote DCGM modes, the GPU Health Monitor can wait for a functional DCGM API before its main container starts:

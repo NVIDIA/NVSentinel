@@ -43,6 +43,13 @@ data:
     gpupowerbrakestoreonly = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeStoreOnly }}
     gpupowerbrakeminconsecutivepolls = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMinConsecutivePolls }}
 
+    [uptimelimit]
+    Enabled = {{ .Values.uptimeLimit.enabled }}
+    StoreOnly = {{ .Values.uptimeLimit.storeOnly }}
+    AffectedDriverVersions = {{ .Values.uptimeLimit.affectedDriverVersions | join "," }}
+    AffectedVbiosVersions = {{ .Values.uptimeLimit.affectedVbiosVersions | join "," }}
+    MaxUptimeHours = {{ include "gpu-health-monitor.uptimeLimitMaxUptimeHours" . }}
+
     [dcgmhealthcheck]
     ImexMonitoringEnabled = {{ .Values.dcgmHealthCheck.imexMonitoringEnabled }}
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}

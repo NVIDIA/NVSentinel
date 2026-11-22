@@ -413,3 +413,20 @@ IPv6 section in docs/configuration/README.md.
 {{- end -}}
 {{- $addr -}}
 {{- end -}}
+{{/* Validate GpuUptimeLimitWatch. An enabled check needs a version and a positive limit. */}}
+{{- define "gpu-health-monitor.uptimeLimitMaxUptimeHours" -}}
+{{- $uptimeLimit := .Values.uptimeLimit -}}
+{{- $hours := $uptimeLimit.maxUptimeHours -}}
+{{- if not (or (kindIs "float64" $hours) (kindIs "int" $hours) (kindIs "int64" $hours)) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got %s %#v" (kindOf $hours) $hours) -}}
+{{- end -}}
+{{- if $uptimeLimit.enabled -}}
+{{- if le (float64 $hours) 0.0 -}}
+{{- fail "gpu-health-monitor.uptimeLimit.maxUptimeHours must be greater than 0 when uptimeLimit.enabled is true" -}}
+{{- end -}}
+{{- if and (empty $uptimeLimit.affectedDriverVersions) (empty $uptimeLimit.affectedVbiosVersions) -}}
+{{- fail "gpu-health-monitor.uptimeLimit must list at least one affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true" -}}
+{{- end -}}
+{{- end -}}
+{{- $hours -}}
+{{- end }}

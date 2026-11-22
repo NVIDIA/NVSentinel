@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import os
 import click, configparser, signal, sys
 import logging as log
@@ -55,6 +56,53 @@ def _parse_min_consecutive_polls(raw: str) -> dict[str, int]:
         thresholds[code] = int(polls)
 
     return thresholds
+
+
+def _parse_version_list(raw: str) -> frozenset[str]:
+    """Parse a comma separated list of versions, dropping blanks."""
+    return frozenset(version.strip() for version in raw.split(",") if version.strip())
+
+
+@dataclasses.dataclass(frozen=True)
+class UptimeLimitConfig:
+    enabled: bool = False
+    store_only: bool = True
+    affected_driver_versions: frozenset[str] = frozenset()
+    affected_vbios_versions: frozenset[str] = frozenset()
+    max_uptime_hours: float = 0.0
+
+
+def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
+    """Read the [uptimelimit] section. A missing section disables the check.
+
+    An enabled check without a version list or a positive limit cannot fire, so the
+    monitor refuses to start rather than run without the protection the operator
+    asked for.
+    """
+    if not config.has_section("uptimelimit"):
+        return UptimeLimitConfig()
+
+    section = config["uptimelimit"]
+    uptime_limit = UptimeLimitConfig(
+        enabled=section.getboolean("Enabled", fallback=False),
+        store_only=section.getboolean("StoreOnly", fallback=True),
+        affected_driver_versions=_parse_version_list(section.get("AffectedDriverVersions", fallback="")),
+        affected_vbios_versions=_parse_version_list(section.get("AffectedVbiosVersions", fallback="")),
+        max_uptime_hours=section.getfloat("MaxUptimeHours", fallback=0.0),
+    )
+    if not uptime_limit.enabled:
+        return uptime_limit
+
+    if not uptime_limit.affected_driver_versions and not uptime_limit.affected_vbios_versions:
+        raise click.BadParameter(
+            "must list at least one version when the check is enabled",
+            param_hint="uptimelimit.AffectedDriverVersions / uptimelimit.AffectedVbiosVersions",
+        )
+    if uptime_limit.max_uptime_hours <= 0:
+        raise click.BadParameter(
+            "must be greater than 0 when the check is enabled", param_hint="uptimelimit.MaxUptimeHours"
+        )
+    return uptime_limit
 
 
 def _init_event_processor(
@@ -247,6 +295,15 @@ def cli(
     if power_brake_store_only:
         store_only_checks.add("GpuPowerBrakeWatch")
 
+    uptime_limit = _parse_uptime_limit(config)
+    log.info(
+        "GpuUptimeLimitWatch check: enabled=%s store_only=%s",
+        uptime_limit.enabled,
+        uptime_limit.store_only,
+    )
+    if uptime_limit.enabled and uptime_limit.store_only:
+        store_only_checks.add("GpuUptimeLimitWatch")
+
     # GpuDcgmUnresponsive recommends a node reboot, so it ships observe-only
     # and has to be turned on deliberately per fleet.
     probe_store_only = dcgm_config.getboolean("ProbeStoreOnly", fallback=True)
@@ -390,6 +447,10 @@ def cli(
         power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
         health_check_min_consecutive_polls=health_check_min_consecutive_polls,
         imex_monitoring_enabled=imex_monitoring_enabled,
+        uptime_limit_enabled=uptime_limit.enabled,
+        uptime_limit_affected_driver_versions=uptime_limit.affected_driver_versions,
+        uptime_limit_affected_vbios_versions=uptime_limit.affected_vbios_versions,
+        uptime_limit_max_uptime_hours=uptime_limit.max_uptime_hours,
     )
     dcgm_watcher = dcgm.DCGMWatcher(
         config=watcher_config,

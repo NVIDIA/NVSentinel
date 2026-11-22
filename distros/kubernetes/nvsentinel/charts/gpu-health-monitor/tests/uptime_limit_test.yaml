@@ -1,0 +1,72 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: GpuUptimeLimitWatch configuration
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders the check disabled by default
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = false\\n\\s*StoreOnly = true\\n\\s*AffectedDriverVersions = \\n\\s*AffectedVbiosVersions = \\n\\s*MaxUptimeHours = 0\\n"
+
+  - it: maps the error code to a reboot
+    set:
+      global.platformConnectorAuth.enabled: false
+    asserts:
+      - matchRegex:
+          path: data["dcgmerrorsmapping.csv"]
+          pattern: "(?m)^GPU_UPTIME_LIMIT_EXCEEDED,RESTART_BM$"
+
+  - it: renders an enabled check
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.storeOnly: false
+      uptimeLimit.affectedDriverVersions: ["570.133.20", "580.82.07"]
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1512
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedDriverVersions = 570.133.20,580.82.07\\n\\s*AffectedVbiosVersions = 97.00.82.00.4B\\n\\s*MaxUptimeHours = 1512\\n"
+
+  - it: rejects an enabled check without versions
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.maxUptimeHours: 1512
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit must list at least one affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true
+
+  - it: rejects an enabled check without a limit
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedDriverVersions: ["570.133.20"]
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be greater than 0 when uptimeLimit.enabled is true
+
+  - it: rejects a quoted limit
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.maxUptimeHours: "1512"
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got string "1512"
