@@ -3,7 +3,7 @@ module github.com/nvidia/nvsentinel/preflight
 go 1.27.3
 
 require (
-	cel.dev/cel-go v0.33.2
+	cel.dev/cel-go v0.33.4
 	github.com/go-logr/logr v1.4.4
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
