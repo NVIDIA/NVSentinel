@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import dataclasses
+import math
 import os
 import click, configparser, signal, sys
 import logging as log
@@ -98,9 +99,11 @@ def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
             "must list at least one version when the check is enabled",
             param_hint="uptimelimit.AffectedDriverVersions / uptimelimit.AffectedVbiosVersions",
         )
-    if uptime_limit.max_uptime_hours <= 0:
+    # NaN passes a "<= 0" test and never compares greater, so the check would never fire.
+    if not math.isfinite(uptime_limit.max_uptime_hours) or uptime_limit.max_uptime_hours <= 0:
         raise click.BadParameter(
-            "must be greater than 0 when the check is enabled", param_hint="uptimelimit.MaxUptimeHours"
+            "must be a finite number greater than 0 when the check is enabled",
+            param_hint="uptimelimit.MaxUptimeHours",
         )
     return uptime_limit
 

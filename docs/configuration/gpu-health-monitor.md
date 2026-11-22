@@ -387,7 +387,7 @@ These values list the affected versions. Write each version exactly as `nvidia-s
 
 The match is exact, but it ignores case and surrounding spaces. For example, `570.133` does not match `570.133.20`.
 
-If the GPU Health Monitor cannot read the versions of a GPU from DCGM, it logs a warning and does not evaluate that GPU. It reports that GPU neither as healthy nor as unhealthy.
+If the GPU Health Monitor cannot read the versions of a GPU from DCGM, it logs a warning and does not evaluate that GPU until it connects to DCGM again. It reports that GPU neither as healthy nor as unhealthy. It also does not evaluate a GPU that matches no listed version and has a blank version for a list that you configured.
 
 ### maxUptimeHours
 

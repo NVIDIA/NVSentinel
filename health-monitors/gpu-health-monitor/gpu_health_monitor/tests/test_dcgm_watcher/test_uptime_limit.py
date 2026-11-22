@@ -187,6 +187,33 @@ def test_gpu_with_unknown_versions_is_not_evaluated(watchers, uptime) -> None:
     assert set(result.entity_failures) == {0}
 
 
+def test_blank_version_with_a_configured_list_is_not_evaluated(watchers, uptime) -> None:
+    """Without a match, a blank vBIOS could still be a listed one, so the GPU is not known to be healthy."""
+    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watchers.append(watcher)
+    watcher._gpu_versions = {
+        0: _versions(driver=FIXED_DRIVER, vbios=""),
+        1: _versions(driver=AFFECTED_DRIVER, vbios=""),
+    }
+
+    result = watcher._evaluate_uptime_limit([0, 1])
+
+    assert result.evaluated_gpu_ids == {1}
+    assert set(result.entity_failures) == {1}
+
+
+def test_blank_version_without_a_configured_list_is_evaluated(watchers, uptime) -> None:
+    """A blank vBIOS does not matter when no vBIOS version is listed."""
+    watcher = _make_watcher(driver_versions=frozenset({AFFECTED_DRIVER}), vbios_versions=frozenset())
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios="")}
+
+    result = watcher._evaluate_uptime_limit([0])
+
+    assert result.status == dcgm.types.HealthStatus.PASS
+    assert result.evaluated_gpu_ids == {0}
+
+
 def test_no_known_versions_returns_none(watchers, uptime) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
@@ -244,6 +271,36 @@ def test_get_gpu_versions_decodes_dcgm_identifiers(watchers) -> None:
         0: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
         1: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=""),
     }
+
+
+def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    good = SimpleNamespace(driverVersion=AFFECTED_DRIVER.encode(), vbios=AFFECTED_VBIOS.encode())
+
+    def attributes(gpu: int) -> SimpleNamespace:
+        if gpu == 1:
+            raise RuntimeError("attributes unavailable")
+        return SimpleNamespace(identifiers=good)
+
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0, 1, 2]
+    handle.GetSystem.return_value.discovery.GetGpuAttributes.side_effect = attributes
+    before = dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get()
+
+    versions = watcher._get_gpu_versions(handle)
+
+    assert set(versions) == {0, 2}
+    assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 1
+
+
+def test_get_gpu_versions_discovery_failure_returns_empty_map(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = RuntimeError("no discovery")
+
+    assert watcher._get_gpu_versions(handle) == {}
 
 
 def test_get_gpu_versions_failure_returns_empty_map(watchers) -> None:

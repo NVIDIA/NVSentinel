@@ -306,9 +306,9 @@ class TestParseUptimeLimit:
                 )
             )
 
-    @pytest.mark.parametrize("hours", ["0", "-1"])
-    def test_enabled_check_without_positive_limit_refuses_to_start(self, hours: str) -> None:
-        with pytest.raises(click.BadParameter, match="greater than 0"):
+    @pytest.mark.parametrize("hours", ["0", "-1", "nan", "inf", "-inf"])
+    def test_enabled_check_without_finite_positive_limit_refuses_to_start(self, hours: str) -> None:
+        with pytest.raises(click.BadParameter, match="finite number greater than 0"):
             _parse_uptime_limit(
                 _uptime_config(
                     f"[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours={hours}\n"
