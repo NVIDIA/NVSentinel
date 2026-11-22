@@ -475,6 +475,100 @@ func TestWatchEvents_RecoveryOverlapLookupFailureDoesNotCheckpoint(t *testing.T)
 	assert.Zero(t, changeStream.markCalls, "an overlap event with unknown durable state must remain replayable")
 }
 
+// A live event that fails and gets no status is replayed only by cold start, which runs only at startup.
+// The watcher must stop on such an event, not checkpoint past it. A failure that a replay cannot fix
+// must not stop the watcher.
+func TestWatchEvents_FailedLiveEvent_StopsOnlyWhenAReplayCanFinishIt(t *testing.T) {
+	quarantined := model.Quarantined
+	nodeUpdateErr := errors.New("Internal error occurred: failed calling webhook")
+	statusWriteErr := errors.New("database unavailable")
+
+	tests := []struct {
+		name           string
+		status         *model.Status
+		callbackErr    error
+		statusWriteErr error
+		wantStop       bool
+	}{
+		{name: "the node update fails, so there is no status", callbackErr: nodeUpdateErr, wantStop: true},
+		{name: "the node is quarantined and the status write fails", status: &quarantined,
+			statusWriteErr: statusWriteErr, wantStop: true},
+		{name: "a permanent error", callbackErr: coldstart.PermanentError(errors.New("invalid rule expression"))},
+		{name: "the status is written and one rule failed", status: &quarantined,
+			callbackErr: errors.New("rule evaluation failed")},
+		{name: "the event is processed", status: &quarantined},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := make(chan client.Event, 1)
+			events <- &clientEventStub{
+				document:   storedHealthEvent("event-uuid"),
+				eventID:    "51",
+				recordUUID: "event-uuid",
+				token:      []byte("resume-token"),
+			}
+			close(events)
+
+			changeStream := &changeStreamWatcherStub{events: events}
+			dbClient := &databaseClientStub{updateErr: tt.statusWriteErr}
+			watcher := NewEventWatcher(changeStream, dbClient, time.Minute, &objectIDStoreStub{})
+			watcher.SetProcessEventCallback(func(context.Context, *model.HealthEventWithStatus) (*model.Status, error) {
+				return tt.status, tt.callbackErr
+			})
+
+			unfinished := counterValue(t, "live_event_unfinished")
+			err := watcher.watchEvents(context.Background())
+
+			if !tt.wantStop {
+				require.NoError(t, err)
+				assert.Equal(t, 1, changeStream.markCalls)
+				assert.InDelta(t, unfinished, counterValue(t, "live_event_unfinished"), 0)
+
+				return
+			}
+
+			var withheld checkpointWithholdingError
+
+			require.ErrorAs(t, err, &withheld)
+			assert.Zero(t, changeStream.markCalls, "an event with no status must stay ahead of the checkpoint")
+			assert.Zero(t, dbClient.completionCalls, "a failed event is not a skipped one")
+			assert.InDelta(t, unfinished+1, counterValue(t, "live_event_unfinished"), 0)
+		})
+	}
+}
+
+// A callback that fails because fault-quarantine shuts down says nothing about the event.
+func TestWatchEvents_CallbackFailsAtShutdown_IsNotMarkedForReplay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan client.Event, 1)
+	events <- &clientEventStub{
+		document: storedHealthEvent("event-uuid"), eventID: "52", recordUUID: "event-uuid", token: []byte("resume-token"),
+	}
+	close(events)
+
+	watcher := NewEventWatcher(&changeStreamWatcherStub{events: events}, &databaseClientStub{}, time.Minute,
+		&objectIDStoreStub{})
+	watcher.SetProcessEventCallback(func(ctx context.Context, _ *model.HealthEventWithStatus) (*model.Status, error) {
+		cancel()
+
+		return nil, ctx.Err()
+	})
+
+	var withheld checkpointWithholdingError
+
+	assert.NotErrorAs(t, watcher.watchEvents(ctx), &withheld)
+}
+
+func counterValue(t *testing.T, label string) float64 {
+	t.Helper()
+
+	metric := &dto.Metric{}
+	require.NoError(t, metrics.ProcessingErrors.WithLabelValues(label).Write(metric))
+
+	return metric.GetCounter().GetValue()
+}
+
 func TestRecoveryOverlapLookup_RetriesTransientFailure(t *testing.T) {
 	transientErr := errors.New("database temporarily unavailable")
 	now := time.Now().UTC()
