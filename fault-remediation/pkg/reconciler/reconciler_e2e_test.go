@@ -1218,8 +1218,8 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		return !cr2GroupExists && cr3GroupExists && cr3Group.MaintenanceCR == crName3
 	}, 5*time.Second, 100*time.Millisecond, "Expected CR-2 group to be removed and CR-3 group to remain")
 
-	// Event 9: COMPONENT_RESET missing GPU_UUID should result in a nvsentinel-state label having value remediation-failed.
-	// Model the active fault-quarantine state that permits fault-remediation to write a terminal label.
+	// Event 9: COMPONENT_RESET missing GPU_UUID retries without writing a terminal label (ADR-071).
+	// Keep the node actively quarantined to prove the error does not close an active fault.
 	activeUnsupportedEvent := &protos.HealthEvent{
 		Id:                "event-9",
 		Version:           1,
@@ -1250,14 +1250,25 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		event9.HealthEvent)
 	assert.Error(t, err)
 	assert.Nil(t, groupConfig)
-	shouldSkip, err = r.shouldSkipEvent(ctx, event9, groupConfig)
-	assert.NoError(t, err)
-	assert.True(t, shouldSkip, "Should skip invalid health event")
+	retryWatcher := &MockChangeStreamWatcher{}
+	retryStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			t.Fatal("missing scope must not write a terminal status or remediation decision")
+			return nil
+		},
+	}
+	result, err := r.handleRemediationEvent(ctx,
+		&events.HealthEventDoc{ID: "event-9", HealthEventWithStatus: event9},
+		datastore.EventWithToken{}, retryWatcher, retryStore)
+	require.ErrorContains(t, err, "no non-empty impacted entity of type GPU_UUID")
+	require.True(t, result.IsZero(), "the returned error triggers controller retry with backoff")
+	_, processed, _, _ := retryWatcher.GetCallCounts()
+	require.Zero(t, processed, "missing scope must leave the event pending")
 
 	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
-	require.Equal(t, node.Labels[statemanager.NVSentinelStateLabelKey], string(statemanager.RemediationFailedLabelValue),
-		"Node should have remediation-failed label value")
+	require.Equal(t, string(statemanager.DrainSucceededLabelValue), node.Labels[statemanager.NVSentinelStateLabelKey],
+		"selection failure must not change the node label")
 
 	// Cleanup
 	_ = testDynamic.Resource(rebootNodeGVR).Delete(ctx, crName1, metav1.DeleteOptions{})

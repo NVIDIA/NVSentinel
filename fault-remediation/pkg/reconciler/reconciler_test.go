@@ -42,6 +42,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -3204,4 +3205,63 @@ func TestRecordRemediationDecision_WriteError_StopsRemediation(t *testing.T) {
 	assert.Zero(t, createCalls, "no CR may be created without the record")
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Zero(t, markProcessedCount, "the event must stay unprocessed so that it is retried")
+}
+
+// Embedding preserves the existing client mock while configuring a scoped reset.
+type scopedResetClient struct {
+	MockK8sClient
+}
+
+func (m *scopedResetClient) GetConfig() *config.TomlConfig {
+	return &config.TomlConfig{RemediationActions: map[string]config.MaintenanceResource{
+		"COMPONENT_RESET": {EquivalenceGroup: "reset", ImpactedEntityScope: "GPU_UUID"},
+	}}
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t *testing.T) {
+	tests := []struct {
+		name     string
+		entities []*protos.Entity
+	}{
+		{"missing", nil},
+		{"empty", []*protos.Entity{{EntityType: "GPU_UUID"}}},
+		{"other type", []*protos.Entity{{EntityType: "PCI", EntityValue: "0000:01:00.0"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Unconfigured methods panic if selection failure reaches any I/O path.
+			r := NewFaultRemediationReconciler(nil, nil, nil,
+				ReconcilerConfig{RemediationClient: &scopedResetClient{}}, false)
+			doc := &events.HealthEventDoc{
+				ID: "missing-scope",
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
+						NodeName: "node-a", RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+						EntitiesImpacted: tt.entities,
+					},
+					HealthEventStatus: &protos.HealthEventStatus{},
+				},
+			}
+			watcher := &MockChangeStreamWatcher{}
+			store := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+					t.Fatal("selection failure must not write status or a decision")
+					return nil
+				},
+			}
+			before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			for range 2 {
+				result, err := r.handleRemediationEvent(context.Background(), doc,
+					datastore.EventWithToken{}, watcher, store)
+				require.ErrorContains(t, err, "no non-empty impacted entity of type GPU_UUID")
+				require.True(t, result.IsZero())
+				require.Nil(t, doc.HealthEventStatus.RemediationDecision)
+				require.Nil(t, doc.HealthEventStatus.FaultRemediated)
+			}
+			_, processed, _, _ := watcher.GetCallCounts()
+			require.Zero(t, processed, "failed selection must not acknowledge the event")
+			after := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			require.Equal(t, before+2, after, "each failed attempt must increment the processing error metric")
+		})
+	}
 }

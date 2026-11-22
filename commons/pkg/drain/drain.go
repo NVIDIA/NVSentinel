@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -169,9 +170,16 @@ func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled boo
 	}
 
 	for _, entity := range healthEvent.GetEntitiesImpacted() {
-		_, supportedEntity := model.EntityTypeToResourceNames[entity.EntityType]
-		if supportedEntity && len(entity.EntityValue) != 0 {
-			return entity, nil
+		_, supportedEntity := model.EntityTypeToResourceNames[entity.GetEntityType()]
+		if supportedEntity && entity.GetEntityValue() != "" {
+			// Keep the existing first-supported-type order. Today only GPU_UUID is supported;
+			// scoped remediation must configure that same type in impactedEntityScope.
+			selected, err := eventutil.FirstImpactedEntity(healthEvent, entity.GetEntityType())
+			if err != nil {
+				return nil, fmt.Errorf("selecting partial drain entity: %w", err)
+			}
+
+			return selected, nil
 		}
 	}
 

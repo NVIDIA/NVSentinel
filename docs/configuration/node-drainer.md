@@ -100,6 +100,8 @@ kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 
 If this setting is enabled, the node-drainer drains only the pods that use the GPU_UUID impacted entity in COMPONENT_RESET health events. If it is disabled, the node-drainer drains all eligible pods on the impacted node for the configured namespaces, regardless of the remediation action. Health events with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID. Otherwise, the drain fails.
 
+node-drainer selects the first `GPU_UUID` impacted entity with a non-empty value, in health event order. If no such entity exists, the drain fails and retries. Configure the COMPONENT_RESET action in fault-remediation with `impactedEntityScope: GPU_UUID` to reset the same GPU.
+
 A partial drain also cannot make progress if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation. A missing annotation means that the metadata-collector does not work, or that its pod device mapper is disabled (`metadata-collector.podMapper.enabled: false`). The node-drainer does not drain the wrong pods. Instead, it returns an error and continues to retry the health event. Thus, the drain does not complete until the annotation appears or the pod is removed.
 
 A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.

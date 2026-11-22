@@ -1035,10 +1035,12 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
 		healthEvent)
 	if err != nil {
-		// If we got an error, groupConfig will be nil which will result in shouldSkipEvent setting state label to
-		// remediation-failed
-		slog.ErrorContext(ctx, "Got an error getting group config for event, skipping event and failing remediation",
-			"error", err, "event", healthEventWithStatus.ID)
+		metrics.ProcessingErrors.WithLabelValues("impacted_entity_selection_error", nodeName).Inc()
+		slog.ErrorContext(ctx, "Error selecting impacted entity for remediation, retrying event",
+			"error", err, "event", healthEventWithStatus.ID, "node", nodeName)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("getting group config for event %s: %w", healthEventWithStatus.ID, err)
 	}
 
 	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance,

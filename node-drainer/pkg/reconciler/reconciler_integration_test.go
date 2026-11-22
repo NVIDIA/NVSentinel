@@ -665,7 +665,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			},
 		},
 		{
-			name:            "Partial drain failure if impacted entity is missing GPU UUID",
+			name:            "Partial drain retries if impacted entity is missing GPU UUID",
 			nodeName:        "completion-node",
 			namespaces:      []string{"completion-test"},
 			nodeQuarantined: model.Quarantined,
@@ -685,9 +685,21 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				},
 			},
 			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-			expectedNodeLabel: ptr.To(string(statemanager.DrainFailedLabelValue)),
-			expectError:       false,
-			numReconciles:     1,
+			expectedNodeLabel: ptr.To(""),
+			expectError:       true,
+			numReconciles:     2,
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				require.ErrorContains(t, err, "no supported entities for a partial drain found")
+				pod, getErr := client.CoreV1().Pods("completion-test").Get(ctx, "running-pod-1", metav1.GetOptions{})
+				require.NoError(t, getErr)
+				require.Nil(t, pod.DeletionTimestamp, "a missing GPU identity must not evict any pod")
+				require.Equal(t, v1.PodRunning, pod.Status.Phase)
+				nodeEvents, listErr := client.CoreV1().Events("").List(ctx, metav1.ListOptions{
+					FieldSelector: "involvedObject.name=" + nodeName,
+				})
+				require.NoError(t, listErr)
+				require.Empty(t, nodeEvents.Items, "selection failure must not start a drain")
+			},
 		},
 		{
 			name:            "Partial drain failure if GPU pod is missing device annotation",

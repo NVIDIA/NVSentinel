@@ -146,10 +146,8 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 
-		return &DrainActionResult{
-			Action: ActionUpdateStatus,
-			Status: model.StatusFailed,
-		}, nil
+		// ADR-071 requires retry rather than a terminal failure when the scoped device is missing.
+		return nil, fmt.Errorf("selecting partial drain entity for node %s: %w", nodeName, err)
 	}
 
 	result := e.handleAlreadyQuarantined(ctx, statusStr, healthEvent, partialDrainEntity, healthEventStore)

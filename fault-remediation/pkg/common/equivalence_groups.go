@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
@@ -78,17 +79,13 @@ func GetGroupConfigForEvent(remediationActions map[string]config.MaintenanceReso
 	var impactedEntityScopeValue string
 
 	if len(actionConfig.ImpactedEntityScope) != 0 {
-		for _, entity := range healthEvent.GetEntitiesImpacted() {
-			if entity.EntityType == actionConfig.ImpactedEntityScope {
-				equivalenceGroupName = fmt.Sprintf("%s-%s", actionConfig.EquivalenceGroup, entity.EntityValue)
-				impactedEntityScopeValue = entity.EntityValue
-			}
+		entity, err := eventutil.FirstImpactedEntity(healthEvent, actionConfig.ImpactedEntityScope)
+		if err != nil {
+			return nil, fmt.Errorf("selecting impacted entity required by action %s: %w", actionName, err)
 		}
 
-		if len(equivalenceGroupName) == 0 {
-			return nil, fmt.Errorf("HealthEvent is missing impacted entity for %s required by action %s",
-				actionConfig.ImpactedEntityScope, actionName)
-		}
+		equivalenceGroupName = fmt.Sprintf("%s-%s", actionConfig.EquivalenceGroup, entity.EntityValue)
+		impactedEntityScopeValue = entity.EntityValue
 	} else {
 		equivalenceGroupName = actionConfig.EquivalenceGroup
 	}
