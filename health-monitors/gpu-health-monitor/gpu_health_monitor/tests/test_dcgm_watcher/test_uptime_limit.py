@@ -322,14 +322,14 @@ def _dcgm_handle(identifiers_by_gpu: dict[int, SimpleNamespace]) -> MagicMock:
     return handle
 
 
-def test_get_gpu_versions_decodes_dcgm_identifiers(watchers) -> None:
-    """DCGM identifiers are ctypes char arrays, which read back as bytes."""
+def test_get_gpu_versions_reads_dcgm_identifiers(watchers) -> None:
+    """The DCGM bindings return the identifiers as str; raw bytes are accepted too."""
     watcher = _make_watcher()
     watchers.append(watcher)
     handle = _dcgm_handle(
         {
-            0: SimpleNamespace(driverVersion=AFFECTED_DRIVER.encode(), vbios=AFFECTED_VBIOS.encode()),
-            1: SimpleNamespace(driverVersion=f" {AFFECTED_DRIVER}\x00", vbios=""),
+            0: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
+            1: SimpleNamespace(driverVersion=f" {AFFECTED_DRIVER}\x00".encode(), vbios=b""),
         }
     )
 
@@ -341,15 +341,15 @@ def test_get_gpu_versions_decodes_dcgm_identifiers(watchers) -> None:
 
 @pytest.mark.parametrize("marker", ["<<<NULL>>>", "<<<NOT_FOUND>>>", "<<<NOT_SUPPORTED>>>", "<<<NOT_PERM>>>"])
 def test_dcgm_unavailable_markers_read_as_unknown(marker: str) -> None:
-    assert dcgm._identifier_text(marker.encode()) == ""
     assert dcgm._identifier_text(marker) == ""
+    assert dcgm._identifier_text(marker.encode()) == ""
 
 
 def test_unsupported_vbios_with_unlisted_driver_is_not_evaluated(watchers, uptime) -> None:
     """A vBIOS that DCGM cannot report could be a listed one, so the GPU is not known to be healthy."""
     watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
     watchers.append(watcher)
-    handle = _dcgm_handle({0: SimpleNamespace(driverVersion=FIXED_DRIVER.encode(), vbios=b"<<<NOT_SUPPORTED>>>")})
+    handle = _dcgm_handle({0: SimpleNamespace(driverVersion=FIXED_DRIVER, vbios="<<<NOT_SUPPORTED>>>")})
     watcher._gpu_versions = watcher._get_gpu_versions(handle)
 
     assert watcher._gpu_versions == {0: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios="")}
@@ -359,7 +359,7 @@ def test_unsupported_vbios_with_unlisted_driver_is_not_evaluated(watchers, uptim
 def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    good = SimpleNamespace(driverVersion=AFFECTED_DRIVER.encode(), vbios=AFFECTED_VBIOS.encode())
+    good = SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)
 
     def attributes(gpu: int) -> SimpleNamespace:
         if gpu == 1:
@@ -382,10 +382,27 @@ def test_get_gpu_versions_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -
     watchers.append(watcher)
     handle = _dcgm_handle(
         {
-            0: SimpleNamespace(vbios=AFFECTED_VBIOS.encode()),
-            1: SimpleNamespace(driverVersion=AFFECTED_DRIVER.encode(), vbios=AFFECTED_VBIOS.encode()),
+            0: SimpleNamespace(vbios=AFFECTED_VBIOS),
+            1: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
         }
     )
+
+    assert set(watcher._get_gpu_versions(handle)) == {1}
+
+
+def test_get_gpu_versions_skips_a_gpu_whose_identifiers_fail_to_decode(watchers) -> None:
+    """The bindings decode on attribute access, so a bad byte raises there; only that GPU is skipped."""
+
+    class Undecodable:
+        vbios = AFFECTED_VBIOS
+
+        @property
+        def driverVersion(self) -> str:
+            return b"\xff570".decode("utf-8")
+
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = _dcgm_handle({0: Undecodable(), 1: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)})
 
     assert set(watcher._get_gpu_versions(handle)) == {1}
 

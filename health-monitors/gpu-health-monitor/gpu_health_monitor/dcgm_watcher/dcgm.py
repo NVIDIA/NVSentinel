@@ -83,9 +83,10 @@ class GpuVersions:
 def _identifier_text(value: object) -> str:
     """Return a DCGM identifier as text, or an empty string when DCGM has no value.
 
-    The identifiers are ctypes char arrays, which read back as bytes. DCGM reports a
-    value that is blank, not found, not supported or not permitted as a marker such as
-    "<<<NOT_SUPPORTED>>>". The rule is the one of DCGM_STR_IS_BLANK in dcgmvalue.
+    The DCGM bindings decode the identifier char arrays to str. Bytes are accepted as
+    well, in case a binding returns the raw array. DCGM reports a value that is blank,
+    not found, not supported or not permitted as a marker such as "<<<NOT_SUPPORTED>>>".
+    The rule is the one of DCGM_STR_IS_BLANK in dcgmvalue.
     """
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
