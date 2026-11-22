@@ -354,11 +354,13 @@ While the counter is below the threshold, the GPU Health Monitor reports the GPU
 
 `GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU driver and firmware defects fail at a fixed node uptime. For example, a timer in the driver wraps after approximately 66 days, and NVLink communication then fails. Until you install a fixed version, the mitigation is to reboot each affected node before it reaches that uptime.
 
-When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the node uptime from `/proc/uptime`. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
+When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
 
 `GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel cordons, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
 
-The check uses the node uptime for every GPU. A driver reload or a GPU reset does not change the node uptime. Thus, the check can fire early, but it cannot fire late.
+The check uses the node uptime for every GPU. A driver reload or a GPU reset does not change the node uptime. Thus, the check does not fire later than the limit.
+
+The DCGM hostengine must support GPU attribute requests. Otherwise, the check cannot read the versions, and it does not evaluate any GPU past the limit.
 
 ```yaml
 gpu-health-monitor:
@@ -375,7 +377,9 @@ If many affected nodes started at the same time, they pass the limit at the same
 
 ### enabled
 
-This value enables the check. By default, the check is off. If you enable the check, list at least one version and set `maxUptimeHours` to more than 0. Otherwise, the GPU Health Monitor does not start.
+This value enables the check. By default, the check is off. If you enable the check, list at least one version and set `maxUptimeHours` to more than 0. Otherwise, Helm does not render the chart. If you write `config.ini` yourself, the GPU Health Monitor does not start.
+
+If you disable the check, the GPU Health Monitor stops sending its health events. Thus, a node with an active `GpuUptimeLimitWatch` fault stays quarantined. Reboot such nodes before you disable the check.
 
 ### storeOnly
 
@@ -383,11 +387,11 @@ This value enables a dry run for this check. When it is true, the GPU Health Mon
 
 ### affectedDriverVersions and affectedVbiosVersions
 
-These values list the affected versions. Write each version exactly as `nvidia-smi` reports it. A GPU is affected when its driver version or its vBIOS version is in a list.
+These values list the affected versions. Write each version exactly as `nvidia-smi` reports it, in quotes. YAML reads an unquoted `580.10` as the number 580.1, so the chart refuses a version that is not a string. If you set the lists on the command line, use `--set-json` or `--set-string`. A GPU is affected when its driver version or its vBIOS version is in a list.
 
 The match is exact, but it ignores case and surrounding spaces. For example, `570.133` does not match `570.133.20`.
 
-If the GPU Health Monitor cannot read the versions of a GPU from DCGM, it logs a warning and does not evaluate that GPU until it connects to DCGM again. It reports that GPU neither as healthy nor as unhealthy. It also does not evaluate a GPU that matches no listed version and has a blank version for a list that you configured.
+Within the limit, the GPU Health Monitor reports every GPU as healthy, also a GPU whose versions it cannot read. Thus, a fault clears after the reboot. Past the limit, it does not evaluate a GPU that matches no listed version and has an unknown version for a list that you configured. A version is unknown when DCGM does not return it, or returns a marker such as `<<<NOT_SUPPORTED>>>`. The GPU Health Monitor reports such a GPU neither as healthy nor as unhealthy. It logs a warning that names the GPU, and it reads the versions again every 10 minutes.
 
 ### maxUptimeHours
 

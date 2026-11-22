@@ -67,9 +67,9 @@ THERMAL_HISTORY_SAMPLE_LIMIT = 1024
 
 # Error code of the uptime limit check. dcgmerrorsmapping.csv maps it to a reboot.
 UPTIME_LIMIT_ERROR_CODE = "GPU_UPTIME_LIMIT_EXCEEDED"
-# The uptime of the node. The monitor runs on the node it checks, and the uptime
-# in /proc is not namespaced, so the container reads the uptime of the node.
-HOST_UPTIME_PATH = "/proc/uptime"
+# How long GpuUptimeLimitWatch waits before it reads the versions of a GPU again
+# when DCGM did not return them.
+GPU_VERSIONS_RETRY_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -81,13 +81,18 @@ class GpuVersions:
 
 
 def _identifier_text(value: object) -> str:
-    """Return a DCGM identifier as text.
+    """Return a DCGM identifier as text, or an empty string when DCGM has no value.
 
-    The identifiers are ctypes char arrays, which read back as bytes.
+    The identifiers are ctypes char arrays, which read back as bytes. DCGM reports a
+    value that is blank, not found, not supported or not permitted as a marker such as
+    "<<<NOT_SUPPORTED>>>". The rule is the one of DCGM_STR_IS_BLANK in dcgmvalue.
     """
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
-    return str(value or "").strip().strip("\x00").strip()
+    text = str(value or "").strip().strip("\x00").strip()
+    if text.startswith("<<<") and ">>>" in text:
+        return ""
+    return text
 
 
 def _normalize_version(version: str) -> str:
@@ -95,10 +100,15 @@ def _normalize_version(version: str) -> str:
     return version.strip().casefold()
 
 
-def _read_host_uptime_seconds(path: str = HOST_UPTIME_PATH) -> float:
-    """Return the uptime of the node in seconds, from the first field of /proc/uptime."""
-    with open(path, encoding="ascii") as uptime_file:
-        return float(uptime_file.read().split()[0])
+def _read_node_uptime_seconds() -> float:
+    """Return the time since the node booted, in seconds.
+
+    CLOCK_BOOTTIME is the clock behind /proc/uptime. It is read from the kernel, so a
+    per-container view of /proc/uptime, for example from LXCFS, does not change it.
+    The monitor runs on the node that it checks, and Kubernetes does not put pods in
+    a time namespace.
+    """
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
 
 
 def _run_dcgm_server(port: int, bind_address: str) -> None:
@@ -423,6 +433,8 @@ class DCGMWatcher:
         )
         self._uptime_limit_max_uptime_seconds = config.uptime_limit_max_uptime_hours * 3600
         self._gpu_versions: dict[int, GpuVersions] = {}
+        self._gpu_versions_retry_at = 0.0
+        self._uptime_limit_unevaluated: tuple[int, ...] = ()
         if self._uptime_limit_enabled:
             log.info(
                 "GpuUptimeLimitWatch enabled: limit %s hour(s), affected driver versions %s, affected vBIOS versions %s",
@@ -771,10 +783,9 @@ class DCGMWatcher:
     def _get_gpu_versions(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, GpuVersions]:
         """Read the driver and vBIOS versions of each GPU for GpuUptimeLimitWatch.
 
-        The versions are read once for each DCGM connection, because they change only
-        with a driver or firmware update, which needs a reset. A failure is logged and
-        counted, and the check skips the GPUs it affects until the next connection. A
-        failure for one GPU does not affect the others. It does not stop other checks.
+        A failure is logged and counted, and the GPUs it affects are left out of the
+        result. A failure for one GPU does not affect the others, and a failure does not
+        stop other checks. _refresh_gpu_versions reads missing versions again.
         """
         try:
             dcgm_system = dcgm_handle.GetSystem()
@@ -790,19 +801,49 @@ class DCGMWatcher:
             try:
                 with metrics.dcgm_api_latency.labels("get_gpu_versions").time():
                     identifiers = dcgm_system.discovery.GetGpuAttributes(gpu).identifiers
+                gpu_versions[gpu] = GpuVersions(
+                    driver=_identifier_text(identifiers.driverVersion),
+                    vbios=_identifier_text(identifiers.vbios),
+                )
             except Exception as e:
                 log.warning("Cannot read the versions of GPU %s; GpuUptimeLimitWatch skips it: %s", gpu, e)
                 metrics.dcgm_api_failures.labels("get_gpu_versions").inc()
-                continue
-            gpu_versions[gpu] = GpuVersions(
-                driver=_identifier_text(identifiers.driverVersion),
-                vbios=_identifier_text(identifiers.vbios),
-            )
         log.info(
             "GPU versions for GpuUptimeLimitWatch: %s",
             {gpu: f"driver={v.driver} vbios={v.vbios}" for gpu, v in sorted(gpu_versions.items())},
         )
         return gpu_versions
+
+    def _versions_complete(self, versions: GpuVersions | None) -> bool:
+        """True when every version that has a configured list is known."""
+        if versions is None:
+            return False
+        if self._uptime_limit_driver_versions and not versions.driver:
+            return False
+        if self._uptime_limit_vbios_versions and not versions.vbios:
+            return False
+        return True
+
+    def _refresh_gpu_versions(self, dcgm_handle: pydcgm.DcgmHandle, gpu_ids: list[int]) -> None:
+        """Read the versions again for GPUs whose versions are not complete.
+
+        DCGM can fail to return the versions at connect time. Without this, the check
+        would skip those GPUs for the whole connection, which can last longer than the
+        limit. The read is repeated at most every GPU_VERSIONS_RETRY_SECONDS.
+        """
+        if not self._uptime_limit_enabled:
+            return
+        incomplete = [gpu for gpu in gpu_ids if not self._versions_complete(self._gpu_versions.get(gpu))]
+        if not incomplete:
+            return
+        now = time.monotonic()
+        if now < self._gpu_versions_retry_at:
+            return
+        self._gpu_versions_retry_at = now + GPU_VERSIONS_RETRY_SECONDS
+        fresh = self._get_gpu_versions(dcgm_handle)
+        for gpu in incomplete:
+            if gpu in fresh:
+                self._gpu_versions[gpu] = fresh[gpu]
 
     def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> tuple[dict[str, types.HealthDetails], bool]:
         """
@@ -1249,38 +1290,38 @@ class DCGMWatcher:
         the same way as for other faults.
 
         The node uptime is used for every GPU. A driver reload or GPU reset does not
-        change it, so the check can only fire early, never late.
+        change it, so the check does not fire later than the limit.
 
-        A GPU is not evaluated when its versions are not known, or when it matches no
-        listed version and a version that has a configured list is blank. Such a GPU
-        is neither failed nor reported healthy. Returns ``None`` when the check is disabled, the uptime
-        cannot be read, or no GPU has known versions.
+        Within the limit, every GPU is healthy whatever its versions, so a GPU whose
+        versions are not known is also cleared, for example after a reboot. Past the
+        limit, a GPU is not evaluated when it matches no listed version and a version
+        that has a configured list is not known. Such a GPU is neither failed nor
+        reported healthy, and a warning names it. Returns ``None`` when the check is
+        disabled, the uptime cannot be read, or no GPU can be evaluated.
         """
         if not self._uptime_limit_enabled:
             return None
 
         try:
-            uptime_seconds = _read_host_uptime_seconds()
-        except (OSError, ValueError, IndexError) as e:
-            log.error("Cannot read the node uptime from %s; skipping GpuUptimeLimitWatch: %s", HOST_UPTIME_PATH, e)
+            uptime_seconds = _read_node_uptime_seconds()
+        except (OSError, AttributeError) as e:
+            log.error("Cannot read the node uptime; skipping GpuUptimeLimitWatch: %s", e)
             return None
 
         past_limit = uptime_seconds > self._uptime_limit_max_uptime_seconds
         details = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={}, evaluated_gpu_ids=set())
+        unevaluated: list[int] = []
         for gpu_id in gpu_ids:
-            versions = self._gpu_versions.get(gpu_id)
-            if versions is None:
+            if not past_limit:
+                details.evaluated_gpu_ids.add(gpu_id)
                 continue
-            affected = self._affected_version(versions)
-            # Without a match, a blank version that has a configured list could still be
-            # affected, so the GPU is not known to be healthy.
-            unknown_listed = (not versions.driver and self._uptime_limit_driver_versions) or (
-                not versions.vbios and self._uptime_limit_vbios_versions
-            )
-            if affected is None and unknown_listed:
+            versions = self._gpu_versions.get(gpu_id)
+            affected = self._affected_version(versions) if versions is not None else None
+            if affected is None and not self._versions_complete(versions):
+                unevaluated.append(gpu_id)
                 continue
             details.evaluated_gpu_ids.add(gpu_id)
-            if affected is None or not past_limit:
+            if affected is None:
                 continue
             details.status = types.HealthStatus.FAIL
             details.entity_failures[gpu_id] = [
@@ -1293,6 +1334,15 @@ class DCGMWatcher:
                     ),
                 )
             ]
+
+        if tuple(unevaluated) != self._uptime_limit_unevaluated:
+            self._uptime_limit_unevaluated = tuple(unevaluated)
+            if unevaluated:
+                log.warning(
+                    "The node uptime is past the GpuUptimeLimitWatch limit, but the versions of GPU(s) %s are not "
+                    "known; these GPUs are not evaluated",
+                    unevaluated,
+                )
 
         if not details.evaluated_gpu_ids:
             return None
@@ -1392,6 +1442,7 @@ class DCGMWatcher:
                 gpu_serials = {}
             log.info(f"dcgm gpu_id are {gpu_ids}")
             self._gpu_versions = self._get_gpu_versions(dcgm_handle) if self._uptime_limit_enabled else {}
+            self._gpu_versions_retry_at = time.monotonic() + GPU_VERSIONS_RETRY_SECONDS
 
             # One field group covers every enabled field monitor; each evaluator
             # reads back only its own field id from the samples.
@@ -1578,6 +1629,8 @@ class DCGMWatcher:
                                 health_status[DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].watch_name] = (
                                     brake_details
                                 )
+                            with self._probe("dcgm_gpu_versions"):
+                                self._refresh_gpu_versions(dcgm_handle, gpu_ids)
                             uptime_details = self._evaluate_uptime_limit(gpu_ids)
                             if uptime_details is not None:
                                 health_status[types.UPTIME_LIMIT_WATCH_NAME] = uptime_details

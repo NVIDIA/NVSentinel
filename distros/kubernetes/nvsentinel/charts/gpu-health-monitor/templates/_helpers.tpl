@@ -413,19 +413,37 @@ IPv6 section in docs/configuration/README.md.
 {{- end -}}
 {{- $addr -}}
 {{- end -}}
-{{/* Validate GpuUptimeLimitWatch. An enabled check needs a version and a positive limit. */}}
+{{/* Validate GpuUptimeLimitWatch. The rules match the monitor's own checks, so a
+     bad value fails the Helm release rather than the pods. An enabled check needs at
+     least one non-blank version and a finite limit greater than 0. */}}
 {{- define "gpu-health-monitor.uptimeLimitMaxUptimeHours" -}}
 {{- $uptimeLimit := .Values.uptimeLimit -}}
 {{- $hours := $uptimeLimit.maxUptimeHours -}}
 {{- if not (or (kindIs "float64" $hours) (kindIs "int" $hours) (kindIs "int64" $hours)) -}}
-{{- fail (printf "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got %s %#v" (kindOf $hours) $hours) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got %s %#v; with --set, use --set-json for a value with a fraction" (kindOf $hours) $hours) -}}
+{{- end -}}
+{{- $versions := 0 -}}
+{{- range $key := list "affectedDriverVersions" "affectedVbiosVersions" -}}
+{{- $list := index $uptimeLimit $key -}}
+{{- if not (kindIs "slice" $list) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.%s must be a list, got %s %v" $key (kindOf $list) $list) -}}
+{{- end -}}
+{{- range $version := $list -}}
+{{- if not (kindIs "string" $version) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.%s entries must be quoted strings, got %s %v; for example, an unquoted 580.10 is read as 580.1" $key (kindOf $version) $version) -}}
+{{- end -}}
+{{- if trim $version -}}
+{{- $versions = add1 $versions -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if $uptimeLimit.enabled -}}
-{{- if le (float64 $hours) 0.0 -}}
-{{- fail "gpu-health-monitor.uptimeLimit.maxUptimeHours must be greater than 0 when uptimeLimit.enabled is true" -}}
+{{- $h := float64 $hours -}}
+{{- if or (ne $h $h) (le $h 0.0) (eq $h (mulf $h 2)) -}}
+{{- fail "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a finite number greater than 0 when uptimeLimit.enabled is true" -}}
 {{- end -}}
-{{- if and (empty $uptimeLimit.affectedDriverVersions) (empty $uptimeLimit.affectedVbiosVersions) -}}
-{{- fail "gpu-health-monitor.uptimeLimit must list at least one affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true" -}}
+{{- if eq $versions 0 -}}
+{{- fail "gpu-health-monitor.uptimeLimit must list at least one non-blank affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true" -}}
 {{- end -}}
 {{- end -}}
 {{- $hours -}}

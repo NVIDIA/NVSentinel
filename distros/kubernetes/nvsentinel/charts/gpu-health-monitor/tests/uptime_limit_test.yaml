@@ -43,7 +43,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.ini"]
-          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedDriverVersions = 570.133.20,580.82.07\\n\\s*AffectedVbiosVersions = 97.00.82.00.4B\\n\\s*MaxUptimeHours = 1512\\n"
+          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedDriverVersions = 570\\.133\\.20,580\\.82\\.07\\n\\s*AffectedVbiosVersions = 97\\.00\\.82\\.00\\.4B\\n\\s*MaxUptimeHours = 1512\\n"
 
   - it: rejects an enabled check without versions
     set:
@@ -52,7 +52,7 @@ tests:
       uptimeLimit.maxUptimeHours: 1512
     asserts:
       - failedTemplate:
-          errorMessage: gpu-health-monitor.uptimeLimit must list at least one affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true
+          errorMessage: gpu-health-monitor.uptimeLimit must list at least one non-blank affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true
 
   - it: rejects an enabled check without a limit
     set:
@@ -61,7 +61,7 @@ tests:
       uptimeLimit.affectedDriverVersions: ["570.133.20"]
     asserts:
       - failedTemplate:
-          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be greater than 0 when uptimeLimit.enabled is true
+          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be a finite number greater than 0 when uptimeLimit.enabled is true
 
   - it: rejects a quoted limit
     set:
@@ -69,4 +69,49 @@ tests:
       uptimeLimit.maxUptimeHours: "1512"
     asserts:
       - failedTemplate:
-          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got string "1512"
+          errorMessage: gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got string "1512"; with --set, use --set-json for a value with a fraction
+
+  - it: rejects an unquoted version that YAML reads as a number
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.affectedDriverVersions: [580.10]
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.affectedDriverVersions entries must be quoted strings, got float64 580.1; for example, an unquoted 580.10 is read as 580.1
+
+  - it: rejects an unquoted vBIOS version even when the check is disabled
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.affectedVbiosVersions: [97]
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.affectedVbiosVersions entries must be quoted strings, got float64 97; for example, an unquoted 580.10 is read as 580.1
+
+  - it: rejects an enabled check whose versions are all blank
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedDriverVersions: ["", "  "]
+      uptimeLimit.maxUptimeHours: 1512
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit must list at least one non-blank affectedDriverVersions or affectedVbiosVersions entry when uptimeLimit.enabled is true
+
+  - it: rejects a version string where a list is expected
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.affectedDriverVersions: "570.133.20"
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.affectedDriverVersions must be a list, got string 570.133.20
+
+  - it: accepts a limit with a fraction
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedDriverVersions: ["570.133.20"]
+      uptimeLimit.maxUptimeHours: 1512.5
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "MaxUptimeHours = 1512\\.5\\n"

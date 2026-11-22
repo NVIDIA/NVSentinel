@@ -63,7 +63,7 @@ def watchers() -> Iterator[list[dcgm.DCGMWatcher]]:
 @pytest.fixture
 def uptime(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     reader = MagicMock(return_value=(LIMIT_HOURS + 1) * HOUR)
-    monkeypatch.setattr(dcgm, "_read_host_uptime_seconds", reader)
+    monkeypatch.setattr(dcgm, "_read_node_uptime_seconds", reader)
     return reader
 
 
@@ -222,7 +222,7 @@ def test_no_known_versions_returns_none(watchers, uptime) -> None:
     assert watcher._evaluate_uptime_limit([0, 1]) is None
 
 
-@pytest.mark.parametrize("error", [OSError("no procfs"), ValueError("bad uptime"), IndexError("empty")])
+@pytest.mark.parametrize("error", [OSError("clock unavailable"), AttributeError("no CLOCK_BOOTTIME")])
 def test_unreadable_uptime_returns_none(watchers, uptime, error: Exception) -> None:
     """Without the uptime the check cannot decide, so it neither fails nor clears a GPU."""
     uptime.side_effect = error
@@ -233,19 +233,85 @@ def test_unreadable_uptime_returns_none(watchers, uptime, error: Exception) -> N
     assert watcher._evaluate_uptime_limit([0]) is None
 
 
-def test_read_host_uptime_seconds_reads_first_field(tmp_path: Path) -> None:
-    uptime_file = tmp_path / "uptime"
-    uptime_file.write_text("5745600.42 45000000.10\n")
+def test_read_node_uptime_seconds_uses_boottime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The uptime comes from CLOCK_BOOTTIME, which a per-container /proc/uptime does not change."""
+    monkeypatch.setattr(dcgm.time, "CLOCK_BOOTTIME", 7, raising=False)
+    clock = MagicMock(return_value=5745600.42)
+    monkeypatch.setattr(dcgm.time, "clock_gettime", clock)
 
-    assert dcgm._read_host_uptime_seconds(str(uptime_file)) == pytest.approx(5745600.42)
+    assert dcgm._read_node_uptime_seconds() == pytest.approx(5745600.42)
+    clock.assert_called_once_with(7)
 
 
-def test_read_host_uptime_seconds_rejects_empty_file(tmp_path: Path) -> None:
-    uptime_file = tmp_path / "uptime"
-    uptime_file.write_text("")
+def test_gpus_with_unknown_versions_are_healthy_within_the_limit(watchers, uptime) -> None:
+    """Within the limit the versions do not matter, so a fault from before a reboot can clear."""
+    uptime.return_value = 0.5 * HOUR
+    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios="")}
 
-    with pytest.raises(IndexError):
-        dcgm._read_host_uptime_seconds(str(uptime_file))
+    result = watcher._evaluate_uptime_limit([0, 1])
+
+    assert result.status == dcgm.types.HealthStatus.PASS
+    assert result.evaluated_gpu_ids == {0, 1}
+
+
+def test_failed_gpu_clears_after_reconnect_with_a_fixed_driver(watchers, uptime) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions(driver=AFFECTED_DRIVER)}
+    assert set(watcher._evaluate_uptime_limit([0]).entity_failures) == {0}
+
+    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER)}
+    result = watcher._evaluate_uptime_limit([0])
+
+    assert result.status == dcgm.types.HealthStatus.PASS
+    assert result.evaluated_gpu_ids == {0}
+
+
+def test_unevaluated_gpus_past_the_limit_are_logged_once(watchers, uptime, caplog) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions()}
+
+    with caplog.at_level("WARNING"):
+        watcher._evaluate_uptime_limit([0, 1])
+        watcher._evaluate_uptime_limit([0, 1])
+
+    warnings = [r for r in caplog.records if "not evaluated" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "[1]" in warnings[0].getMessage()
+
+
+def test_refresh_reads_missing_versions_after_the_retry_interval(watchers, monkeypatch: pytest.MonkeyPatch) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions()}
+    watcher._get_gpu_versions = MagicMock(return_value={0: _versions(driver=FIXED_DRIVER), 1: _versions()})
+    now = 1000.0
+    monkeypatch.setattr(dcgm.time, "monotonic", lambda: now)
+    watcher._gpu_versions_retry_at = now + 1
+
+    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+    watcher._get_gpu_versions.assert_not_called()
+
+    now += 2
+    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+
+    # Only the GPU that was missing is updated; GPU 0 keeps the versions it had.
+    assert watcher._gpu_versions == {0: _versions(), 1: _versions()}
+    assert watcher._gpu_versions_retry_at == now + dcgm.GPU_VERSIONS_RETRY_SECONDS
+
+
+def test_refresh_does_nothing_when_versions_are_complete(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    watcher._gpu_versions = {0: _versions(), 1: _versions(driver=FIXED_DRIVER)}
+    watcher._get_gpu_versions = MagicMock()
+
+    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+
+    watcher._get_gpu_versions.assert_not_called()
 
 
 def _dcgm_handle(identifiers_by_gpu: dict[int, SimpleNamespace]) -> MagicMock:
@@ -273,6 +339,23 @@ def test_get_gpu_versions_decodes_dcgm_identifiers(watchers) -> None:
     }
 
 
+@pytest.mark.parametrize("marker", ["<<<NULL>>>", "<<<NOT_FOUND>>>", "<<<NOT_SUPPORTED>>>", "<<<NOT_PERM>>>"])
+def test_dcgm_unavailable_markers_read_as_unknown(marker: str) -> None:
+    assert dcgm._identifier_text(marker.encode()) == ""
+    assert dcgm._identifier_text(marker) == ""
+
+
+def test_unsupported_vbios_with_unlisted_driver_is_not_evaluated(watchers, uptime) -> None:
+    """A vBIOS that DCGM cannot report could be a listed one, so the GPU is not known to be healthy."""
+    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watchers.append(watcher)
+    handle = _dcgm_handle({0: SimpleNamespace(driverVersion=FIXED_DRIVER.encode(), vbios=b"<<<NOT_SUPPORTED>>>")})
+    watcher._gpu_versions = watcher._get_gpu_versions(handle)
+
+    assert watcher._gpu_versions == {0: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios="")}
+    assert watcher._evaluate_uptime_limit([0]) is None
+
+
 def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
@@ -292,6 +375,19 @@ def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -
 
     assert set(versions) == {0, 2}
     assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 1
+
+
+def test_get_gpu_versions_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = _dcgm_handle(
+        {
+            0: SimpleNamespace(vbios=AFFECTED_VBIOS.encode()),
+            1: SimpleNamespace(driverVersion=AFFECTED_DRIVER.encode(), vbios=AFFECTED_VBIOS.encode()),
+        }
+    )
+
+    assert set(watcher._get_gpu_versions(handle)) == {1}
 
 
 def test_get_gpu_versions_discovery_failure_returns_empty_map(watchers) -> None:
