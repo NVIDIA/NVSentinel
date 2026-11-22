@@ -432,6 +432,9 @@ IPv6 section in docs/configuration/README.md.
 {{- if not (kindIs "string" $version) -}}
 {{- fail (printf "gpu-health-monitor.uptimeLimit.%s entries must be quoted strings, got %s %v; for example, an unquoted 580.10 is read as 580.1" $key (kindOf $version) $version) -}}
 {{- end -}}
+{{- if contains "," $version -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.%s entries must not contain a comma, got %q; list each version as its own entry" $key $version) -}}
+{{- end -}}
 {{- if trim $version -}}
 {{- $versions = add1 $versions -}}
 {{- end -}}

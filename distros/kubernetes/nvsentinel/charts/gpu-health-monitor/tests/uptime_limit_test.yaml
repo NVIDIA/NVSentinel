@@ -115,3 +115,25 @@ tests:
       - matchRegex:
           path: data["config.ini"]
           pattern: "MaxUptimeHours = 1512\\.5\\n"
+
+  - it: rejects a version entry that contains a comma
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedDriverVersions: [", "]
+      uptimeLimit.maxUptimeHours: 1512
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.affectedDriverVersions entries must not contain a comma, got ", "; list each version as its own entry
+
+  - it: accepts a blank entry beside a real version
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedDriverVersions: ["570.133.20", ""]
+      uptimeLimit.maxUptimeHours: 1512
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "AffectedDriverVersions = 570\\.133\\.20,\\n"
+
