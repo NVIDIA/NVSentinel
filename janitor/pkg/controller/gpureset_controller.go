@@ -727,31 +727,16 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 				managerName, gr.Spec.NodeName, err)
 		}
 
-		if len(withoutGPUClients(running)) == 0 {
-			found, err := r.serviceManagerFound(ctx)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// A GPU Operator upgrade or reinstall can remove every operand pod for a while. A wrong namespace stays
-			// empty, so wait for the GPUReset timeout before failing.
-			if !found {
-				if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
-					return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceManagerNotFound,
-						fmt.Sprintf("No %s managed service pod exists in namespace %s on any node for the GPUReset "+
-							"timeout; check the service manager namespace", managerName, r.serviceManager.Spec.Namespace))
-				}
-
-				log.Info("Waiting for a managed service pod in the service manager namespace", "node", gr.Spec.NodeName,
-					"manager", managerName, "namespace", r.serviceManager.Spec.Namespace, "recheck_after", 10*time.Second)
-
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-			}
-		}
-
 		if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "the teardown",
 			v1alpha1.ReasonServiceTeardownTimeoutExceeded); wait {
 			return res, err
+		}
+
+		// A driver upgrade holds the labels and removes the operand pods, so the labels are checked first.
+		if len(withoutGPUClients(running)) == 0 {
+			if res, wait, err := r.waitForServiceManager(ctx, gr); wait {
+				return res, err
+			}
 		}
 
 		nodeLabels := make([]string, 0, len(running))
@@ -1731,9 +1716,40 @@ func (r *GPUResetReconciler) runningApps(
 	return running, nil
 }
 
+// waitForServiceManager waits while no pod of the service manager exists in its namespace. A GPU Operator upgrade or
+// reinstall can remove every operand pod for a while. A wrong namespace stays empty, so the GPUReset fails with
+// ServiceManagerNotFound after the GPUReset timeout.
+func (r *GPUResetReconciler) waitForServiceManager(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+) (ctrl.Result, bool, error) {
+	found, err := r.serviceManagerFound(ctx)
+	if err != nil {
+		return ctrl.Result{}, true, err
+	}
+
+	if found {
+		return ctrl.Result{}, false, nil
+	}
+
+	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+		res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceManagerNotFound,
+			fmt.Sprintf("No %s managed service pod exists in namespace %s on any node for the GPUReset timeout; "+
+				"check the service manager namespace", r.serviceManager.Name, r.serviceManager.Spec.Namespace))
+
+		return res, true, err
+	}
+
+	log.FromContext(ctx).Info("Waiting for a managed service pod in the service manager namespace",
+		"node", gr.Spec.NodeName, "manager", r.serviceManager.Name, "namespace", r.serviceManager.Spec.Namespace,
+		"recheck_after", 10*time.Second)
+
+	return ctrl.Result{RequeueAfter: 10 * time.Second}, true, nil
+}
+
 // serviceManagerFound reports whether a pod of any managed service exists in the service manager namespace, on any
-// node, in any phase. A manager without managed services is always found. A wrong namespace finds no pods, and the teardown would
-// otherwise skip and reset the GPU while the services still hold it.
+// node, in any phase. A manager without managed services is always found. A wrong namespace finds no pods, and the
+// teardown would otherwise skip and reset the GPU while the services still hold it.
 func (r *GPUResetReconciler) serviceManagerFound(ctx context.Context) (bool, error) {
 	apps := withoutGPUClients(r.serviceManager.Spec.Apps)
 	if len(apps) == 0 {

@@ -2529,17 +2529,27 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(updatedReset.Status.JobRef).To(BeNil())
 		}
 
-		It("should wait and then fail without changing a node label when no managed service pod is in the namespace", func() {
-			nodeLabels := draDeployLabels()
-			maps.Copy(nodeLabels, devicePluginDeployLabels())
-			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
-			createReset()
+		// reconcileUntilWaitingForServiceManager reconciles until the GPUReset is Ready and the reconcile requeues for
+		// the service manager wait. It returns the node labels read after each reconcile.
+		reconcileUntilWaitingForServiceManager := func() []map[string]string {
+			var observed []map[string]string
 
-			By("Waiting while no managed service pod is in the namespace")
-			observed := reconcileTimes(5)
-			expectWaitingForServiceManager()
+			Eventually(func(g Gomega) {
+				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				observed = append(observed, getNodeLabels())
 
-			By("Moving the start time back past the timeout")
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
+				g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+			}, "20s", "100ms").Should(Succeed())
+
+			return append(observed, reconcileTimes(3)...)
+		}
+
+		// ageStartTime moves the StartTime of the GPUReset back past the timeout and waits for the cache.
+		ageStartTime := func() {
 			waiting := getReset()
 			Expect(waiting.Status.StartTime).NotTo(BeNil())
 			oldStart := metav1.NewTime(time.Now().Add(-2 * reconciler.Config.Timeout))
@@ -2551,6 +2561,20 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(cached.Status.StartTime).NotTo(BeNil())
 				g.Expect(cached.Status.StartTime.Time).To(BeTemporally("~", oldStart.Time, time.Second))
 			}, "10s", "100ms").Should(Succeed())
+		}
+
+		It("should wait and then fail without changing a node label when no managed service pod is in the namespace", func() {
+			nodeLabels := draDeployLabels()
+			maps.Copy(nodeLabels, devicePluginDeployLabels())
+			createNodeWithOperandPods(nodeLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createReset()
+
+			By("Waiting while no managed service pod is in the namespace")
+			observed := reconcileUntilWaitingForServiceManager()
+			expectWaitingForServiceManager()
+
+			By("Moving the start time back past the timeout")
+			ageStartTime()
 
 			By("Failing with ServiceManagerNotFound")
 			Eventually(func(g Gomega) {
@@ -2575,6 +2599,34 @@ var _ = Describe("GPUReset Controller", func() {
 			expectUnchanged(observed, nodeLabels, nil)
 		})
 
+		It("should wait for held node labels before it looks for the service manager", func() {
+			heldLabels := devicePluginDeployLabels()
+			heldLabels["nvidia.com/gpu.deploy.dcgm"] = "paused-for-driver-upgrade"
+			createNodeWithOperandPods(heldLabels, []map[string]string{{"app": "nvidia-operator-validator"}})
+			createReset()
+
+			By("Waiting for the held label, not for the service manager")
+			Eventually(func(g Gomega) {
+				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(result.RequeueAfter).To(Equal(3 * time.Second))
+			}, "20s", "100ms").Should(Succeed())
+			expectWaitingForServiceManager()
+
+			By("Failing on the held label after the timeout")
+			ageStartTime()
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+			}, "20s", "100ms").Should(Succeed())
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonServiceTeardownTimeoutExceeded)))
+			Expect(getNodeLabels()).To(Equal(heldLabels))
+		})
+
 		It("should continue when a managed service pod appears in the namespace during the wait", func() {
 			nodeLabels := draDeployLabels()
 			maps.Copy(nodeLabels, devicePluginDeployLabels())
@@ -2582,7 +2634,7 @@ var _ = Describe("GPUReset Controller", func() {
 			createReset()
 
 			By("Waiting while no managed service pod is in the namespace")
-			reconcileTimes(3)
+			reconcileUntilWaitingForServiceManager()
 			expectWaitingForServiceManager()
 
 			By("Starting a managed service pod on another node and reconciling until the reset is complete")
