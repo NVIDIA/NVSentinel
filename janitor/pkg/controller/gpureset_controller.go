@@ -608,6 +608,10 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 
 	managerName := r.serviceManager.Name
 
+	if res, refused, err := r.refuseInServiceNode(ctx, gr); refused {
+		return res, err
+	}
+
 	if len(r.serviceManager.Spec.Apps) == 0 {
 		log.V(1).Info("GPU services manager has no apps specified, skipping service teardown", "manager", managerName,
 			"node", gr.Spec.NodeName)
@@ -749,6 +753,38 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	log.Info("Teardown of managed service pods complete", "node", gr.Spec.NodeName, "manager", managerName)
 
 	return ctrl.Result{}, nil
+}
+
+// refuseInServiceNode fails the GPUReset with NodeInService before the teardown starts when the node is neither
+// cordoned nor quarantined. It runs with every service manager and also without one, so no reset Job is created on
+// such a node. A missing node is left to the teardown, which fails the GPUReset with NodeNotFound.
+func (r *GPUResetReconciler) refuseInServiceNode(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+) (ctrl.Result, bool, error) {
+	if r.Config.RequireNodeOutOfService == nil || !*r.Config.RequireNodeOutOfService ||
+		meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesTornDown)) != nil {
+		return ctrl.Result{}, false, nil
+	}
+
+	node, err := r.getNode(ctx, gr.Spec.NodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, false, nil
+		}
+
+		return ctrl.Result{}, true, fmt.Errorf("failed to get node %s for the service state check: %w",
+			gr.Spec.NodeName, err)
+	}
+
+	if !refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+		return ctrl.Result{}, false, nil
+	}
+
+	res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonNodeInService,
+		"Node is neither cordoned nor quarantined, refusing to reset its GPUs")
+
+	return res, true, err
 }
 
 // startTearDown finds the managed services that have a pod on the node and records them in the status, in the
@@ -2140,6 +2176,8 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonInternalError:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonNodeInService:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonServiceManagerNotFound:
 		return v1alpha1.ResetFailed

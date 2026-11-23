@@ -795,3 +795,39 @@ gpuResetController:
 	assert.Nil(t, config)
 	assert.Contains(t, err.Error(), "resetJob.jobTemplatePatch")
 }
+
+func TestLoadConfig_RequireNodeOutOfService(t *testing.T) {
+	load := func(t *testing.T, content string) *Config {
+		t.Helper()
+
+		configPath := filepath.Join(t.TempDir(), "janitor-config.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte(content), 0644))
+
+		config, err := LoadConfig(configPath, testNamespace)
+		require.NoError(t, err)
+
+		return config
+	}
+
+	t.Run("defaults to true for every controller", func(t *testing.T) {
+		config := load(t, "")
+		assert.True(t, *config.Global.RequireNodeOutOfService)
+		assert.True(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.True(t, *config.TerminateNode.RequireNodeOutOfService)
+		assert.True(t, *config.GPUReset.RequireNodeOutOfService)
+	})
+
+	t.Run("the global value applies to every controller", func(t *testing.T) {
+		config := load(t, "global:\n  requireNodeOutOfService: false\n")
+		assert.False(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.False(t, *config.TerminateNode.RequireNodeOutOfService)
+		assert.False(t, *config.GPUReset.RequireNodeOutOfService)
+	})
+
+	t.Run("a controller value overrides the global value", func(t *testing.T) {
+		config := load(t, "global:\n  requireNodeOutOfService: false\n"+
+			"rebootNodeController:\n  requireNodeOutOfService: true\n")
+		assert.True(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.False(t, *config.TerminateNode.RequireNodeOutOfService)
+	})
+}
