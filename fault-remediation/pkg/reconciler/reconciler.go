@@ -222,32 +222,60 @@ func (r *FaultRemediationReconciler) completeEventSession(
 	r.eventSessions.Delete(eventID)
 }
 
-func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
-	healthEventWithStatus model.HealthEventWithStatus,
-	groupConfig *common.EquivalenceGroupConfig,
-) (bool, error) {
-	action := healthEventWithStatus.HealthEvent.RecommendedAction
-	nodeName := healthEventWithStatus.HealthEvent.NodeName
-
+// skipReasonWithoutGroup returns why an event needs no remediation when that can be decided
+// without its equivalence group, or "" otherwise.
+func skipReasonWithoutGroup(ctx context.Context, healthEventWithStatus model.HealthEventWithStatus) string {
 	span := tracing.SpanFromContext(ctx)
 
-	if action == protos.RecommendedAction_NONE {
+	if healthEventWithStatus.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE {
 		slog.InfoContext(ctx, "Skipping event for node: recommended action is NONE (no remediation needed)",
-			"node", nodeName)
+			"node", healthEventWithStatus.HealthEvent.NodeName)
+		span.SetAttributes(attribute.String("fault_remediation.skip_reason", "recommended_action_none"))
 
-		span.SetAttributes(
-			attribute.String("fault_remediation.skip_reason", "recommended_action_none"),
-		)
-
-		return true, nil
+		return "recommended_action_none"
 	}
 
 	if healthEventWithStatus.HealthEventStatus != nil && healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
 		healthEventWithStatus.HealthEventStatus.FaultRemediated.GetValue() {
-		span.SetAttributes(
-			attribute.String("fault_remediation.skip_reason", "already_remediated"),
-		)
+		span.SetAttributes(attribute.String("fault_remediation.skip_reason", "already_remediated"))
 
+		return "already_remediated"
+	}
+
+	return ""
+}
+
+// trySkipFinishedEvent acknowledges an event that needs no remediation, using only checks that
+// do not need an equivalence group: the event snapshot, then the current datastore record.
+func (r *FaultRemediationReconciler) trySkipFinishedEvent(
+	ctx context.Context,
+	healthEventWithStatus *events.HealthEventDoc,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+	nodeName string,
+) (ctrl.Result, error, bool) {
+	if skipReasonWithoutGroup(ctx, healthEventWithStatus.HealthEventWithStatus) != "" {
+		if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+			return ctrl.Result{}, err, true
+		}
+
+		return ctrl.Result{}, nil, true
+	}
+
+	return r.trySkipResolvedEvent(ctx, healthEventStore, eventWithToken, watcherInstance,
+		healthEventWithStatus.HealthEvent, healthEventWithStatus.ID)
+}
+
+func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
+	healthEventWithStatus model.HealthEventWithStatus,
+	groupConfig *common.EquivalenceGroupConfig,
+) (bool, error) {
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+
+	span := tracing.SpanFromContext(ctx)
+
+	if skipReasonWithoutGroup(ctx, healthEventWithStatus) != "" {
 		return true, nil
 	}
 
@@ -1035,6 +1063,13 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
 		healthEvent)
 	if err != nil {
+		// A finished event needs no entity. Retrying it would never stop, so apply the
+		// checks that do not depend on the group before treating the failure as retryable.
+		if res, skipErr, done := r.trySkipFinishedEvent(ctx, healthEventWithStatus, eventWithToken, watcherInstance,
+			healthEventStore, nodeName); done {
+			return res, skipErr
+		}
+
 		metrics.ProcessingErrors.WithLabelValues("impacted_entity_selection_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error selecting impacted entity for remediation, retrying event",
 			"error", err, "event", healthEventWithStatus.ID, "node", nodeName)

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"testing"
 	"time"
 
@@ -3218,6 +3219,52 @@ func (m *scopedResetClient) GetConfig() *config.TomlConfig {
 	}}
 }
 
+func TestHandleRemediationEvent_NoValidScopedEntity_FinishedEventIsAcknowledged(t *testing.T) {
+	remediated := true
+	tests := []struct {
+		name   string
+		action protos.RecommendedAction
+		status *protos.HealthEventStatus
+	}{
+		{"already remediated", protos.RecommendedAction_COMPONENT_RESET,
+			&protos.HealthEventStatus{FaultRemediated: wrapperspb.Bool(remediated)}},
+		{"recommended action none", protos.RecommendedAction_NONE, &protos.HealthEventStatus{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A finished event needs no entity, so a missing one must not keep it retrying.
+			r := NewFaultRemediationReconciler(nil, nil, nil,
+				ReconcilerConfig{RemediationClient: &scopedResetClient{}}, false)
+			doc := &events.HealthEventDoc{
+				ID: "finished-without-scope",
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
+						NodeName: "node-a", RecommendedAction: tt.action,
+						EntitiesImpacted: []*protos.Entity{{EntityType: "GPU_UUID"}},
+					},
+					HealthEventStatus: tt.status,
+				},
+			}
+			watcher := &MockChangeStreamWatcher{}
+			store := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+					t.Fatal("a finished event must not write status or a decision")
+					return nil
+				},
+			}
+			before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			result, err := r.handleRemediationEvent(context.Background(), doc,
+				datastore.EventWithToken{ResumeToken: []byte("finished-token")}, watcher, store)
+			require.NoError(t, err)
+			require.True(t, result.IsZero())
+			_, processed, _, _ := watcher.GetCallCounts()
+			require.Equal(t, 1, processed, "a finished event must be acknowledged once")
+			after := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			require.Equal(t, before, after, "a finished event is not a selection error")
+		})
+	}
+}
+
 func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3251,8 +3298,9 @@ func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t 
 			}
 			before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
 			for range 2 {
+				// A non-empty token, so an accidental acknowledgement would be counted.
 				result, err := r.handleRemediationEvent(context.Background(), doc,
-					datastore.EventWithToken{}, watcher, store)
+					datastore.EventWithToken{ResumeToken: []byte("missing-scope-token")}, watcher, store)
 				require.ErrorContains(t, err, "no non-empty impacted entity of type GPU_UUID")
 				require.True(t, result.IsZero())
 				require.Nil(t, doc.HealthEventStatus.RemediationDecision)
