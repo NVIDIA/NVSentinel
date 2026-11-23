@@ -18,6 +18,7 @@ release:
   namespace: nvsentinel
 templates:
   - charts/node-drainer/templates/configmap.yaml
+  - charts/fault-remediation/templates/configmap.yaml
   - templates/partial-remediation-entity-types-validation.yaml
 set:
   global.nodeDrainer.enabled: true
@@ -160,3 +161,113 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0].deviceClasses has an empty name.
+
+  - it: renders the default GPU_UUID entry into the fault-remediation config
+    template: charts/fault-remediation/templates/configmap.yaml
+    set:
+      global.faultRemediation.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\n\[partialRemediationEntityTypes\]\n  \[partialRemediationEntityTypes\.GPU_UUID\]\n    scopedActions = \["COMPONENT_RESET"\]\n'
+
+  # Scope check at install. The chart default maps COMPONENT_RESET to RebootNode, an action on the full node.
+  - it: rejects a scoped action that acts on the full node when partial drains are on
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.partialDrainEnabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "Partial drains are on and COMPONENT_RESET is in the scopedActions of GPU_UUID, so its partial drain evicts only the pods that use one device. fault-remediation.maintenance.actions.COMPONENT_RESET must set impactedEntityScope: GPU_UUID, so that the repair acts on that device only. Change the action, or remove it from scopedActions."
+
+  - it: rejects a scoped action scoped to another entity type when partial drains are on
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      node-drainer.partialDrainEnabled: true
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: ["example.com/accel"]
+        scopedActions: ["accel-reset"]
+      fault-remediation.maintenance.actions.COMPONENT_RESET.impactedEntityScope: GPU_UUID
+      fault-remediation.maintenance.actions.COMPONENT_RESET.kind: GPUReset
+      fault-remediation.maintenance.actions.accel-reset:
+        kind: AccelReset
+        templateFileName: accel-reset.yaml
+        equivalenceGroup: accel-reset
+        impactedEntityScope: GPU_UUID
+    asserts:
+      - failedTemplate:
+          errorMessage: "Partial drains are on and accel-reset is in the scopedActions of ACCEL_SERIAL, so its partial drain evicts only the pods that use one device. fault-remediation.maintenance.actions.accel-reset must set impactedEntityScope: ACCEL_SERIAL, so that the repair acts on that device only. Change the action, or remove it from scopedActions."
+
+  - it: rejects a scoped action without a fault-remediation entry when partial drains are on
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.partialDrainEnabled: true
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: ["example.com/accel"]
+        scopedActions: ["accel-reset"]
+      fault-remediation.maintenance.actions.COMPONENT_RESET.impactedEntityScope: GPU_UUID
+    asserts:
+      - failedTemplate:
+          errorMessage: "Partial drains are on and accel-reset is in the scopedActions of ACCEL_SERIAL, but fault-remediation.maintenance.actions has no entry for it. Add an entry with impactedEntityScope: ACCEL_SERIAL, or remove the action from scopedActions."
+
+  - it: accepts scoped actions that repair one device when partial drains are on
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.partialDrainEnabled: true
+      fault-remediation.maintenance.actions.COMPONENT_RESET.kind: GPUReset
+      fault-remediation.maintenance.actions.COMPONENT_RESET.impactedEntityScope: GPU_UUID
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: accepts an action on the full node when partial drains are off
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: lets global.partialDrainEnabled false override node-drainer.partialDrainEnabled
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.partialDrainEnabled: false
+      node-drainer.partialDrainEnabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: skips the scope check without fault-remediation
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: false
+      global.partialDrainEnabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: skips the scope check without node-drainer
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.nodeDrainer.enabled: false
+      global.faultRemediation.enabled: true
+      global.partialDrainEnabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: rejects an impactedEntityScope that is not a configured entity type
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.faultRemediation.enabled: true
+      fault-remediation.maintenance.actions.COMPONENT_RESET.impactedEntityScope: PCI
+    asserts:
+      - failedTemplate:
+          errorMessage: fault-remediation.maintenance.actions.COMPONENT_RESET.impactedEntityScope is PCI, which is not an entity type in global.partialRemediationEntityTypes.

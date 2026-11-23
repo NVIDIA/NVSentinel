@@ -1063,6 +1063,11 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
+	// A partial drain evicted only the pods of one device. Do not run an action that stops other pods.
+	if err := checkDrainCoversAction(ctx, span, healthEventWithStatus, groupConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if err := r.recordRemediationDecision(ctx, healthEventStore, eventWithToken, healthEventWithStatus); err != nil {
 		metrics.ProcessingErrors.WithLabelValues("record_decision_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error recording remediation decision", "node", nodeName, "error", err)

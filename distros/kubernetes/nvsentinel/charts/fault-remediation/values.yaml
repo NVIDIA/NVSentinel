@@ -51,6 +51,10 @@ tolerations:
 maintenance:
   # Per-action remediation definitions
   # Key is the RecommendedAction string (e.g., "COMPONENT_RESET", "RESTART_BM")
+  # With partial drains on, each action in global.partialRemediationEntityTypes.*.scopedActions
+  # must set impactedEntityScope to the entity type that lists it, for example a GPUReset with
+  # impactedEntityScope: GPU_UUID for COMPONENT_RESET. The chart fails otherwise, because an
+  # action on the full node, such as the RebootNode below, stops pods that were not drained.
   actions:
     COMPONENT_RESET:
       apiGroup: "janitor.dgxc.nvidia.com"

@@ -57,6 +57,13 @@ data:
     [updateRetry]
     maxRetries = {{ .Values.updateRetry.maxRetries }}
     retryDelaySeconds = {{ .Values.updateRetry.retryDelaySeconds }}
+
+    {{- /* fault-remediation fails to start without the key, so the chart fails first. */}}
+    {{- $global := .Values.global | default dict }}
+    {{- if not (hasKey $global "partialRemediationEntityTypes") }}
+    {{- fail "global.partialRemediationEntityTypes is required. The chart default holds the GPU_UUID entry." }}
+    {{- end }}
+    {{- dict "partialRemediationEntityTypes" ($global.partialRemediationEntityTypes | default dict) | toToml | nindent 4 }}
     
   {{- if .Values.maintenance.templates }}
   # Multi-template files

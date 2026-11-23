@@ -57,3 +57,36 @@
 {{- $_ := set $actionOwner $action $name }}
 {{- end }}
 {{- end }}
+{{- /* Scope check at install (ADR-071). fault-remediation must repair only the device that a partial drain
+covers. An impactedEntityScope must name a configured entity type. When node-drainer and fault-remediation are
+deployed and partial drains are on, each scoped action needs a maintenance.actions entry with the same
+impactedEntityScope; an entry without it acts on the full node, which stops pods that were not drained.
+partialDrainEnabled resolves the same way node-drainer's configmap does: global overrides the subchart value. */}}
+{{- $scopeGlobal := .Values.global | default dict }}
+{{- $faultRemediationOn := ($scopeGlobal.faultRemediation | default dict).enabled }}
+{{- $nodeDrainerOn := ($scopeGlobal.nodeDrainer | default dict).enabled }}
+{{- $nodeDrainerValues := index .Values "node-drainer" | default dict }}
+{{- $globalPartialDrain := $scopeGlobal.partialDrainEnabled }}
+{{- $partialDrainRaw := ternary $globalPartialDrain $nodeDrainerValues.partialDrainEnabled (not (kindIs "invalid" $globalPartialDrain)) }}
+{{- $partialDrainOn := eq (lower (printf "%v" $partialDrainRaw)) "true" }}
+{{- $maintenanceActions := ((index .Values "fault-remediation" | default dict).maintenance | default dict).actions | default dict }}
+{{- if $faultRemediationOn }}
+{{- range $action := keys $maintenanceActions | sortAlpha }}
+{{- $scope := (index $maintenanceActions $action | default dict).impactedEntityScope }}
+{{- if and $scope (not (hasKey $types $scope)) }}
+{{- fail (printf "fault-remediation.maintenance.actions.%s.impactedEntityScope is %s, which is not an entity type in global.partialRemediationEntityTypes." $action $scope) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $faultRemediationOn $nodeDrainerOn $partialDrainOn }}
+{{- range $action := keys $actionOwner | sortAlpha }}
+{{- $entityTypeName := index $actionOwner $action }}
+{{- if not (hasKey $maintenanceActions $action) }}
+{{- fail (printf "Partial drains are on and %s is in the scopedActions of %s, but fault-remediation.maintenance.actions has no entry for it. Add an entry with impactedEntityScope: %s, or remove the action from scopedActions." $action $entityTypeName $entityTypeName) }}
+{{- end }}
+{{- $scope := (index $maintenanceActions $action | default dict).impactedEntityScope | default "" }}
+{{- if ne $scope $entityTypeName }}
+{{- fail (printf "Partial drains are on and %s is in the scopedActions of %s, so its partial drain evicts only the pods that use one device. fault-remediation.maintenance.actions.%s must set impactedEntityScope: %s, so that the repair acts on that device only. Change the action, or remove it from scopedActions." $action $entityTypeName $action $entityTypeName) }}
+{{- end }}
+{{- end }}
+{{- end }}
