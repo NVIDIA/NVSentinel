@@ -1283,8 +1283,8 @@ class DCGMWatcher:
     def _evaluate_uptime_limit(self, gpu_ids: list[int]) -> types.HealthDetails | None:
         """Fail each GPU that runs a listed version on a node past the uptime limit.
 
-        Some driver and firmware defects are deterministic in uptime. For example, a
-        timer in the driver can wrap after a fixed time, and then NVLink stops working.
+        Some firmware defects are deterministic in uptime. For example, a vBIOS defect
+        makes NVLink stop working after more than 60 days of uptime.
         Until a fixed version is installed, the mitigation is to reboot each affected
         node before the limit. A failure recommends a reboot through
         dcgmerrorsmapping.csv, so NVSentinel cordons, drains and reboots the node in

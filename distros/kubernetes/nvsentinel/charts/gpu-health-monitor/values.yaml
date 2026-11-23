@@ -117,8 +117,8 @@ dcgmFieldsMonitoring:
   gpuPowerBrakeMinConsecutivePolls: 3
 
 # GpuUptimeLimitWatch: reboot a node before a known uptime-limited defect.
-# Some GPU driver and firmware defects fail at a fixed node uptime. For example,
-# a driver timer can wrap after about 66 days, and then NVLink stops working.
+# Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS
+# defect makes NVLink fail after more than 60 days of uptime.
 # When this check is enabled, each GPU that runs a listed driver or vBIOS version
 # fails after the node uptime is more than maxUptimeHours. The failure recommends
 # RESTART_BM, so NVSentinel cordons, drains and reboots the node before the defect.
@@ -138,7 +138,7 @@ uptimeLimit:
   # Example: ["97.00.82.00.4B"]
   affectedVbiosVersions: []
   # Maximum node uptime in hours for a node with an affected GPU. Set it below
-  # the uptime at which the defect occurs, with time for a drain. Example: 1512
+  # the uptime at which the defect occurs, with time for a drain. Example: 1440
   # With --set, use --set-json for a value with a fraction.
   maxUptimeHours: 0
 

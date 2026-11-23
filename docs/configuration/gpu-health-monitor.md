@@ -352,7 +352,7 @@ While the counter is below the threshold, the GPU Health Monitor reports the GPU
 
 ## Uptime Limit for Known Defects
 
-`GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU driver and firmware defects fail at a fixed node uptime. For example, a timer in the driver wraps after approximately 66 days, and NVLink communication then fails. Until you install a fixed version, the mitigation is to reboot each affected node before it reaches that uptime.
+`GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS defect makes NVLink communication fail after more than 60 days of uptime, in some cases after 61 to 63 days. Until you install a fixed version, the mitigation is to reboot each affected node before it reaches that uptime.
 
 When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
 
@@ -367,10 +367,10 @@ gpu-health-monitor:
   uptimeLimit:
     enabled: true
     storeOnly: true
-    affectedDriverVersions:
-      - "570.133.20"
-    affectedVbiosVersions: []
-    maxUptimeHours: 1512
+    affectedDriverVersions: []
+    affectedVbiosVersions:
+      - "97.00.82.00.4B"
+    maxUptimeHours: 1440
 ```
 
 If many affected nodes started at the same time, they pass the limit at the same time. Then the [circuit breaker](../runbooks/circuit-breaker.md) can trip and stop all remediation. To prevent this, keep `storeOnly` true first and examine which nodes fail. Then reboot some of these nodes before the limit, so that their uptimes are different.
@@ -395,7 +395,7 @@ Within the limit, the GPU Health Monitor reports every GPU as healthy, also a GP
 
 ### maxUptimeHours
 
-This value is the maximum node uptime in hours for a node with an affected GPU. Set it below the uptime at which the defect occurs. Leave enough time to drain and reboot every affected node. For example, for a defect at 66 days (1584 hours), a value of `1512` leaves three days.
+This value is the maximum node uptime in hours for a node with an affected GPU. Set it below the uptime at which the defect occurs. Leave enough time to drain and reboot every affected node. For example, for a defect that can occur after 61 days (1464 hours), a value of `1440` leaves one day.
 
 ## DCGM Startup Gate
 
