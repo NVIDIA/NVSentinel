@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.expectedDeviceCounts.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,6 +19,9 @@ metadata:
   labels:
     {{- include "labeler.labels" . | nindent 4 }}
 data:
+  dcgm-version-lanes.toml: |
+{{ include "labeler.dcgmVersionLanesConfig" . | indent 4 }}
+  {{- if .Values.expectedDeviceCounts.enabled }}
   expected-device-counts.toml: |
 {{ include "labeler.expectedDeviceCountsConfig" . | indent 4 }}
-{{- end }}
+  {{- end }}

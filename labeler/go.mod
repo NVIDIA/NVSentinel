@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	cel.dev/cel-go v0.33.4
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1

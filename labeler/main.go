@@ -81,9 +81,9 @@ func run() error {
 		return fmt.Errorf("load expected device counts config: %w", err)
 	}
 
-	dcgmVersionLanes, err := labeler.ParseDCGMVersionLanes(options.dcgmVersionLanes)
+	dcgmVersionLanes, err := labeler.LoadDCGMVersionLanes(options.dcgmVersionLanesConfigFile)
 	if err != nil {
-		return fmt.Errorf("invalid --dcgm-version-lanes: %w", err)
+		return fmt.Errorf("invalid --dcgm-version-lanes-config-file: %w", err)
 	}
 
 	srv := server.NewServer(
@@ -122,7 +122,7 @@ type cliOptions struct {
 	kubeconfig                     string
 	metricsPort                    string
 	dcgmAppLabel                   string
-	dcgmVersionLanes               string
+	dcgmVersionLanesConfigFile     string
 	driverAppLabel                 string
 	gkeInstallerAppLabel           string
 	kataLabel                      string
@@ -155,10 +155,10 @@ func parseFlags() cliOptions {
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm,nvidia-dcgm-dra",
 		"Comma-separated app label values for DCGM pods")
-	dcgmVersionLanes := flag.String("dcgm-version-lanes", "",
-		`Required. JSON list of DCGM version lanes, each {"label": "<value>", "expression": "<CEL>"}. `+
-			"A node gets the label of the first lane whose expression is true. Expressions can use "+
-			"version (major, minor, patch from the DCGM image tag).")
+	dcgmVersionLanesConfigFile := flag.String("dcgm-version-lanes-config-file", "",
+		"Required. Path to a TOML file of DCGM version lanes, each a [[lanes]] table with a label and a CEL "+
+			"expression. A node gets the label of the first lane whose expression is true. Expressions can use "+
+			"version, the Semver from the DCGM image tag.")
 	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
 		"nvidia-driver-installer", "App label value for GKE driver installer pods")
@@ -183,7 +183,7 @@ func parseFlags() cliOptions {
 		kubeconfig:                     *kubeconfig,
 		metricsPort:                    *metricsPort,
 		dcgmAppLabel:                   *dcgmAppLabel,
-		dcgmVersionLanes:               *dcgmVersionLanes,
+		dcgmVersionLanesConfigFile:     *dcgmVersionLanesConfigFile,
 		driverAppLabel:                 *driverAppLabel,
 		gkeInstallerAppLabel:           *gkeInstallerAppLabel,
 		kataLabel:                      *kataLabel,

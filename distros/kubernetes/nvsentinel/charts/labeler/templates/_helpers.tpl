@@ -85,6 +85,25 @@ true
 {{- end -}}
 
 {{/*
+DCGM version lanes configuration content. One [[lanes]] table per lane, in
+values order. The expression is a TOML literal string, so CEL quotes need no
+escaping.
+*/}}
+{{- define "labeler.dcgmVersionLanesConfig" -}}
+{{- range $i, $lane := .Values.dcgmVersionLanes }}
+{{- if not (kindIs "string" $lane.label) }}
+{{- fail (printf "labeler.dcgmVersionLanes[%d].label must be a quoted string" $i) }}
+{{- end }}
+{{- if $i }}{{ "\n\n" }}{{ end -}}
+[[lanes]]
+label = {{ $lane.label | quote }}
+expression = '''
+{{ trimSuffix "\n" $lane.expression }}
+'''
+{{- end }}
+{{- end }}
+
+{{/*
 Expected device-count configuration content.
 */}}
 {{- define "labeler.expectedDeviceCountsConfig" -}}

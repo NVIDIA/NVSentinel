@@ -1425,16 +1425,19 @@ labeler:
   # The labeler evaluates the lanes in order. A node gets the label of the first lane whose
   # CEL expression is true. A node that matches no lane gets no label.
   # Each expression must return bool and can use one variable:
-  #   version: map with the int keys major, minor and patch, from the DCGM image tag
+  #   version: Semver from the DCGM image tag, for example 4.8.0 from 4.8.0-1-ubuntu24.04
+  # Semver functions: semver('<X.Y.Z>'), version.major(), .minor(), .patch(),
+  #   .isLessThan(<Semver>), .isGreaterThan(<Semver>), .compareTo(<Semver>)
+  # The chart writes the lanes to a TOML file in the labeler ConfigMap.
   # Each label must match the nodeSelector of a gpu-health-monitor DaemonSet.
   # Quote all labels so that YAML keeps them as strings.
   dcgmVersionLanes:
     - label: "3.x"
-      expression: "version.major == 3"
+      expression: "version.major() == 3"
     - label: "4.x"
-      expression: "version.major == 4 && version.minor < 8"
+      expression: "version.major() == 4 && version.isLessThan(semver('4.8.0'))"
     - label: "48.x"
-      expression: "version.major > 4 || (version.major == 4 && version.minor >= 8)"
+      expression: "!version.isLessThan(semver('4.8.0'))"
 
   # Driver pod discovery
   # Value of the `app` pod label used to find the GPU Operator driver pod on each node.

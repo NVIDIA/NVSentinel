@@ -98,11 +98,11 @@ Maps the DCGM pod image on a node to the `nvsentinel.dgxc.nvidia.com/dcgm.versio
 labeler:
   dcgmVersionLanes:
     - label: "3.x"
-      expression: "version.major == 3"
+      expression: "version.major() == 3"
     - label: "4.x"
-      expression: "version.major == 4 && version.minor < 8"
+      expression: "version.major() == 4 && version.isLessThan(semver('4.8.0'))"
     - label: "48.x"
-      expression: "version.major > 4 || (version.major == 4 && version.minor >= 8)"
+      expression: "!version.isLessThan(semver('4.8.0'))"
 ```
 
 With the default lanes:
@@ -114,11 +114,25 @@ With the default lanes:
 | 4.0.0 to earlier than 4.8.0 | `4.x` |
 | 4.8.0 and later, including 5.x | `48.x` |
 
+The chart writes the lanes to the `dcgm-version-lanes.toml` file in the labeler ConfigMap. The labeler reads this file at startup.
+
 An expression can use one variable:
 
 | Variable | Type | Value |
 |---|---|---|
-| `version` | `map(string, int)` | `major`, `minor` and `patch` from the DCGM image tag, for example `version.minor` |
+| `version` | Semver | The DCGM version from the image tag |
+
+An expression can use these functions:
+
+| Function | Returns | Example |
+|---|---|---|
+| `semver(string)` | Semver | `semver('4.8.0')`. A missing minor or patch version counts as 0, so `semver('4.9')` is 4.9.0. |
+| `<Semver>.major()`, `.minor()`, `.patch()` | int | `version.minor() >= 8` |
+| `<Semver>.isLessThan(<Semver>)` | bool | `version.isLessThan(semver('4.8.0'))` |
+| `<Semver>.isGreaterThan(<Semver>)` | bool | `version.isGreaterThan(semver('4.8.0'))` |
+| `<Semver>.compareTo(<Semver>)` | int: -1, 0 or 1 | `version.compareTo(semver('4.8.1')) == 0` |
+
+You can also compare two Semver values with `==` and `!=`, for example `version == semver('4.8.1')`.
 
 For example, to give DCGM 4.9.0 and later their own lane, add a lane and limit the `48.x` lane to 4.8:
 
@@ -126,23 +140,23 @@ For example, to give DCGM 4.9.0 and later their own lane, add a lane and limit t
 labeler:
   dcgmVersionLanes:
     - label: "3.x"
-      expression: "version.major == 3"
+      expression: "version.major() == 3"
     - label: "4.x"
-      expression: "version.major == 4 && version.minor < 8"
+      expression: "version.major() == 4 && version.isLessThan(semver('4.8.0'))"
     - label: "48.x"
-      expression: "version.major == 4 && version.minor == 8"
+      expression: "!version.isLessThan(semver('4.8.0')) && version.isLessThan(semver('4.9.0'))"
     - label: "49.x"
-      expression: "version.major > 4 || (version.major == 4 && version.minor >= 9)"
+      expression: "!version.isLessThan(semver('4.9.0'))"
 ```
 
 Rules:
 
 - Each `label` must match the `nodeSelector` of a GPU Health Monitor DaemonSet. If no DaemonSet matches, the node gets no GPU Health Monitor pod, and nothing reports an error.
-- `label` must be a valid Kubernetes label value. Each `label` must be unique. Quote it in YAML: an unquoted number, for example `5`, is not a string, and the labeler rejects it.
+- `label` must be a valid Kubernetes label value. Each `label` must be unique. Quote it in YAML: an unquoted number, for example `5`, is not a string, and the chart fails to render.
 - `expression` must return `bool`.
-- An image tag without a full `X.Y.Z` version, for example `dcgm:4.8-ubuntu24.04`, counts as `<major>.0.0`. The labeler logs a warning.
-- The labeler compiles and type-checks the expressions at startup. A missing or invalid configuration stops the labeler with an `invalid --dcgm-version-lanes` error.
-- If an expression fails at runtime, for example because it reads a key that `version` does not have, the labeler logs a warning and skips that lane.
+- The labeler reads only the version core from the image tag: the major, minor and patch numbers after `dcgm:`. It ignores the rest of the tag. For example, `dcgm:4.8.0-1-ubuntu24.04` is 4.8.0. A missing minor or patch version counts as 0, so `dcgm:4.8-ubuntu24.04` is 4.8.0.
+- The labeler compiles and type-checks the expressions at startup. A missing or invalid configuration stops the labeler with an `invalid --dcgm-version-lanes-config-file` error.
+- If an expression fails at runtime, for example because `semver()` gets a string that is not a version, the labeler logs a warning and skips that lane.
 - In `external-hostengine` and `embedded-mode`, the labeler keeps an existing `dcgm.version` label only if its value is one of the configured labels.
 
 ## Driver Pod Discovery

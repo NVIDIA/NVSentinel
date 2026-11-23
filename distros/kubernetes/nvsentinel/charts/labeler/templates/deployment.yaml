@@ -27,15 +27,14 @@ spec:
       {{- include "labeler.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- if or .Values.podAnnotations .Values.expectedDeviceCounts.enabled }}
       annotations:
+        checksum/dcgm-version-lanes-config: {{ include "labeler.dcgmVersionLanesConfig" . | sha256sum }}
         {{- if .Values.expectedDeviceCounts.enabled }}
         checksum/expected-device-counts-config: {{ include "labeler.expectedDeviceCountsConfig" . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "labeler.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
@@ -74,7 +73,8 @@ spec:
             {{- if .Values.dcgmAppLabel }}
             - "--dcgm-app-label={{ .Values.dcgmAppLabel }}"
             {{- end }}
-            - {{ printf "--dcgm-version-lanes=%s" (toRawJson .Values.dcgmVersionLanes) | quote }}
+            - "--dcgm-version-lanes-config-file"
+            - "/etc/nvsentinel/labeler/dcgm-version-lanes.toml"
             {{- if .Values.driverAppLabel }}
             - "--driver-app-label={{ .Values.driverAppLabel }}"
             {{- end }}
@@ -110,10 +110,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          {{- if or .Values.global.auditLogging.enabled .Values.expectedDeviceCounts.enabled }}
           volumeMounts:
+            - name: config
+              mountPath: /etc/nvsentinel/labeler/dcgm-version-lanes.toml
+              subPath: dcgm-version-lanes.toml
+              readOnly: true
             {{- if .Values.expectedDeviceCounts.enabled }}
-            - name: expected-device-counts-config
+            - name: config
               mountPath: /etc/nvsentinel/labeler/expected-device-counts.toml
               subPath: expected-device-counts.toml
               readOnly: true
@@ -121,7 +124,6 @@ spec:
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
             {{- end }}
-          {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -132,17 +134,13 @@ spec:
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}
-      {{- if or .Values.global.auditLogging.enabled .Values.expectedDeviceCounts.enabled }}
       volumes:
-        {{- if .Values.expectedDeviceCounts.enabled }}
-        - name: expected-device-counts-config
+        - name: config
           configMap:
             name: {{ include "labeler.configMapName" . }}
-        {{- end }}
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
         {{- end }}
-      {{- end }}
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -14,28 +14,111 @@
 
 suite: dcgmVersionLanes
 templates:
+  - templates/configmap.yaml
   - templates/deployment.yaml
 tests:
-  # The labeler parses this JSON at startup, so the default lanes must render as valid JSON
-  # with string labels that match the gpu-health-monitor DaemonSet nodeSelectors.
-  - it: must pass the default lanes as JSON
+  # The labeler loads this TOML at startup. Expressions are TOML literal strings, so CEL
+  # quotes and operators stay as written.
+  - it: must write the default lanes to the ConfigMap as TOML
+    template: templates/configmap.yaml
     set:
       global.auditLogging.enabled: false
     asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: '--dcgm-version-lanes=[{"expression":"version.major == 3","label":"3.x"},{"expression":"version.major == 4 && version.minor < 8","label":"4.x"},{"expression":"version.major > 4 || (version.major == 4 && version.minor >= 8)","label":"48.x"}]'
+      - equal:
+          path: data["dcgm-version-lanes.toml"]
+          value: |
+            [[lanes]]
+            label = "3.x"
+            expression = '''
+            version.major() == 3
+            '''
 
-  # CEL operators must not be HTML-escaped, so that the pod args stay readable.
-  - it: must pass custom lanes in order without escaping CEL operators
+            [[lanes]]
+            label = "4.x"
+            expression = '''
+            version.major() == 4 && version.isLessThan(semver('4.8.0'))
+            '''
+
+            [[lanes]]
+            label = "48.x"
+            expression = '''
+            !version.isLessThan(semver('4.8.0'))
+            '''
+
+  - it: must write custom lanes in order
+    template: templates/configmap.yaml
     set:
       global.auditLogging.enabled: false
       dcgmVersionLanes:
         - label: "49.x"
-          expression: "version.major > 4 || (version.major == 4 && version.minor >= 9)"
+          expression: "!version.isLessThan(semver('4.9.0'))"
         - label: "4.x"
-          expression: "version.major == 4"
+          expression: "version.major() == 4"
+    asserts:
+      - equal:
+          path: data["dcgm-version-lanes.toml"]
+          value: |
+            [[lanes]]
+            label = "49.x"
+            expression = '''
+            !version.isLessThan(semver('4.9.0'))
+            '''
+
+            [[lanes]]
+            label = "4.x"
+            expression = '''
+            version.major() == 4
+            '''
+
+  # The lanes are required, so the ConfigMap must render without expected device counts.
+  - it: must render the ConfigMap when expected device counts are disabled
+    template: templates/configmap.yaml
+    set:
+      global.auditLogging.enabled: false
+      expectedDeviceCounts.enabled: false
+    asserts:
+      - exists:
+          path: data["dcgm-version-lanes.toml"]
+      - notExists:
+          path: data["expected-device-counts.toml"]
+
+  - it: must pass, mount and checksum the lanes file
+    template: templates/deployment.yaml
+    set:
+      global.auditLogging.enabled: false
+      expectedDeviceCounts.enabled: false
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: '--dcgm-version-lanes=[{"expression":"version.major > 4 || (version.major == 4 && version.minor >= 9)","label":"49.x"},{"expression":"version.major == 4","label":"4.x"}]'
+          content: "--dcgm-version-lanes-config-file"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "/etc/nvsentinel/labeler/dcgm-version-lanes.toml"
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /etc/nvsentinel/labeler/dcgm-version-lanes.toml
+            subPath: dcgm-version-lanes.toml
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config
+            configMap:
+              name: labeler
+      - exists:
+          path: spec.template.metadata.annotations["checksum/dcgm-version-lanes-config"]
+
+  # An unquoted number is not a string. Fail at render time instead of writing a
+  # label that the labeler cannot use.
+  - it: must fail when a label is not a quoted string
+    template: templates/deployment.yaml
+    set:
+      global.auditLogging.enabled: false
+      dcgmVersionLanes:
+        - label: 48
+          expression: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: "labeler.dcgmVersionLanes[0].label must be a quoted string"
