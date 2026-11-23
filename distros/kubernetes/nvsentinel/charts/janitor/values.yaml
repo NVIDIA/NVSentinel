@@ -127,6 +127,11 @@ config:
       expirationSeconds: 3600
   # Manual mode - if true, controllers won't send actual reboot/terminate signals
   manualMode: false
+  # Refuse a reboot, terminate or GPU reset on a node that is neither cordoned
+  # nor quarantined by NVSentinel, for example a request that outlived the
+  # quarantine of its node. Janitor defaults to true when this is not set.
+  # Set to false for requests on schedulable nodes.
+  # requireNodeOutOfService: true
   # HTTP endpoint port for exposing runtime configuration
   httpPort: 8082
   # Node exclusions - nodes matching these label selectors will be excluded from janitor operations

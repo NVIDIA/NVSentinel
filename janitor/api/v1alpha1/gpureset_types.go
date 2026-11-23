@@ -93,6 +93,8 @@ const (
 	ReasonRestoreTimeoutExceeded         GPUResetReason = "RestoreTimeoutExceeded"
 	ReasonInternalError                  GPUResetReason = "InternalError"
 	ReasonGPUAlreadyUnderMaintenance     GPUResetReason = "GPUAlreadyUnderMaintenance"
+	// ReasonNodeInService means that the node is neither cordoned nor quarantined, so janitor refuses the reset.
+	ReasonNodeInService GPUResetReason = "NodeInService"
 	// ReasonServiceManagerNotFound means that no pod of the service manager runs in its namespace on any node.
 	ReasonServiceManagerNotFound GPUResetReason = "ServiceManagerNotFound"
 )
