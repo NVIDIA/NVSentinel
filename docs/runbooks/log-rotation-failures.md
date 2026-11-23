@@ -3,10 +3,10 @@
 ## Symptoms
 
 - Prometheus alert: `LogRotationFailures` or `FileServerLowDiskSpace`
-- Metric `fileserver_log_rotation_failed_total` increasing
-- Metric `fileserver_disk_space_free_bytes` decreasing to critical levels
-- Old log files not being deleted
-- File server pod disk full
+- Metric `fileserver_log_rotation_failed_total` increases
+- Metric `fileserver_disk_space_free_bytes` decreases to critical levels
+- The cleanup does not delete old log files
+- The disk of the file server pod is full
 
 ## Diagnosis Steps
 
@@ -64,9 +64,10 @@ curl http://localhost:9002/metrics | grep fileserver_disk_space
 
 ### Issue 1: Cleanup Container Not Running
 
-**Error**: Cleanup container is missing or crashed
+**Error**: The cleanup container is missing or has crashed
 
 **Solution**:
+
 ```bash
 # Check pod events
 kubectl describe pod -n nvsentinel $FILE_SERVER_POD
@@ -76,7 +77,7 @@ helm get values -n nvsentinel nvsentinel -o yaml | grep -A 5 logCleanup
 
 # If disabled, enable it:
 # In values.yaml:
-inclusterFileServer:
+incluster-file-server:
   logCleanup:
     enabled: true
     retentionDays: 7
@@ -88,6 +89,7 @@ helm upgrade nvsentinel -n nvsentinel ./distros/kubernetes/nvsentinel -f values.
 ### Issue 2: Permission Errors
 
 **Error in logs**:
+
 ```text
 [ERROR] Cleanup operation failed: Permission denied
 find: '/usr/share/nginx/html/upload': Permission denied
@@ -96,6 +98,7 @@ find: '/usr/share/nginx/html/upload': Permission denied
 **Cause**: Incorrect file permissions or security context
 
 **Solution**:
+
 ```bash
 # Check file permissions
 kubectl exec -n nvsentinel $FILE_SERVER_POD -- ls -la /usr/share/nginx/html
@@ -110,13 +113,15 @@ kubectl logs -n nvsentinel $FILE_SERVER_POD -c init-perms
 ### Issue 3: Timeout During Cleanup
 
 **Error in logs**:
+
 ```text
 [ERROR] Cleanup operation timed out
 ```
 
-**Cause**: Too many files to process within timeout period
+**Cause**: There are too many files to process within the timeout period
 
 **Solution**:
+
 ```bash
 # Check number of files
 kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type f | wc -l
@@ -131,16 +136,17 @@ kubectl delete pod -n nvsentinel $FILE_SERVER_POD
 
 ### Issue 4: Incorrect Retention Configuration
 
-**Error**: Files not being deleted at expected age
+**Error**: The cleanup does not delete files at the expected age
 
 **Solution**:
+
 ```bash
 # Check current retention setting
 kubectl get cm -n nvsentinel file-server-log-cleanup-config -o yaml | grep LOG_RETENTION_DAYS
 
 # Update retention period
 # In Helm values:
-inclusterFileServer:
+incluster-file-server:
   logCleanup:
     retentionDays: 3  # Reduce from 7 to 3 days
 
@@ -153,9 +159,10 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -c log-cleanup -- pkill -HUP python3
 
 ### Issue 5: Disk Full - Emergency Response
 
-**Critical**: Disk is full and blocking new uploads
+**Critical**: The disk is full and blocks new uploads
 
 **Immediate action**:
+
 ```bash
 # 1. Manually delete oldest logs
 kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type f -mtime +1 -delete
@@ -176,9 +183,10 @@ kubectl get pvc -n nvsentinel -w
 
 ### Issue 6: Cleanup Running But Files Not Deleted
 
-**Error**: Cleanup reports success but files remain
+**Error**: The cleanup reports success, but files remain
 
 **Solution**:
+
 ```bash
 # Test find command manually
 kubectl exec -n nvsentinel $FILE_SERVER_POD -- find /usr/share/nginx/html -type f -mtime +7 -ls
@@ -196,6 +204,7 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -c log-cleanup -- sh -c "
 ## Resolution Steps
 
 1. **Immediate triage**:
+
    ```bash
    # Check if disk is critically low (< 5GB)
    DISK_FREE=$(kubectl exec -n nvsentinel $FILE_SERVER_POD -- df -BG /usr/share/nginx/html | tail -1 | awk '{print $4}' | sed 's/G//')
@@ -206,9 +215,10 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -c log-cleanup -- sh -c "
    fi
    ```
 
-2. **Fix root cause** using solutions above
+2. **Fix the root cause** with the solutions above
 
-3. **Verify cleanup is working**:
+3. **Verify that the cleanup works**:
+
    ```bash
    # Monitor cleanup metrics
    kubectl port-forward -n nvsentinel $FILE_SERVER_POD 9002:9002 &
@@ -219,13 +229,15 @@ kubectl exec -n nvsentinel $FILE_SERVER_POD -c log-cleanup -- sh -c "
    ```
 
 4. **Test with a dry run**:
+
    ```bash
    # See what would be deleted
    kubectl exec -n nvsentinel $FILE_SERVER_POD -- \
      find /usr/share/nginx/html -type f -mtime +7 -ls
    ```
 
-5. **Force cleanup cycle**:
+5. **Force a cleanup cycle**:
+
    ```bash
    # Trigger cleanup without waiting for next interval
    kubectl exec -n nvsentinel $FILE_SERVER_POD -c log-cleanup -- pkill -HUP python3

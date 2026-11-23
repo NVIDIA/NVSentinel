@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Labeler module automatically applies labels to Kubernetes nodes based on GPU runtime components. It watches DCGM and driver pods deployed by GPU Operator and detects Kata Containers runtime. This document covers all Helm configuration options for system administrators.
+The labeler module automatically applies labels to Kubernetes nodes, based on the GPU runtime components. It watches the DCGM and driver pods that the GPU Operator deploys, and it detects the Kata Containers runtime. This document describes all the Helm configuration options for system administrators.
 
 ## Labels Applied
 
@@ -22,7 +22,7 @@ The labeler automatically manages these node labels:
 
 ### Module Enable/Disable
 
-Controls whether the labeler module is deployed in the cluster.
+This value controls whether the chart deploys the labeler module in the cluster.
 
 ```yaml
 global:
@@ -32,7 +32,7 @@ global:
 
 ### Resources
 
-Defines CPU and memory resource requests and limits for the labeler pod.
+This value defines the CPU and memory resource requests and limits for the labeler pod.
 
 ```yaml
 labeler:
@@ -47,7 +47,7 @@ labeler:
 
 ### Logging
 
-Sets the verbosity level for labeler logs.
+This value sets the verbosity level of the labeler logs.
 
 ```yaml
 labeler:
@@ -56,7 +56,7 @@ labeler:
 
 ### Kubernetes API Rate Limits
 
-The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when the labeler needs different limits:
+The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). If the labeler needs different limits, set the component values:
 
 ```yaml
 labeler:
@@ -64,11 +64,17 @@ labeler:
   burst: 80
 ```
 
-Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+The `qps` value has these effects:
+
+- A positive value enables client-side throttling.
+- `0` uses the client-go default.
+- A negative value disables client-side throttling.
+
+`burst` must be non-negative. A value of `0` uses the client-go default.
 
 ## Pre-Installed Drivers
 
-Assumes NVIDIA drivers are installed directly on the host rather than via GPU Operator driver containers. When enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes it manages (`nvidia.com/gpu.present=true`; nodes opted out with `nvsentinel.dgxc.nvidia.com/managed=false` — for example during external remediation — are excluded), skipping driver pod detection.
+This value tells the labeler that the NVIDIA drivers are installed directly on the host, not through GPU Operator driver containers. When this value is enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes that it manages (`nvidia.com/gpu.present=true`). The labeler excludes nodes that have the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. For example, a node has this label during external remediation. The labeler also skips driver pod detection.
 
 ```yaml
 labeler:
@@ -77,7 +83,7 @@ labeler:
 
 ## DCGM Pod Discovery
 
-Comma-separated values of the `app` pod label used to find the DCGM pod on each node. The default matches both the classic GPU Operator DCGM DaemonSet and the GPUCluster (DRA) mode one, so the correct pod is found in either mode without per-cluster configuration.
+This value is a comma-separated list of values of the `app` pod label. The labeler uses these values to find the DCGM pod on each node. The default matches both the classic GPU Operator DCGM DaemonSet and the DaemonSet of GPUCluster (DRA) mode. Thus, the labeler finds the correct pod in both modes without a configuration for each cluster.
 
 ```yaml
 labeler:
@@ -86,7 +92,12 @@ labeler:
 
 ## Driver Pod Discovery
 
-Pod label values used to find the driver pod on each node: the `app` label of the GPU Operator driver pod, and the `k8s-app` label of the GKE driver installer pod. The defaults match GPU Operator and GKE.
+These values are the pod label values that the labeler uses to find the driver pod on each node:
+
+- the `app` label of the GPU Operator driver pod
+- the `k8s-app` label of the GKE driver installer pod
+
+The defaults match GPU Operator and GKE.
 
 ```yaml
 labeler:
@@ -96,7 +107,7 @@ labeler:
 
 ## DCGM Bootstrap Gating
 
-Controls whether the DCGM pod must be ready before the DCGM version label is set for the first time on a node.
+This value controls whether the DCGM pod must be ready before the labeler sets the DCGM version label for the first time on a node.
 
 ```yaml
 labeler:
@@ -105,7 +116,7 @@ labeler:
 
 ## Kata Containers Detection
 
-Configures detection of Kata Containers runtime on nodes.
+This value configures the detection of the Kata Containers runtime on nodes.
 
 ```yaml
 labeler:
@@ -116,27 +127,28 @@ labeler:
 
 #### kataLabelOverride
 
-Optional custom node label to check for Kata Containers detection, in addition to the default label.
+This value is an optional custom node label that the labeler checks for Kata Containers detection, in addition to the default label.
 
 **Default Label:** `katacontainers.io/kata-runtime`
 
-When empty, only the default label is checked. When set, both default and custom labels are checked.
+When this value is empty, the labeler checks only the default label. When this value is set, the labeler checks both the default label and the custom label.
 
 ### Truthy Values
 
-The following label values (case-insensitive) are considered truthy for Kata detection:
+The labeler considers these label values (case-insensitive) truthy for Kata detection:
+
 - `"true"`
 - `"enabled"`
 - `"1"`
 - `"yes"`
 
-Any other value or missing label results in `kata.enabled=false`.
+Any other value, or a missing label, results in `kata.enabled=false`.
 
 ## Expected Device Counts
 
-Expected device-count labeling is enabled by default. The labeler evaluates enabled classes and writes current/expected count labels only when the configured CEL expression returns a valid non-negative integer.
+By default, expected device-count labeling is enabled. The labeler evaluates the enabled classes. It writes the current and expected count labels only when the configured CEL expression returns a valid non-negative integer.
 
-The Helm chart renders this values block into a TOML ConfigMap entry and mounts it into the labeler pod. Because expressions are compiled at startup, Helm also annotates the pod template with a checksum so changes to the ConfigMap roll the Deployment.
+The Helm chart renders this values block into a TOML ConfigMap entry and mounts it into the labeler pod. The labeler compiles the expressions at startup. Thus, Helm also annotates the pod template with a checksum, so that changes to the ConfigMap roll the Deployment.
 
 ```yaml
 labeler:
@@ -162,36 +174,28 @@ A class sets `currentExpression` and `groupingLabels` directly, as in this examp
 
 The CEL context exposes:
 
-- `node`: the cached projection of the Kubernetes Node being reconciled.
+- `node`: the cached projection of the Kubernetes Node that the labeler reconciles.
 - `resourceSlices`: ResourceSlice objects associated with the node. In a source with `resourceSliceDriver`, this list holds only the slices of that driver.
 - `sum(list<int>)`: helper that returns the sum of a list of integers.
 - The cel-go list extensions, for example `flatten()`, which turns a list of lists into one list.
 
 #### Node fields available to expressions
 
-To limit informer memory use, the Labeler does not cache complete Node objects.
-The following fields are always retained:
+To limit informer memory use, the labeler does not cache complete Node objects. The labeler always keeps these fields:
 
 - `metadata.name`, `metadata.uid`, and `metadata.resourceVersion`
 - all `metadata.labels`
 - the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` annotation, when present
 
-When expected device counts have at least one enabled class, the Labeler also
-retains `status.allocatable` and `status.capacity`. Device-count expressions
-that read Node data must use `node.metadata.labels`,
-`node.status.allocatable`, or `node.status.capacity`.
+When expected device counts have at least one enabled class, the labeler also keeps `status.allocatable` and `status.capacity`. Device-count expressions that read Node data must use `node.metadata.labels`, `node.status.allocatable` or `node.status.capacity`.
 
-All other Node fields are discarded before caching, including `spec`, other
-annotations, `status.conditions`, addresses, images, and node information.
-When expected device counts are disabled, all of `status` is discarded.
-Expressions that reference discarded fields are unsupported and receive only
-the field's empty or absent value.
+The labeler discards all other Node fields before caching. These fields include `spec`, other annotations, `status.conditions`, addresses, images and node information. When expected device counts are disabled, the labeler discards all of `status`. The labeler does not support expressions that reference discarded fields. These expressions receive only the empty or absent value of the field.
 
-For classes without a matching override, the expected value is learned as the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically, but do not fall automatically when a node reports fewer devices.
+For classes without a matching override, the labeler learns the expected value. The expected value is the maximum current or existing expected count among nodes with the same configured grouping-label values. Learned expected counts can rise automatically. They do not fall automatically when a node reports fewer devices.
 
 ### Device-Count Sources
 
-A class can define an ordered list of `sources` instead of a class-level `currentExpression` and `groupingLabels`. Each source can read a different kind of data. Thus one class can count the same devices in different cluster setups. The default GPU class uses sources so that it works in both GPU Operator modes:
+A class can define an ordered list of `sources` instead of a class-level `currentExpression` and `groupingLabels`. Each source can read a different kind of data. Thus, one class can count the same devices in different cluster setups. The default GPU class uses sources, so that it works in both GPU Operator modes:
 
 ```yaml
 labeler:
@@ -254,7 +258,7 @@ labeler:
 | Field | Required | Description |
 |---|---|---|
 | `name` | Yes | Unique name of the source in the class. It appears in logs, in the `source` label of `labeler_device_count_source` and in the partition key. |
-| `resourceSliceDriver` | No | The DRA driver of the source. When set, the source applies only to nodes with ResourceSlices from this driver. |
+| `resourceSliceDriver` | No | The DRA driver of the source. When this field is set, the source applies only to nodes with ResourceSlices from this driver. |
 | `groupingLabels` | No | Node labels that put nodes into the same partition when they use this source. |
 | `currentExpression` | Yes | CEL expression that returns the current count. In a source without `resourceSliceDriver`, a negative result means that the source does not apply to the node. |
 | `groupingExpression` | No | CEL expression that returns a `list<string>`, for example the GPU models on the node. The labeler adds the values to the partition key. |
@@ -264,12 +268,12 @@ For each node, the labeler examines the sources in order and uses the first sour
 - A source with `resourceSliceDriver` applies when the node has at least one ResourceSlice from that driver. The labeler uses only the slices of the newest generation of each pool.
   - If a pool is incomplete, the labeler skips the class until the next ResourceSlice update. It does not try the next source.
   - If the expression fails, the labeler skips the class. It does not try the next source, so a stale node label cannot replace the DRA count.
-- A source without `resourceSliceDriver` applies when its `currentExpression` returns a count of `0` or more. If the expression returns a negative number, or fails, for example because a label is missing, the labeler tries the next source. Return `-1` to skip a source on purpose. The default `gfd` source returns `-1` when the NVIDIA device plugin advertises no GPUs (`nvidia.com/gpu`, `nvidia.com/gpu.shared` or `nvidia.com/mig-*` in `node.status.allocatable`). GPUCluster mode has no device plugin, so a `nvidia.com/gpu.count` label left from ClusterPolicy mode is not counted on a node whose DRA plugin is down.
+- A source without `resourceSliceDriver` applies when its `currentExpression` returns a count of `0` or more. If the expression returns a negative number, or fails, for example because a label is missing, the labeler tries the next source. To skip a source on purpose, return `-1`. The default `gfd` source returns `-1` when the NVIDIA device plugin advertises no GPUs (`nvidia.com/gpu`, `nvidia.com/gpu.shared` or `nvidia.com/mig-*` in `node.status.allocatable`). GPUCluster mode has no device plugin. Thus, the labeler does not count a `nvidia.com/gpu.count` label that remains from ClusterPolicy mode on a node whose DRA plugin is down.
 - If no source applies, the labeler skips the class and keeps the existing labels. It never writes a current count of `0` for a missing source.
 
-Put DRA sources before label sources. A ResourceSlice exists only while its driver runs on the node, but a node label can stay on the node after the component that set it is gone.
+Put DRA sources before label sources. A ResourceSlice exists only while its driver runs on the node. But a node label can stay on the node after the component that set it is gone.
 
-All sources of a class write the same labels, and the expected count does not fall automatically. Thus all sources of a class must count the same unit. For example, both GPU sources count physical GPUs.
+All sources of a class write the same labels, and the expected count does not fall automatically. Thus, all sources of a class must count the same unit. For example, both GPU sources count physical GPUs.
 
 #### Grouping with sources
 
@@ -286,7 +290,7 @@ The `labeler_device_count_source{node, class, source}` gauge shows the source th
 
 - A class with `sources` must not set a class-level `currentExpression` or `groupingLabels`. The labeler does not start with such a class.
 - `expectedCountOverrides` stay at class level and apply to all sources. Use match labels that exist in every mode, such as `node.kubernetes.io/instance-type` or a nodepool label. Do not use `nvidia.com/gpu.product`, because GPUCluster mode does not set it.
-- Classes without `sources` work as before. A hand-written GPU DRA class in that form can report `0` on a node with only another driver's slices, so move it to `sources`.
+- A class without `sources` uses its class-level `currentExpression` and `groupingLabels`. A hand-written GPU DRA class in that form can report `0` on a node that has only the slices of another driver. Thus, move such a class to `sources`.
 
 ### Kata Detection Examples
 
@@ -297,7 +301,7 @@ labeler:
   kataLabelOverride: ""
 ```
 
-Checks only `katacontainers.io/kata-runtime` label on nodes.
+The labeler checks only the `katacontainers.io/kata-runtime` label on nodes.
 
 #### Example 2: Custom Kata Label
 
@@ -306,7 +310,7 @@ labeler:
   kataLabelOverride: "io.katacontainers.config.runtime.oci_runtime"
 ```
 
-Checks both `katacontainers.io/kata-runtime` and `io.katacontainers.config.runtime.oci_runtime`. Kata is enabled if either label has a truthy value.
+The labeler checks both `katacontainers.io/kata-runtime` and `io.katacontainers.config.runtime.oci_runtime`. If either label has a truthy value, Kata is enabled.
 
 ## GPU Operator Integration
 
@@ -315,17 +319,19 @@ The labeler watches for specific pod labels to detect DCGM and driver status.
 ### Expected Pod Labels
 
 **DCGM Pods:**
+
 ```yaml
 metadata:
   labels:
-    app: nvidia-dcgm
+    app: nvidia-dcgm # or nvidia-dcgm-dra in GPUCluster (DRA) mode
 ```
 
 **Driver Pods:**
+
 ```yaml
 metadata:
   labels:
     app: nvidia-driver-daemonset
 ```
 
-If your GPU Operator configures its operands with different labels, the labeler will not detect the components.
+If your GPU Operator configures its operands with different labels, set them in [DCGM Pod Discovery](#dcgm-pod-discovery) and [Driver Pod Discovery](#driver-pod-discovery).

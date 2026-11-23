@@ -1,24 +1,18 @@
 # Tutorial: Integrating an External Health Detector
 
-This tutorial explains how to connect an external health-detection tool to
-NVSentinel using the Kubernetes Object Monitor (KOM). After following it you
-will understand the integration pattern, the rules a detector must follow, and
-how to write a KOM policy for both node-level and GPU-level faults.
+This tutorial explains how to connect an external health-detection tool to NVSentinel with the Kubernetes Object Monitor (KOM). When you complete this tutorial, you know:
 
-The [Node Problem Detector tutorial](integrating-node-problem-detector.md) is a
-complete worked example of this pattern for host-log faults. Read the present
-page first if you are integrating a different tool, or if you want to understand
-the general design before reading the NPD walkthrough.
+- The integration pattern.
+- The rules that a detector must follow.
+- How to write a KOM policy for node-level faults and for GPU-level faults.
+
+The [Node Problem Detector tutorial](integrating-node-problem-detector.md) is a complete example of this pattern for host-log faults. If you integrate a different tool, read this page first. If you want to learn the general design before the Node Problem Detector walkthrough, also read this page first.
 
 ---
 
 ## 1. How the integration works
 
-An external detector publishes its finding as a permanent Kubernetes
-**Node Condition** on the affected node. KOM watches every node and fires a
-NVSentinel `HealthEvent` when a condition's type, status, and reason match a
-configured policy. The existing quarantine, cordon, and drain pipeline then
-handles the node exactly as it would any other fault.
+An external detector publishes its finding as a permanent Kubernetes **node condition** on the affected node. KOM watches all nodes. When the type, status and reason of a condition match a configured policy, KOM publishes an NVSentinel `HealthEvent`. Then the existing quarantine, cordon and drain pipeline handles the node in exactly the same way as any other fault.
 
 ```mermaid
 flowchart LR
@@ -28,41 +22,31 @@ flowchart LR
     PC --> NVS["NVSentinel quarantine / drain"]
 ```
 
-No NVSentinel code changes are needed. The detector is fully decoupled: it only
-writes a standard Kubernetes resource that KOM already knows how to read.
+You do not need to change NVSentinel code. The detector does not depend on NVSentinel. It only writes a standard Kubernetes resource that KOM can already read.
 
 ---
 
 ## 2. Rules a detector must follow
 
-A detector that publishes a Node Condition for KOM to consume must follow these
-rules to avoid false alarms and split-ownership conflicts.
+A detector that publishes a node condition for KOM must follow these rules. The rules prevent false alarms and split-ownership conflicts.
 
 **Ownership**
-- Only one controller writes a given condition type on a given node. If two
-  tools write the same condition type, they will overwrite each other.
+
+- Make sure that only one controller writes a given condition type on a given node. If two tools write the same condition type, each tool overwrites the condition of the other tool.
 
 **Signaling a problem**
-- Set `status: "True"` and a stable, non-empty `reason` string when a problem is
-  detected.
-- The reason string must be constant across repeated firings of the same fault
-  class so the KOM CEL predicate can match it reliably.
+
+- When the detector finds a problem, set `status: "True"` and a stable, non-empty `reason` string.
+- The reason string must be constant for all detections of the same fault class, so that the KOM CEL predicate can match it reliably.
 
 **Signaling recovery**
-- Set `status: "False"` and a matching healthy-reason string *only after the
-  detector has confirmed recovery*, not simply because the check interval
-  elapsed. Setting `False` before recovery causes KOM to observe a healthy
-  transition that can cancel active break-fix processing.
-- Do not set `status: "Unknown"` while a fault is active. If the condition
-  transitions to `Unknown`, the KOM predicate (which matches `status == "True"`)
-  becomes false, and KOM will publish a healthy event that can cancel active
-  remediation. The condition must remain `True` with the same `reason` string
-  until the detector has confirmed recovery.
+
+- Set `status: "False"` and a matching healthy-reason string *only after the detector confirms recovery*. Do not set it only because the check interval elapsed. If you set `False` before recovery, KOM sees a healthy transition that can cancel an active break-fix workflow.
+- While a fault is active, do not set `status: "Unknown"`. The KOM predicate matches `status == "True"`. If the condition changes to `Unknown`, the predicate becomes false, and KOM publishes a healthy event. This healthy event can cancel an active break-fix workflow. The condition must stay `True` with the same `reason` string until the detector confirms recovery.
 
 **Policy naming**
-- Each condition type should have its own named KOM policy. The policy `name`
-  becomes the `checkName` in the resulting `HealthEvent`, so choose a stable,
-  descriptive string (for example `ExternalGPUIntegrityCheck`).
+
+- Give each condition type its own named KOM policy. The policy `name` becomes the `checkName` in the resulting `HealthEvent`. Select a stable, descriptive name, for example `ExternalGPUIntegrityCheck`.
 
 ---
 
@@ -70,9 +54,7 @@ rules to avoid false alarms and split-ownership conflicts.
 
 ### Node-level faults
 
-Use `componentClass: Node` when the condition represents a problem with the
-host that affects the whole node (filesystem errors, hardware memory errors,
-kernel panics, and so on). This is the pattern used by Node Problem Detector.
+If the condition shows a problem with the host that affects the whole node, use `componentClass: Node`. Examples are filesystem errors, hardware memory errors, kernel panics and other host problems. Node Problem Detector uses this pattern.
 
 ```yaml
 - name: ExternalHostFaultDetected
@@ -96,23 +78,13 @@ kernel panics, and so on). This is the pattern used by Node Problem Detector.
       - EXTERNAL_HOST_FAULT
 ```
 
-Replace `ExternalHostFault`, `HostFaultDetected`, the policy `name`, `message`,
-`recommendedAction`, and `errorCode` with the values your detector uses.
+Replace `ExternalHostFault`, `HostFaultDetected`, the policy `name`, `message`, `recommendedAction` and `errorCode` with the values that your detector uses.
 
 ### GPU-level faults
 
-Use `componentClass: GPU` when the condition represents a problem specific to a
-GPU workload rather than the host itself (inference-integrity errors, model
-divergence, and similar). NVSentinel will associate the event with the GPU
-rather than the whole node.
+If the condition shows a problem that is specific to a GPU workload and not to the host, use `componentClass: GPU`. Examples are inference-integrity errors, model divergence and similar problems. The health event has `componentClass: GPU`, but its impacted entity is the Node, not a GPU.
 
-> **Limitation:** KOM publishes the Node as the impacted entity in the
-> `HealthEvent` — it does not enumerate individual GPUs on that node. The event
-> is therefore node-scoped: consumers that require a GPU UUID cannot derive one
-> from this event. If you need per-GPU precision, see the
-> [Writing a Health Monitor](writing-a-health-monitor.md) guide, which describes
-> how to send `HealthEvent`s over gRPC with an explicit GPU UUID in
-> `entitiesImpacted`.
+> **Limitation:** KOM publishes the Node as the impacted entity in the `HealthEvent`. It does not list the individual GPUs on that node. As a result, the health event is node-scoped. A consumer that needs a GPU UUID cannot get one from this health event. If you need per-GPU precision, see the [Writing a Health Monitor](writing-a-health-monitor.md) guide. That guide shows how to send `HealthEvent` messages over gRPC with an explicit GPU UUID in `entitiesImpacted`.
 
 ```yaml
 - name: ExternalGPUIntegrityCheck
@@ -125,7 +97,7 @@ rather than the whole node.
     expression: |
       resource.status.conditions.exists(c,
         c.type   == "ExternalGPUIntegrity" &&
-        c.status != "False" &&
+        c.status == "True" &&
         c.reason == "GPUIntegrityFailed")
   healthEvent:
     componentClass: GPU
@@ -138,15 +110,14 @@ rather than the whole node.
 
 ### Add the policy to your values file
 
-Append the policy block to the existing
-`kubernetes-object-monitor.policies` list in your Helm values file. Helm
-replaces the complete list on upgrade, so your values file must include
-**all** policies you need — both any existing custom policies and the chart's
-default policies (such as `ReplaceNotReadyNode`). Omitting a policy from the
-list silently removes it on the next upgrade.
+Append the policy block to the existing `kubernetes-object-monitor.policies` list in your Helm values file. On upgrade, Helm replaces the complete list. As a result, your values file must include **all** the policies that you need:
 
-To see the default policies shipped by the KOM subchart before editing,
-set your version first and inspect the subchart directly:
+- Your existing custom policies.
+- The default policies of the chart, such as `ReplaceNotReadyNode`.
+
+If you omit a policy from the list, Helm removes it on the next upgrade without a warning.
+
+Before you edit the list, examine the default policies in the KOM subchart. In the first command, set your NVSentinel version:
 
 ```bash
 NVSENTINEL_VERSION="<your-version>"
@@ -195,17 +166,9 @@ kubernetes-object-monitor:
 
 Apply the updated values:
 
-> **Warning:** **Use a non-production cluster for this validation step.**
-> On an existing release, `--reuse-values` retains any enabled remediation
-> pipeline. A matching condition on any node will trigger a fatal `HealthEvent`
-> and may cordon or drain that node before you reach the validation steps below.
+> **Warning:** **Use a non-production cluster for this validation step.** On an existing release, `--reuse-values` keeps all enabled remediation components. A matching condition on any node triggers a fatal `HealthEvent`. NVSentinel can then cordon or drain that node before you reach the validation steps below.
 >
-> If a non-production cluster is not available, you may disable all downstream
-> remediation components, but note that disabling `faultQuarantine` carries an
-> additional risk: any fault event emitted while quarantine restarts may be
-> missed, because KOM does not republish an unchanged match and MongoDB change
-> streams do not replay missed events on cold start. Only proceed with this
-> approach if you understand and accept this risk:
+> If you do not have a non-production cluster, you can disable all downstream remediation components. If you disable `faultQuarantine`, there is an additional risk. While fault quarantine restarts, it can miss health events. KOM does not publish an unchanged match again. Also, MongoDB change streams do not replay missed change events on cold start. Use this approach only if you understand and accept this risk:
 >
 > ```yaml
 > global:
@@ -213,7 +176,7 @@ Apply the updated values:
 >     enabled: false
 >   faultQuarantine:
 >     enabled: false
->   node-drainer:
+>   nodeDrainer:
 >     enabled: false
 > ```
 
@@ -227,8 +190,7 @@ helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --wait
 ```
 
-Verify KOM picked up the new policy by checking the rollout and the rendered
-configuration:
+To verify that KOM loaded the new policy, check the rollout and the rendered configuration:
 
 ```bash
 # Confirm the new pod is running
@@ -249,10 +211,9 @@ kubectl get configmap -n nvsentinel -l app.kubernetes.io/name=kubernetes-object-
 
 ## 4. Validate the integration
 
-After the detector sets the condition on a test node, confirm the full chain
-fires before enabling downstream remediation in production.
+Before you enable downstream remediation in production, confirm that the full chain runs on a test node. After the detector sets the condition on the test node, do these steps:
 
-**Step 1 — confirm the condition is set**
+**Step 1 — confirm that the detector set the condition**
 
 ```bash
 NODE="<your-test-node>"
@@ -264,7 +225,7 @@ kubectl get node "$NODE" \
 # ExternalGPUIntegrity=True reason=GPUIntegrityFailed
 ```
 
-**Step 2 — confirm KOM matched the policy and the HealthEvent was received**
+**Step 2 — confirm that KOM matched the policy and that the HealthEvent arrived downstream**
 
 ```bash
 kubectl logs deployment/kubernetes-object-monitor \
@@ -286,8 +247,7 @@ kubectl get node "$NODE" \
 # instead of checking the node condition.
 ```
 
-**Step 3 — confirm the node was cordoned** (only if downstream remediation is
-enabled)
+**Step 3 — if you enabled downstream remediation, confirm that NVSentinel cordoned the node**
 
 ```bash
 kubectl get node "$NODE" -o jsonpath='{.spec.unschedulable}'
@@ -296,29 +256,25 @@ kubectl get node "$NODE" -o jsonpath='{.spec.unschedulable}'
 
 **Step 4 — confirm recovery**
 
-Once the detector clears the condition (`status: "False"`), verify that KOM
-observes the transition and that any pending break-fix is resolved before
-uncordoning the node.
+After the detector clears the condition (`status: "False"`), and before you uncordon the node, do these checks:
+
+- Verify that KOM sees the transition.
+- Verify that the break-fix workflow for the node is complete.
 
 ---
 
 ## 5. Worked example: Node Problem Detector
 
-[Node Problem Detector (NPD)](https://github.com/kubernetes/node-problem-detector)
-publishes permanent Node Conditions from kernel log patterns. It is the
-canonical example of this integration pattern for host-level faults.
+[Node Problem Detector (NPD)](https://github.com/kubernetes/node-problem-detector) publishes permanent node conditions from kernel log patterns. It is the standard example of this integration pattern for host-level faults.
 
-See the full walkthrough, including installation, policy configuration, and
-end-to-end validation with synthetic kernel-message injection, in the
-[Node Problem Detector tutorial](integrating-node-problem-detector.md).
+For the full walkthrough, see the [Node Problem Detector tutorial](integrating-node-problem-detector.md). It includes installation, policy configuration and end-to-end validation with synthetic kernel-message injection.
 
-The key difference between NPD and a GPU-workload checker is the
-`componentClass` in the KOM policy:
+The key difference between NPD and a GPU-workload checker is the `componentClass` in the KOM policy:
 
 | Detector type | Fault class | `componentClass` | Clears condition when |
 |---|---|---|---|
-| Node Problem Detector | Host/kernel errors | `Node` | NPD process restarts |
-| GPU workload checker | Inference / compute errors | `GPU` | Detector confirms GPU recovery |
+| Node Problem Detector | Host or kernel errors | `Node` | NPD process restarts |
+| GPU workload checker | Inference or compute errors | `GPU` | Detector confirms GPU recovery |
 
 ---
 
@@ -326,10 +282,9 @@ The key difference between NPD and a GPU-workload checker is the
 
 ### KOM does not publish a HealthEvent after the condition is set
 
-- Confirm `global.kubernetesObjectMonitor.enabled: true` in your Helm values.
-- Confirm the policy has `enabled: true`.
-- Compare the actual condition type, status, and reason on the node with the
-  CEL predicate in the policy — they must match exactly, including case.
+- Confirm that your Helm values set `global.kubernetesObjectMonitor.enabled: true`.
+- Confirm that the policy has `enabled: true`.
+- Compare the actual condition type, status and reason on the node with the CEL predicate in the policy. They must match exactly, including case.
 
 ```bash
 kubectl get node "<node>" \
@@ -342,22 +297,13 @@ kubectl logs deployment/kubernetes-object-monitor --namespace nvsentinel
 
 ### The condition is set but KOM reports a predicate error
 
-CEL expressions are strict about quoting and field paths. Test the predicate
-against a node's JSON with `kubectl get node <node> -o json` and the
-[CEL Playground](https://playcel.undistro.io/) before deploying.
+CEL expressions are strict about quoting and field paths. Before you deploy the policy, test the predicate against the JSON of a node. Use `kubectl get node <node> -o json` and the CEL Playground.
 
 ### A node is cordoned but the condition was already cleared
 
-NVSentinel cordons on the fatal `HealthEvent`. Whether the node is subsequently
-uncordoned automatically depends on your deployment configuration:
+NVSentinel cordons the node when it receives the fatal `HealthEvent`. Your deployment configuration controls whether NVSentinel then uncordons the node automatically:
 
-- **With fault quarantine enabled:** The fault-quarantine component tracks all
-  active `HealthEvent`s for the node. When all tracked events recover (the
-  detector sets `status: "False"`), fault quarantine can automatically uncordon
-  the node after any configured validation gate passes.
-- **Without fault quarantine, or with manual gates configured:** A human
-  operator must uncordon the node after break-fix is complete.
+- **With fault quarantine enabled:** fault quarantine tracks all active `HealthEvent`s for the node. When all tracked health events recover (the detector sets `status: "False"`), fault quarantine can uncordon the node automatically. It does this after all configured validation gates pass.
+- **Without fault quarantine, or with manual gates configured:** After the remediation is complete, a human operator must uncordon the node.
 
-Clearing the Node Condition alone does not uncordon the node — KOM must observe
-the `False` transition and publish a recovery event for the downstream pipeline
-to act on it.
+If you only clear the node condition, NVSentinel does not uncordon the node. KOM must see the `False` transition and publish a healthy event. Then the downstream pipeline can act on it.
