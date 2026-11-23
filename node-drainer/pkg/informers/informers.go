@@ -527,11 +527,12 @@ func (i *Informers) filterPodsUsingEntity(ctx context.Context, pods []*v1.Pod, p
 	for _, pod := range pods {
 		deviceAnnotation, hasAnnotation, err := podDeviceAnnotation(pod)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read the device annotation of pod %s: %w", pod.Name, err)
 		}
 
 		if err := i.checkAnnotationRecordsRequests(ctx, pod, entityType, deviceAnnotation, hasAnnotation); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scope the partial drain to %s %s: %w",
+				partialDrainEntity.EntityType, partialDrainEntity.EntityValue, err)
 		}
 
 		if isPodUsingPartialDrainEntity(deviceAnnotation, annotationKeys, partialDrainEntity) {
@@ -601,7 +602,7 @@ func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 
 	claimed, err := i.claimedDrivers(ctx, pod, entityType)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read the DRA drivers of pod %s: %w", pod.Name, err)
 	}
 
 	for _, device := range claimed {
