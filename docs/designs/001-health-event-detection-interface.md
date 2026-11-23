@@ -60,9 +60,7 @@ message HealthEvent {
 - New health monitors can be added without modifying platform connectors
 - Testing is simplified - monitors can be tested independently
 - Binary portability - same monitor binary works across different platforms
-- Monitors need no credential management of their own: the socket is
-  authenticated with a projected ServiceAccount token that the kubelet writes
-  and rotates
+- Monitors need no credential management of their own: the socket is authenticated with a projected ServiceAccount token that the kubelet writes and rotates
 
 ### Negative
 - Requires Unix Domain Socket volume mounts in pod specifications

@@ -558,49 +558,34 @@ Naive Delta = 50 - 1,000,000 = NEGATIVE (or overflow to huge positive)
 
 ### 6.3 Counter Reset Handling Algorithm
 
-**Reset Detection** (uses an in-memory `lastPollValue` per counter
-plus the persisted snapshot as fallback after pod restart):
+**Reset Detection** (uses an in-memory `lastPollValue` per counter plus the persisted snapshot as fallback after pod restart):
 
 1. **If `lastPollValue` is recorded** for this counter (steady state):
    - Reset detected when `current < lastPollValue`
-2. **Else if a persisted snapshot exists** (first poll after pod restart,
-   `lastPollValue` not yet rebuilt):
+2. **Else if a persisted snapshot exists** (first poll after pod restart, `lastPollValue` not yet rebuilt):
    - Reset detected when `current < snapshot.value`
 3. **Else** (truly first poll for this counter):
    - No reset to detect; just initialize the snapshot
 
-Sysfs counters are kernel-maintained and monotonic between resets, so
-`current < previous` is a definitive reset signal.
+Sysfs counters are kernel-maintained and monotonic between resets, so `current < previous` is a definitive reset signal.
 
 **Threshold Evaluation and Recovery Steps** (latching breach):
 
 1. **If reset detected**:
-   - If counter was previously breached → emit **recovery event**
-     (`IsHealthy=true`, `IsFatal=false`, `RecommendedAction=NONE`),
-     clear `breached` flag
+   - If counter was previously breached → emit **recovery event** (`IsHealthy=true`, `IsFatal=false`, `RecommendedAction=NONE`), clear `breached` flag
    - If not previously breached → no event
-   - Update snapshot to `(current, now)` so the next window starts
-     fresh from the post-reset baseline
+   - Update snapshot to `(current, now)` so the next window starts fresh from the post-reset baseline
 2. **Else if counter is already breached** (latched):
    - **No event** — breach stays latched until counter reset or boot ID change
 3. **Else** (no reset, not currently breached) — evaluate the threshold:
-   - For `delta`: `breach = (current − snapshot.value) > threshold`,
-     update snapshot every poll
-   - For `velocity`: skip until `now − snapshot.timestamp ≥ window`,
-     then `breach = rate > threshold`, update snapshot
+   - For `delta`: `breach = (current − snapshot.value) > threshold`, update snapshot every poll
+   - For `velocity`: skip until `now − snapshot.timestamp ≥ window`, then `breach = rate > threshold`, update snapshot
 4. **If breach detected** in step 3:
-   - Emit **unhealthy event** (`IsHealthy=false`, `IsFatal` per counter
-     config), set `breached=true` in persistent state
+   - Emit **unhealthy event** (`IsHealthy=false`, `IsFatal` per counter config), set `breached=true` in persistent state
 5. **If no breach** in step 3:
    - **No event** — still healthy
 
-> **Latching breach rationale**: Once a fatal counter increments
-> (e.g. `link_downed=1`), the underlying physical event has happened.
-> The fact that no further increments occur in the next poll does not
-> mean the issue is resolved — only that no more events are accumulating
-> right now. Recovery therefore requires explicit remediation (admin
-> counter reset or host reboot), not merely the absence of new errors.
-> This is consistent with the Section 6.4 admin-reset timeline.
+> **Latching breach rationale**: Once a fatal counter increments (e.g. `link_downed=1`), the underlying physical event has happened. The fact that no further increments occur in the next poll does not mean the issue is resolved — only that no more events are accumulating right now. Recovery therefore requires explicit remediation (admin counter reset or host reboot), not merely the absence of new errors. This is consistent with the Section 6.4 admin-reset timeline.
 
 ### 6.4 Admin Counter Reset: Recovery Event Scenario
 
@@ -803,13 +788,9 @@ Not all counters are available on all NIC versions or firmware revisions. The mo
 > | `/sys/class/infiniband/{dev}/ports/{port}/counters/` | **RDMA traffic only** | ib_write_bw, distributed apps |
 > | `/sys/class/net/{iface}/statistics/` | **TCP/IP traffic only** | ping, ssh, HTTP |
 >
-> **Field-validated observation**: Running `ping` through a RoCE interface does NOT increment
-> InfiniBand counters (`port_rcv_data`, `port_xmit_data` stay at 0). The ping goes through the
-> TCP/IP stack and is tracked in Ethernet statistics instead.
+> **Field-validated observation**: Running `ping` through a RoCE interface does NOT increment InfiniBand counters (`port_rcv_data`, `port_xmit_data` stay at 0). The ping goes through the TCP/IP stack and is tracked in Ethernet statistics instead.
 >
-> **Implication for monitoring**: To detect RDMA-specific degradation (which affects distributed
-> workloads), you MUST monitor the InfiniBand counters. Ethernet statistics alone will miss
-> RDMA-layer issues like `roce_slow_restart` errors.
+> **Implication for monitoring**: To detect RDMA-specific degradation (which affects distributed workloads), you MUST monitor the InfiniBand counters. Ethernet statistics alone will miss RDMA-layer issues like `roce_slow_restart` errors.
 
 ### 8.1 Counter Domain Diagram
 
@@ -957,12 +938,7 @@ counterDetection:
   counters: []  # See defaults below
 ```
 
-> **Polling interval**: The polling interval is set globally on the
-> Helm chart (`pollingInterval`, default `1s`) and is not configured
-> per counter. Velocity thresholds are evaluated against a window
-> matching the configured `velocityUnit` (1s / 1m / 1h), independent of
-> the polling interval — so a fast 1s poll is suitable for every
-> counter type without producing false alerts on long windows.
+> **Polling interval**: The polling interval is set globally on the Helm chart (`pollingInterval`, default `1s`) and is not configured per counter. Velocity thresholds are evaluated against a window matching the configured `velocityUnit` (1s / 1m / 1h), independent of the polling interval — so a fast 1s poll is suitable for every counter type without producing false alerts on long windows.
 
 ### 10.2 Default Counter Configuration
 
@@ -1102,16 +1078,7 @@ Allowed counter selections are hardcoded in `pkg/config/config.go`. They include
 
 ### 10.4 Threshold Processing Algorithm
 
-The evaluator uses **latching breach** semantics: once a counter
-breaches its threshold, the breach flag stays set until the counter is
-reset (`current < previous`), the host reboots, or the key becomes
-permanently unevaluable (counter removed from the configuration, or the
-device discovered but out of monitoring scope) — the last case emits an
-automatic sweep recovery so the condition cannot be orphaned. Polls
-while a counter is already breached emit nothing. A latch whose device
-is merely **absent** from discovery is deliberately held: absence can be
-a transient firmware reset, and the reboot baseline clear resolves it if
-the device never returns.
+The evaluator uses **latching breach** semantics: once a counter breaches its threshold, the breach flag stays set until the counter is reset (`current < previous`), the host reboots, or the key becomes permanently unevaluable (counter removed from the configuration, or the device discovered but out of monitoring scope) — the last case emits an automatic sweep recovery so the condition cannot be orphaned. Polls while a counter is already breached emit nothing. A latch whose device is merely **absent** from discovery is deliberately held: absence can be a transient firmware reset, and the reboot baseline clear resolves it if the device never returns.
 
 ```text
 On startup, before the first poll cycle:

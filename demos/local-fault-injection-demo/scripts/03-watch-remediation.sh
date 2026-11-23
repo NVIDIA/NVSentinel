@@ -126,7 +126,7 @@ Check janitor:  kubectl logs -n $NAMESPACE deployment/janitor --tail=50"
 }
 
 main() {
-    require_tools kubectl kind jq
+    require_tools kubectl kind jq column
     require_cluster
     NODE="$(gpu_node)"
 
