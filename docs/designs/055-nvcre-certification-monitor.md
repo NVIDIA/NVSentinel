@@ -400,5 +400,4 @@ If a node carrying the annotation is deleted, its tuples disappear from `observe
   verbs: ["get"] # read-only, fetched directly (not cached): per-category failedNodesRef / succeededNodesRef ConfigMaps
 ```
 
-The monitor needs `patch` on `certifications` to maintain the `cert-processed` and `error-recovered` annotations. It has no dependency on the health-events store.
-It needs read-only access to ConfigMaps to resolve `failedNodesRef` / `succeededNodesRef` and read the per-category `failed-nodes.json.gz` / `succeeded-nodes.csv.gz` lists.
+The monitor needs `patch` on `certifications` to maintain the `cert-processed` and `error-recovered` annotations. It has no dependency on the health-events store. It needs read-only access to ConfigMaps to resolve `failedNodesRef` / `succeededNodesRef` and read the per-category `failed-nodes.json.gz` / `succeeded-nodes.csv.gz` lists.

@@ -1,0 +1,101 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Bitnami templates are vendored; the MONGODB_ENABLE_IPV6 line in each carries a
+# local change for global.ipv6.enabled. These cases fail if a
+# re-vendor drops it.
+suite: global.ipv6.enabled (MongoDB listeners)
+templates:
+  - charts/mongodb/templates/replicaset/statefulset.yaml
+  - charts/psmdb-db/templates/cluster.yaml
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: Bitnami keeps MONGODB_ENABLE_IPV6=no when the flag is unset
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_ENABLE_IPV6
+            value: "no"
+
+  - it: Bitnami sets MONGODB_ENABLE_IPV6=yes when the flag is on
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.ipv6.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_ENABLE_IPV6
+            value: "yes"
+
+  - it: Bitnami keeps MONGODB_ENABLE_IPV6=no when the flag is the string "false"
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.ipv6.enabled: "false"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_ENABLE_IPV6
+            value: "no"
+
+  - it: Bitnami keeps an explicit enableIPv6 when the flag is off
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      mongodb.enableIPv6: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_ENABLE_IPV6
+            value: "yes"
+
+  - it: Percona has no net.ipv6 when the flag is unset
+    template: charts/psmdb-db/templates/cluster.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+    asserts:
+      - notMatchRegex:
+          path: spec.replsets[0].configuration
+          pattern: "ipv6"
+
+  - it: Percona has no net.ipv6 when the flag is the string "false"
+    template: charts/psmdb-db/templates/cluster.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      global.ipv6.enabled: "false"
+    asserts:
+      - notMatchRegex:
+          path: spec.replsets[0].configuration
+          pattern: "ipv6"
+
+  - it: Percona sets net.ipv6 when the flag is on
+    template: charts/psmdb-db/templates/cluster.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      global.ipv6.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.replsets[0].configuration
+          pattern: "(?m)^net:\\n  ipv6: true$"
+      - matchRegex:
+          path: spec.replsets[0].configuration
+          pattern: "oplogSizeMB: 990"

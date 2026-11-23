@@ -35,6 +35,21 @@ tests:
       - isNull:
           path: spec.ingress[1]
 
+  - it: selects the bundled MongoDB pods by release name when it differs from the namespace
+    release:
+      name: my-release
+      namespace: nvsentinel
+    set:
+      useBitnami: true
+      usePerconaOperator: false
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels["app.kubernetes.io/instance"]
+          value: my-release
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: nvsentinel
+
   - it: separates port 27017 and port 9216 when usePerconaOperator is true
     set:
       useBitnami: false

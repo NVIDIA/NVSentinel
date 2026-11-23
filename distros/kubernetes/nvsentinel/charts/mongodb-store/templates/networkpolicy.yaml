@@ -24,7 +24,7 @@ spec:
 {{- else }}
     matchLabels:
       app.kubernetes.io/component: mongodb
-      app.kubernetes.io/instance: {{ .Release.Namespace }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/name: mongodb
 {{- end }}
   policyTypes:

@@ -148,7 +148,9 @@ maintenance:
 # one attempt and no retry, 3 allows two retries after the first attempt.
 # Once the cap is reached the node is labelled remediation-failed and left for an operator,
 # which stops the remediation loops described in issue #1543.
-# The counter is reset when the node leaves quarantine.
+# The counter is reset when the node returns to service. With post-remediation validation,
+# that is when validation releases the node: a fault found during validation continues the
+# count. Cancelling the quarantine resets it.
 # 0 (default) disables the cap and preserves the previous unlimited behavior.
 maxRemediationAttempts: 0
 

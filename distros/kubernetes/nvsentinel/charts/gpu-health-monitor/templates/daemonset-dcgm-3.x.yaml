@@ -60,7 +60,7 @@ spec:
             - --port
             - "{{ .Values.global.metricsPort }}"
             - --metrics-addr
-            - "{{ .Values.global.metricsAddress | default "0.0.0.0" }}"
+            - {{ include "gpu-health-monitor.metricsAddress" . | quote }}
             - --verbose
             - {{ .Values.verbose | quote }}
             - --state-file

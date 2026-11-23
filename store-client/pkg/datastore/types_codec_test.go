@@ -21,6 +21,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestHealthEventStatus_UnmarshalBSON_PlainBool(t *testing.T) {
@@ -180,6 +183,124 @@ func TestHealthEventWithStatus_UnmarshalJSON_WrappedBool(t *testing.T) {
 	}`), &event))
 	require.NotNil(t, event.HealthEventStatus.FaultRemediated)
 	assert.False(t, *event.HealthEventStatus.FaultRemediated)
+}
+
+func TestHealthEventStatus_DecisionsRoundTrip(t *testing.T) {
+	status := HealthEventStatus{
+		DrainDecision: &DrainDecision{
+			RuleSet:    "slurm",
+			Method:     "Custom",
+			Stopped:    true,
+			Scope:      &Entity{EntityType: "GPU", EntityValue: "0"},
+			ReusedFrom: "event-1",
+		},
+		RemediationDecision: &RemediationDecision{
+			RuleSet: "vm-replace",
+			Action:  "REPLACE_VM",
+		},
+	}
+
+	t.Run("BSON", func(t *testing.T) {
+		data, err := bson.Marshal(status)
+		require.NoError(t, err)
+
+		var doc bson.M
+		require.NoError(t, bson.Unmarshal(data, &doc))
+
+		drain, ok := doc["draindecision"].(bson.D)
+		require.True(t, ok, "draindecision should be an embedded document, got %T", doc["draindecision"])
+		assert.Equal(t, "slurm", bsonValue(t, drain, "ruleset"))
+		assert.Equal(t, "Custom", bsonValue(t, drain, "method"))
+
+		scope, ok := bsonValue(t, drain, "scope").(bson.D)
+		require.True(t, ok, "scope should be an embedded document, got %T", bsonValue(t, drain, "scope"))
+		assert.Equal(t, "GPU", bsonValue(t, scope, "entitytype"))
+		assert.Equal(t, "0", bsonValue(t, scope, "entityvalue"))
+
+		var decoded HealthEventStatus
+		require.NoError(t, bson.Unmarshal(data, &decoded))
+		assert.Equal(t, status.DrainDecision, decoded.DrainDecision)
+		assert.Equal(t, status.RemediationDecision, decoded.RemediationDecision)
+
+		var protoStatus protos.HealthEventStatus
+		require.NoError(t, bson.Unmarshal(data, &protoStatus))
+		assertDecisionProtosEqual(t, status, &protoStatus)
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		data, err := json.Marshal(status)
+		require.NoError(t, err)
+
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(data, &doc))
+
+		drain, ok := doc["draindecision"].(map[string]any)
+		require.True(t, ok, "draindecision should be an object, got %T", doc["draindecision"])
+
+		scope, ok := drain["scope"].(map[string]any)
+		require.True(t, ok, "scope should be an object, got %T", drain["scope"])
+		assert.Equal(t, "GPU", scope["entitytype"])
+		assert.Equal(t, "0", scope["entityvalue"])
+		assert.NotContains(t, scope, "entityType")
+
+		var decoded HealthEventStatus
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.Equal(t, status.DrainDecision, decoded.DrainDecision)
+		assert.Equal(t, status.RemediationDecision, decoded.RemediationDecision)
+
+		var protoStatus protos.HealthEventStatus
+		require.NoError(t, json.Unmarshal(data, &protoStatus))
+		assertDecisionProtosEqual(t, status, &protoStatus)
+	})
+}
+
+func TestHealthEventStatus_MissingDecisionsStayNil(t *testing.T) {
+	t.Run("BSON", func(t *testing.T) {
+		status := unmarshalHealthEventStatusBSON(t, bson.D{{Key: "nodequarantined", Value: "Quarantined"}})
+
+		assert.Nil(t, status.DrainDecision)
+		assert.Nil(t, status.RemediationDecision)
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		status := unmarshalHealthEventStatusJSON(t, `{"nodequarantined": "Quarantined"}`)
+
+		assert.Nil(t, status.DrainDecision)
+		assert.Nil(t, status.RemediationDecision)
+	})
+}
+
+func assertDecisionProtosEqual(t *testing.T, status HealthEventStatus, protoStatus *protos.HealthEventStatus) {
+	t.Helper()
+
+	require.NotNil(t, protoStatus.GetDrainDecision())
+	assert.Equal(t, status.DrainDecision.RuleSet, protoStatus.GetDrainDecision().GetRuleSet())
+	assert.Equal(t, status.DrainDecision.Method, protoStatus.GetDrainDecision().GetMethod())
+	assert.Equal(t, status.DrainDecision.Stopped, protoStatus.GetDrainDecision().GetStopped())
+	assert.Equal(t, status.DrainDecision.ReusedFrom, protoStatus.GetDrainDecision().GetReusedFrom())
+	assert.Equal(t, status.DrainDecision.Scope.EntityType, protoStatus.GetDrainDecision().GetScope().GetEntityType())
+	assert.Equal(t, status.DrainDecision.Scope.EntityValue, protoStatus.GetDrainDecision().GetScope().GetEntityValue())
+
+	require.NotNil(t, protoStatus.GetRemediationDecision())
+	assert.True(t, proto.Equal(&protos.RemediationDecision{
+		RuleSet: status.RemediationDecision.RuleSet,
+		Action:  status.RemediationDecision.Action,
+		Stopped: status.RemediationDecision.Stopped,
+	}, protoStatus.GetRemediationDecision()))
+}
+
+func bsonValue(t *testing.T, doc bson.D, key string) any {
+	t.Helper()
+
+	for _, elem := range doc {
+		if elem.Key == key {
+			return elem.Value
+		}
+	}
+
+	t.Fatalf("bson document has no key %q", key)
+
+	return nil
 }
 
 func unmarshalHealthEventStatusBSON(t *testing.T, doc bson.D) HealthEventStatus {

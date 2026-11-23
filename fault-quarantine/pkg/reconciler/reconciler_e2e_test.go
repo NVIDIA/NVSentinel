@@ -37,6 +37,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -267,6 +268,10 @@ type E2EReconcilerConfig struct {
 	// EventWatcher, when set, is attached before the node informer starts, so the
 	// stale-state checks it runs on ADD can reach it.
 	EventWatcher eventwatcher.EventWatcherInterface
+	// Clientset, when set, replaces the envtest client for the API calls
+	// fault-quarantine makes. The node informer still watches through the
+	// envtest client.
+	Clientset kubernetes.Interface
 }
 
 // setupE2EReconciler creates a test reconciler with mock watcher
@@ -279,6 +284,19 @@ func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.Tom
 		CircuitBreakerConfig: cbConfig,
 		DryRun:               false,
 	})
+}
+
+// startSessionEndWorker registers the node informer callbacks and runs the queue worker that
+// Start() runs.
+func startSessionEndWorker(t *testing.T, r *Reconciler) {
+	t.Helper()
+
+	r.SetupNodeInformerCallbacks()
+
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	t.Cleanup(stopWorker)
+
+	go r.runCancelQueue(workerCtx)
 }
 
 // setupE2EReconcilerWithOptions creates a test reconciler with full configuration control
@@ -300,8 +318,13 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	)
 	require.NoError(t, err)
 
+	var clientset kubernetes.Interface = e2eTestClient
+	if cfg.Clientset != nil {
+		clientset = cfg.Clientset
+	}
+
 	fqClient := &informer.FaultQuarantineClient{
-		Clientset:     e2eTestClient,
+		Clientset:     clientset,
 		DynamicClient: e2eTestDynamicClient,
 		DryRunMode:    cfg.DryRun,
 		NodeInformer:  nodeInformer,
@@ -363,8 +386,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 		fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
 	}
 
-	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-	fqClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+	startSessionEndWorker(t, r)
 
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
@@ -602,8 +624,7 @@ func runReconcilerAndQuarantineNode(
 			fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
 		}
 
-		fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
-		fqClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
+		startSessionEndWorker(t, r)
 
 		rulesetsConfig := rulesetsConfig{
 			TaintConfigMap:     make(map[string]*config.Taint),
@@ -735,7 +756,7 @@ func verifyUnquarantineLabels(t *testing.T, node *corev1.Node) {
 
 // MockEventWatcher is a test mock for EventWatcherInterface that can simulate various scenarios
 type MockEventWatcher struct {
-	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, reason string) error
+	CancelLatestQuarantiningEventsFn func(ctx context.Context, nodeName string, eventIDs []string, reason string) error
 	ProcessEventCallbackFn           func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error)
 	StartFn                          func(ctx context.Context) error
 }
@@ -941,9 +962,11 @@ func (m *MockEventWatcher) CompleteStoredEvents(
 	return nil
 }
 
-func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string, reason string) error {
+func (m *MockEventWatcher) CancelLatestQuarantiningEvents(
+	ctx context.Context, nodeName string, eventIDs []string, reason string,
+) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
-		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, reason)
+		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName, eventIDs, reason)
 	}
 	// Default behavior: simulate MongoDB document not found (returns nil as per the real implementation)
 	return nil
@@ -979,10 +1002,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -997,10 +1022,12 @@ func TestE2E_ColdStartRecoversMissedFatalEvent(t *testing.T) {
 	assert.Equal(t, string(model.Quarantined), dbClient.status("missed-nvlink-event"))
 
 	// A restart after the status write must not replay the same event again.
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 
 	parsedRecovery, err := eventutil.ParseHealthEventFromEvent(
@@ -1043,10 +1070,12 @@ func TestE2E_ColdStartSkipsFailureSupersededByRecovery(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 
 	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
@@ -1088,17 +1117,21 @@ func TestE2E_ColdStartCompletesEventForDeletedNode(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err := coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Empty(t, dbClient.status("deleted-node-event"))
 	assert.Equal(t, coldstart.RecoveryCompletionValue, dbClient.completion("deleted-node-event"))
 
-	require.NoError(t, coldstart.Handle(ctx, coldstart.Dependencies{
+	completed, err = coldstart.Handle(ctx, coldstart.Dependencies{
 		HealthEventStore: store,
 		EventProcessor:   processor,
-	}))
+	})
+	require.NoError(t, err)
+	require.True(t, completed)
 	assert.Equal(t, 1, dbClient.callCount())
 }
 
@@ -1534,85 +1567,109 @@ func TestE2E_ValidationRequestSkippedWhenNoRuleSetMatches(t *testing.T) {
 	assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
 }
 
+// TestE2E_ValidationRequestSkippedWhenDrainIsPartial covers both ways that a drained
+// COMPONENT_RESET event is a partial drain of GPU-0. A partial drain never proves that the node
+// was fully drained, so no ValidationRequest is created.
 func TestE2E_ValidationRequestSkippedWhenDrainIsPartial(t *testing.T) {
-	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
-	defer cancel()
-
-	nodeName := "e2e-validation-partial-drain-" + generateShortTestID()
-	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
-	defer func() {
-		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
-	}()
-
-	tomlConfig := config.TomlConfig{
-		LabelPrefix: "k8s.nvidia.com/",
-		RuleSets: []config.QuarantineRuleSet{
-			{
-				Enabled: true, Name: "gpu-xid-critical", Version: "1",
-				Match: config.Match{Any: []config.Rule{
-					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
-				}},
-				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
-				Cordon: config.Cordon{ShouldCordon: true},
-			},
+	tests := []struct {
+		name                string
+		partialDrainEnabled bool
+		store               func(t *testing.T, entityType, entityValue string) *mockHealthEventStore
+	}{
+		{
+			name:                "partial drain enabled and no recorded decision",
+			partialDrainEnabled: true,
+			store:               mockHealthEventStoreWithDrainedComponentResetEvent,
 		},
-		Validation: validationConfig([]config.ValidationRuleSet{
-			{
-				Enabled: true, Name: "dcgm-diag", Version: "1",
-				Match: config.Match{Any: []config.Rule{
-					{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
-				}},
-				Tests: []string{"dcgm-diag-test"},
-			},
-		}),
+		{
+			name:                "recorded partial drain after partial drain is disabled",
+			partialDrainEnabled: false,
+			store:               mockHealthEventStoreWithRecordedPartialDrain,
+		},
 	}
 
-	tomlConfig.Validation.PartialDrainEnabled = true
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+			defer cancel()
 
-	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
-		TomlConfig:       tomlConfig,
-		HealthEventStore: mockHealthEventStoreWithDrainedComponentResetEvent(t, "GPU_UUID", "GPU-0"),
-	})
+			nodeName := "e2e-validation-partial-drain-" + generateShortTestID()
+			createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+			defer func() {
+				_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+			}()
 
-	eventID1 := generateTestID()
-	unhealthyBSON := createHealthEventBSON(
-		eventID1, nodeName, "GpuXidError", false, true,
-		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
-	)
-	unhealthyBSON["fullDocument"].(datastore.Event)["healthevent"].(datastore.Event)["recommendedaction"] =
-		float64(protos.RecommendedAction_COMPONENT_RESET)
-	mockWatcher.EventsChan <- &TestEvent{Data: unhealthyBSON}
+			tomlConfig := config.TomlConfig{
+				LabelPrefix: "k8s.nvidia.com/",
+				RuleSets: []config.QuarantineRuleSet{
+					{
+						Enabled: true, Name: "gpu-xid-critical", Version: "1",
+						Match: config.Match{Any: []config.Rule{
+							{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+						}},
+						Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+						Cordon: config.Cordon{ShouldCordon: true},
+					},
+				},
+				Validation: validationConfig([]config.ValidationRuleSet{
+					{
+						Enabled: true, Name: "dcgm-diag", Version: "1",
+						Match: config.Match{Any: []config.Rule{
+							{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+						}},
+						Tests: []string{"dcgm-diag-test"},
+					},
+				}),
+			}
 
-	t.Log("Wait for node to be quarantined with a validation annotation recorded")
-	require.Eventually(t, func() bool {
-		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		return err == nil && node.Spec.Unschedulable &&
-			node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != ""
-	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with a validation annotation")
+			tomlConfig.Validation.PartialDrainEnabled = tt.partialDrainEnabled
 
-	eventID2 := generateTestID()
-	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
-		eventID2, nodeName, "GpuXidError", true, false,
-		[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
-	)}
+			_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+				TomlConfig:       tomlConfig,
+				HealthEventStore: tt.store(t, "GPU_UUID", "GPU-0"),
+			})
 
-	t.Log("Verify status is UnQuarantined (the partial-drain event never proves a full drain)")
-	require.Eventually(t, func() bool {
-		status := getStatus(eventID2)
-		return status != nil && *status == model.UnQuarantined
-	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+			eventID1 := generateTestID()
+			unhealthyBSON := createHealthEventBSON(
+				eventID1, nodeName, "GpuXidError", false, true,
+				[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+			)
+			unhealthyBSON["fullDocument"].(datastore.Event)["healthevent"].(datastore.Event)["recommendedaction"] =
+				float64(protos.RecommendedAction_COMPONENT_RESET)
+			mockWatcher.EventsChan <- &TestEvent{Data: unhealthyBSON}
 
-	require.Eventually(t, func() bool {
-		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		return err == nil && !node.Spec.Unschedulable
-	}, eventuallyTimeout, eventuallyPollInterval, "Node should be fully unquarantined")
+			t.Log("Wait for node to be quarantined with a validation annotation recorded")
+			require.Eventually(t, func() bool {
+				node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				return err == nil && node.Spec.Unschedulable &&
+					node.Annotations[common.QuarantineValidationHealthEventAnnotationKey] != ""
+			}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined with a validation annotation")
 
-	t.Log("Verify the FQ taint was removed and no ValidationRequest was created")
-	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	require.NoError(t, err)
-	assert.False(t, node.Spec.Unschedulable, "Node should be uncordoned")
-	verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
-	assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
+			eventID2 := generateTestID()
+			mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+				eventID2, nodeName, "GpuXidError", true, false,
+				[]*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-0"}}, model.StatusInProgress,
+			)}
+
+			t.Log("Verify status is UnQuarantined (the partial-drain event never proves a full drain)")
+			require.Eventually(t, func() bool {
+				status := getStatus(eventID2)
+				return status != nil && *status == model.UnQuarantined
+			}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+			require.Eventually(t, func() bool {
+				node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				return err == nil && !node.Spec.Unschedulable
+			}, eventuallyTimeout, eventuallyPollInterval, "Node should be fully unquarantined")
+
+			t.Log("Verify the FQ taint was removed and no ValidationRequest was created")
+			node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.False(t, node.Spec.Unschedulable, "Node should be uncordoned")
+			verifyFQTaintAbsent(t, node, "nvidia.com/gpu-xid-error")
+			assert.Empty(t, listValidationRequestTests(ctx, t, nodeName))
+		})
+	}
 }
 
 func TestE2E_ValidationRequestCreatedWhenComponentResetEventFullyDrained(t *testing.T) {
@@ -4275,6 +4332,224 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "6th node should not be cordoned due to circuit breaker")
 }
 
+// createDeletableE2ETestNode creates a GPU node and deletes it when the test ends, unless the
+// test already deleted it.
+func createDeletableE2ETestNode(ctx context.Context, t *testing.T, name string) {
+	t.Helper()
+
+	createE2ETestNode(ctx, t, name, nil, nil, nil, false)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := e2eTestClient.CoreV1().Nodes().Delete(cleanupCtx, name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("failed to delete node %s: %v", name, err)
+		}
+	})
+}
+
+// setupCordonAllE2EReconciler starts a reconciler that cordons a node on any health event, with
+// a circuit breaker at the given percentage.
+func setupCordonAllE2EReconciler(
+	t *testing.T, ctx context.Context, percentage int,
+) (*Reconciler, *testutils.MockChangeStreamWatcher, breaker.CircuitBreaker) {
+	t.Helper()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "true"},
+					},
+				},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	r, mockWatcher, _, cb := setupE2EReconciler(t, ctx, tomlConfig, &breaker.CircuitBreakerConfig{
+		Namespace:  "default",
+		Percentage: percentage,
+		Duration:   5 * time.Minute,
+	})
+	require.NotNil(t, cb)
+
+	return r, mockWatcher, cb
+}
+
+// waitForGPUNodeCount waits until the GPU node counter reaches want. The counter's handler also
+// runs the last-GPU-node-deleted callback, and handles events in order, so a count that includes
+// a node added after a delete means the callback for that delete has returned.
+func waitForGPUNodeCount(t *testing.T, r *Reconciler, want int) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		totalNodes, _, err := r.k8sClient.NodeInformer.GetNodeCounts()
+		return err == nil && totalNodes == want
+	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should count %d GPU nodes", want)
+}
+
+// quarantineE2ENodes sends a health event for each node and waits until all are quarantined.
+func quarantineE2ENodes(
+	t *testing.T, r *Reconciler, mockWatcher *testutils.MockChangeStreamWatcher, names ...string,
+) {
+	t.Helper()
+
+	for _, name := range names {
+		mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+			generateTestID(),
+			name,
+			"TestCheck",
+			false,
+			false,
+			[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			model.StatusInProgress,
+		)}
+	}
+
+	require.Eventually(t, func() bool {
+		_, quarantined, err := r.k8sClient.NodeInformer.GetNodeCounts()
+		if err != nil {
+			return false
+		}
+
+		for _, name := range names {
+			if !quarantined[name] {
+				return false
+			}
+		}
+
+		return true
+	}, statusCheckTimeout, statusCheckPollInterval, "the nodes should be quarantined")
+}
+
+func deleteE2ENode(ctx context.Context, t *testing.T, name string) {
+	t.Helper()
+
+	require.NoError(t, e2eTestClient.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{}))
+}
+
+func TestE2E_CircuitBreakerForgetsDeletedNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	deletedNode := "e2e-cb-deleted-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, deletedNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 50)
+	waitForGPUNodeCount(t, r, 1)
+	quarantineE2ENodes(t, r, mockWatcher, deletedNode)
+
+	deleteE2ENode(ctx, t, deletedNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "the deleted node's cordon must not count against its replacement")
+}
+
+func TestE2E_CircuitBreakerForgetsEveryDeletedNodeWhenNoGPUNodesRemain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	firstNode := "e2e-cb-first-" + suffix
+	lastNode := "e2e-cb-last-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, firstNode)
+	createDeletableE2ETestNode(ctx, t, lastNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 2)
+	quarantineE2ENodes(t, r, mockWatcher, firstNode, lastNode)
+
+	// The first delete leaves a GPU node, so its cordon stays until the last delete.
+	deleteE2ENode(ctx, t, firstNode)
+	waitForGPUNodeCount(t, r, 1)
+	deleteE2ENode(ctx, t, lastNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "no deleted node's cordon may count against the replacement")
+}
+
+func TestE2E_CircuitBreakerForgetsDeletedNodesWhenLastGPUNodeWasNotQuarantined(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	quarantinedNode := "e2e-cb-quarantined-" + suffix
+	healthyNode := "e2e-cb-healthy-" + suffix
+	replacementNode := "e2e-cb-replacement-" + suffix
+
+	createDeletableE2ETestNode(ctx, t, quarantinedNode)
+	createDeletableE2ETestNode(ctx, t, healthyNode)
+
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 2)
+	quarantineE2ENodes(t, r, mockWatcher, quarantinedNode)
+
+	deleteE2ENode(ctx, t, quarantinedNode)
+	waitForGPUNodeCount(t, r, 1)
+	deleteE2ENode(ctx, t, healthyNode)
+	waitForGPUNodeCount(t, r, 0)
+
+	createDeletableE2ETestNode(ctx, t, replacementNode)
+	waitForGPUNodeCount(t, r, 1)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.False(t, isTripped, "the quarantined node's cordon must not count against the replacement")
+}
+
+func TestE2E_CircuitBreakerKeepsDeletedNodeCordonWhileGPUNodesRemain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	suffix := generateShortTestID()[:6]
+	deletedNode := "e2e-cb-keep-deleted-" + suffix
+	cordonedNode := "e2e-cb-keep-cordoned-" + suffix
+	healthyNode := "e2e-cb-keep-healthy-" + suffix
+
+	for _, name := range []string{deletedNode, cordonedNode, healthyNode} {
+		createDeletableE2ETestNode(ctx, t, name)
+	}
+
+	// 100% of 3 GPU nodes: two cordons keep the breaker CLOSED until a GPU node is deleted.
+	r, mockWatcher, cb := setupCordonAllE2EReconciler(t, ctx, 100)
+	waitForGPUNodeCount(t, r, 3)
+	quarantineE2ENodes(t, r, mockWatcher, deletedNode, cordonedNode)
+
+	isTripped, err := cb.IsTripped(ctx)
+	require.NoError(t, err)
+	require.False(t, isTripped, "two cordons out of three GPU nodes should not trip the breaker")
+
+	deleteE2ENode(ctx, t, deletedNode)
+	waitForGPUNodeCount(t, r, 2)
+
+	isTripped, err = cb.IsTripped(ctx)
+	require.NoError(t, err)
+	assert.True(t, isTripped, "the deleted node's cordon must keep counting while GPU nodes remain")
+}
+
 func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
@@ -6466,7 +6741,7 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 	}
 
 	r.precomputeTaintInitKeys(context.Background(), ruleSetEvals, rulesetsConfig)
-	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+	startSessionEndWorker(t, r)
 
 	mockWatcher := testutils.NewMockChangeStreamWatcher()
 	t.Cleanup(func() { close(mockWatcher.EventsChan) })
@@ -7035,8 +7310,10 @@ func TestE2E_ManualUncordonWithMissingMongoDoc(t *testing.T) {
 	t.Log("Setting up reconciler after simulated upgrade with eventWatcher")
 	r, _, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 	mockEventWatcher := &MockEventWatcher{}
-	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, reason string) error {
-		return fmt.Errorf("error decoding latest quarantining event for node %s: mongo: no documents in result", nodeName)
+	// The datastore has no document for the node, so the cancel finds nothing and returns nil,
+	// like the real event watcher.
+	mockEventWatcher.CancelLatestQuarantiningEventsFn = func(ctx context.Context, nodeName string, _ []string, reason string) error {
+		return nil
 	}
 	mockEventWatcher.ProcessEventCallbackFn = func(ctx context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
 		return nil, nil
@@ -8363,6 +8640,100 @@ func TestE2E_PreExistingTaint(t *testing.T) {
 		}
 	}
 	assert.True(t, hasTaint, "Pre-existing taint should be preserved after recovery")
+}
+
+func TestE2E_PreExistingTaintDifferentValueIsPreserved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-preexist-taint-diff-" + generateShortTestID()
+
+	// The node already carries the key and effect the rule taints, but with an operator's own value.
+	preExistingTaints := []corev1.Taint{
+		{Key: "nvidia.com/gpu-xid-error", Value: "owned-by-operator", Effect: corev1.TaintEffectNoSchedule},
+	}
+	createE2ETestNode(ctx, t, nodeName, nil, nil, preExistingTaints, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{
+			{
+				Enabled:  true,
+				Name:     "gpu-xid-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Unhealthy event quarantines the node but must not overwrite the operator's own taint value")
+	unhealthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(unhealthyEventID, nodeName,
+		"GpuXidError", false, true, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+	}, eventuallyTimeout, eventuallyPollInterval, "FQM should quarantine the node")
+
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	gpuTaintCount := 0
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-xid-error" {
+			gpuTaintCount++
+			assert.Equal(t, "owned-by-operator", taint.Value, "FQ must not overwrite the operator's taint value")
+		}
+	}
+	assert.Equal(t, 1, gpuTaintCount, "the operator taint must not be duplicated")
+	assert.Empty(t, node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey],
+		"the conflicting taint is dropped, so it is not recorded as applied")
+
+	t.Log("Healthy event releases the quarantine and must preserve the operator's taint")
+	healthyEventID := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(healthyEventID, nodeName,
+		"GpuXidError", true, false, []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress)}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(healthyEventID)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
+	}, eventuallyTimeout, eventuallyPollInterval, "FQ annotations should be removed after recovery")
+
+	node, err = e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	gpuTaintCount = 0
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-xid-error" {
+			gpuTaintCount++
+			assert.Equal(t, "owned-by-operator", taint.Value, "the operator's taint must survive recovery unchanged")
+		}
+	}
+	assert.Equal(t, 1, gpuTaintCount, "the operator's taint must still be present after recovery")
 }
 
 func TestE2E_ManualUntaintAnnotationCleanup(t *testing.T) {

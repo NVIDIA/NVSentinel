@@ -103,7 +103,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 	t.Logf("Cleaning up node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
 
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err = retry.RetryOnConflict(ConflictBackoff, func() error {
 		node, getErr := GetNodeByName(ctx, client, nodeName)
 		if getErr != nil {
 			return getErr

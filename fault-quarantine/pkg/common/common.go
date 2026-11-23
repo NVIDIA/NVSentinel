@@ -51,15 +51,6 @@ const (
 	QuarantineHealthEventDryRunAnnotationValue = "True"
 
 	ServiceName = "NVSentinel"
-
-	// NodeCELVar is the CEL variable the Node rules are evaluated against.
-	//
-	// The evaluator binds the cached node to this name, and the node cache
-	// derives what it retains by looking for reads of it. The two have to agree:
-	// a name the rules do not use yields no field paths, so every node prunes to
-	// the operational keys alone and the opt-out rules stop seeing the labels
-	// they read.
-	NodeCELVar = "node"
 )
 
 // QuarantineAnnotationKeys are every annotation key fault-quarantine reads off

@@ -23,6 +23,9 @@ data:
     
     server {
       listen 8080;
+      {{- if eq (toString (dig "ipv6" "enabled" false (.Values.global | default dict))) "true" }}
+      listen [::]:8080;
+      {{- end }}
       server_name _;
       charset utf-8;
 

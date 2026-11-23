@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -44,10 +45,21 @@ const (
 )
 
 var (
-	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
+	healthEventsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connector_health_events_received_total",
-		Help: "The total number of health events that the platform connector has received",
-	})
+		Help: "The total number of health events that the platform connector has received, " +
+			"by processing strategy and event health. The labels let consumers separate " +
+			"analyzer-relevant traffic (unhealthy, EXECUTE_REMEDIATION or STORE_AND_ANALYSE) " +
+			"from STORE_ONLY and recovery events, e.g. for analyzer-stall alerting.",
+	}, []string{"processing_strategy", "is_healthy"})
+
+	// The strategies a stored event can carry: UNSPECIFIED is defaulted away before
+	// counting, so it never appears as a label value.
+	countableStrategies = []pb.ProcessingStrategy{
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		pb.ProcessingStrategy_STORE_ONLY,
+		pb.ProcessingStrategy_STORE_AND_ANALYSE,
+	}
 
 	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "platform_connector_request_duration_seconds",
@@ -56,6 +68,32 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"outcome"})
 )
+
+// strategyLabel bounds the processing_strategy label to the known enum names plus a
+// single "UNKNOWN" bucket. A client on a newer proto can send a value this build does
+// not know; String() would turn each distinct unknown number into its own series, so
+// fold them all into one label value. The event is still stored unchanged; only the
+// metric label is normalised.
+func strategyLabel(s pb.ProcessingStrategy) string {
+	if _, ok := pb.ProcessingStrategy_name[int32(s)]; ok {
+		return s.String()
+	}
+
+	return "UNKNOWN"
+}
+
+// init exposes every countable {processing_strategy, is_healthy} series at zero so a
+// quiet cluster is distinguishable from a dead exporter: a rate() over a series
+// that starts at 1 cannot see its first 0->1 transition, which is the one an
+// analyzer-stall alert depends on. Mirrors initMetrics() in the kubernetes connector.
+// UNKNOWN is left out: it only appears on a bad input and should not read as expected.
+func init() {
+	for _, strategy := range countableStrategies {
+		for _, isHealthy := range []string{"true", "false"} {
+			healthEventsReceived.WithLabelValues(strategy.String(), isHealthy)
+		}
+	}
+}
 
 // PlatformConnectorServer serves the PlatformConnector gRPC service for both
 // roles of the binary. A batch is validated, run through the pipeline and
@@ -136,7 +174,6 @@ func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvent
 	)
 
 	slog.DebugContext(ctx, "Health events received", "events", he)
-	healthEventsReceived.Add(float64(eventCount))
 
 	if err := ApplyEventDefaultsAndValidate(he.GetEvents()); err != nil {
 		return outcomeRejected, err
@@ -144,6 +181,18 @@ func (p *PlatformConnectorServer) handle(ctx context.Context, he *pb.HealthEvent
 
 	if p.Pipeline != nil {
 		p.Pipeline.ProcessBatch(ctx, he.GetEvents())
+	}
+
+	// Counted after the pipeline so processing_strategy reflects the final stored
+	// value: a transformer can move an event to STORE_ONLY, and the label should name
+	// what the analyzer will see. strategyLabel folds unknown values into one bucket
+	// so the series stay bounded. Rejected batches are not counted; they are visible
+	// via requestDuration's rejected outcome.
+	for _, event := range he.GetEvents() {
+		healthEventsReceived.WithLabelValues(
+			strategyLabel(event.GetProcessingStrategy()),
+			strconv.FormatBool(event.GetIsHealthy()),
+		).Inc()
 	}
 
 	if p.Connector != nil {

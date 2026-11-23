@@ -51,12 +51,18 @@ jobs:
           - component: license-headers
             make_command: 'make license-headers-lint'
             step_name: 'Run license headers check'
+          - component: dependency-licenses
+            make_command: 'make dependency-licenses-lint'
+            step_name: 'Check dependency licenses'
           - component: gomod
             make_command: 'make gomod-lint'
             step_name: 'Run gomod lint'
           - component: renovate
             make_command: 'make renovate-lint'
             step_name: 'Validate Renovate configuration'
+          - component: openvex
+            make_command: 'make openvex-lint'
+            step_name: 'Validate .openvex.json'
           - component: dead-code
             make_command: 'make dead-code-lint'
             step_name: 'Check for dead code'
@@ -90,6 +96,13 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      # protos-lint installs protoc-gen-crd and vendors data-models, which download Go modules.
+      - name: Download Go modules
+        if: matrix.component == 'protos'
+        run: |
+          ./scripts/retry.sh make -C data-models install-plugin-remote
+          (cd data-models && ../scripts/retry.sh go mod download)
+
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
 
@@ -102,7 +115,7 @@ jobs:
 
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
         with:
           version: ${{ steps.helm-version.outputs.helm_version }}
 
@@ -137,6 +150,11 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        if: hashFiles(format('health-monitors/{0}/go.mod', matrix.component)) != ''
+        working-directory: health-monitors/${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C health-monitors/${{ matrix.component }} lint-test
 
@@ -164,6 +182,11 @@ jobs:
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
+
+      - name: Download Go modules
+        if: hashFiles(format('preflight-checks/{0}/go.mod', matrix.component)) != ''
+        working-directory: preflight-checks/${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
 
       - name: Run lint and test
         run: make -C preflight-checks/${{ matrix.component }} lint-test
@@ -196,6 +219,10 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test
 
@@ -221,6 +248,10 @@ jobs:
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
+
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
 
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test
@@ -248,6 +279,10 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Download Go modules
+        working-directory: ${{ matrix.component }}
+        run: ${{ github.workspace }}/scripts/retry.sh go mod download
+
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test
 
@@ -269,7 +304,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
         with:
           go-version: 'stable'
 

@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -180,12 +181,26 @@ func NodePatchBackoff() wait.Backoff {
 	}
 }
 
+// IsRetryableNodePatchError reports whether a node read or patch that failed
+// with err is worth another attempt.
+//
+// That includes a request whose connection failed before the response came
+// back, as when the API server restarts or a load balancer drops connections.
+// client-go retries those only for reads, because a write may have landed
+// anyway. Sending a node patch again is safe: a merge patch applied twice
+// leaves the node as one does, and a taint or cordon change carries the
+// resourceVersion it was computed from, so if the first write landed the retry
+// gets a conflict and the node is read again.
 func IsRetryableNodePatchError(err error) bool {
 	return errors.IsConflict(err) ||
 		errors.IsServerTimeout(err) ||
 		errors.IsTooManyRequests(err) ||
 		errors.IsTimeout(err) ||
-		errors.IsServiceUnavailable(err)
+		errors.IsServiceUnavailable(err) ||
+		utilnet.IsConnectionReset(err) ||
+		utilnet.IsProbableEOF(err) ||
+		utilnet.IsHTTP2ConnectionLost(err) ||
+		utilnet.IsConnectionRefused(err)
 }
 
 // NodeMergePatch builds an RFC 7386 JSON merge patch carrying differences in labels,

@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/metrics"
@@ -45,7 +47,6 @@ import (
 
 const (
 	annotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
-	annotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
 	finalizerName                     = "nvsentinel.nvidia.com/validation-request"
 )
 
@@ -88,7 +89,7 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1alpha1.ValidationRequest{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.nodeToValidationRequest),
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-				_, ok := obj.GetAnnotations()[annotationValidationSession]
+				_, ok := obj.GetAnnotations()[annotationutil.ValidationSessionKey]
 				return ok
 			}))).
 		Named("validationrequest")
@@ -120,7 +121,7 @@ func (r *ValidationRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *ValidationRequestReconciler) nodeToValidationRequest(ctx context.Context,
 	obj client.Object) []reconcile.Request {
-	entries, err := parseSessionAnnotation(obj.GetAnnotations()[annotationValidationSession])
+	entries, err := annotationutil.ParseValidationSession(obj.GetAnnotations()[annotationutil.ValidationSessionKey])
 	if err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to parse validation-session annotation", "node", obj.GetName())
 		return nil
@@ -495,7 +496,7 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 		}
 	}
 
-	if err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest, nil); err != nil {
+	if err := r.releaseNodesFromDeletedRequest(ctx, validationRequest); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -511,13 +512,8 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase,
 	skippedNodes, skippedTests []string) (ctrl.Result, error) {
-	if phase == v1alpha1.PhaseSucceeded {
-		err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
-			resolveValidationRequestTests(validationRequest, r.Config))
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-	} else if err := r.releaseNodesFromFailedRequest(ctx, validationRequest); err != nil {
+	phase, err := r.releaseNodesOnCompletion(ctx, validationRequest, phase)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -552,6 +548,45 @@ func (r *ValidationRequestReconciler) completeValidationRequest(ctx context.Cont
 	metrics.ValidationRequestsDurationSeconds.WithLabelValues(metricStatus).Observe(duration.Seconds())
 
 	return ctrl.Result{}, nil
+}
+
+/*
+releaseNodesOnCompletion releases the nodes of a successful request, or marks the session entry of every node of a
+failed request as failed. The nodes of a successful request are released only when every one of them still satisfies
+the readiness criteria. Otherwise the request completes as Failed with a ReleaseBlocked condition, and its nodes keep
+their failed session entry and their scheduling gate until an equivalent request succeeds or the request is deleted.
+*/
+func (r *ValidationRequestReconciler) releaseNodesOnCompletion(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, phase v1alpha1.Phase) (v1alpha1.Phase, error) {
+	if phase == v1alpha1.PhaseSucceeded {
+		violations, err := r.releaseNodesFromSuccessfulRequest(ctx, validationRequest,
+			resolveValidationRequestTests(validationRequest, r.Config))
+		if err != nil {
+			return phase, err
+		}
+
+		if len(violations) == 0 {
+			return phase, nil
+		}
+
+		slog.WarnContext(ctx, "Node failed readiness criteria before validation release; failing the request",
+			"validationRequest", validationRequest.Name, "violations", violations.message())
+		setReleaseBlockedCondition(validationRequest, violations)
+
+		phase = v1alpha1.PhaseFailed
+	}
+
+	return phase, r.releaseNodesFromFailedRequest(ctx, validationRequest)
+}
+
+func setReleaseBlockedCondition(validationRequest *v1alpha1.ValidationRequest, violations readinessViolations) {
+	meta.SetStatusCondition(&validationRequest.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeReleaseBlocked,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: validationRequest.Generation,
+		Reason:             string(v1alpha1.FailureReasonNodeReadinessViolation),
+		Message:            violations.message(),
+	})
 }
 
 func (r *ValidationRequestReconciler) transitionValidationRequestToRunning(ctx context.Context,

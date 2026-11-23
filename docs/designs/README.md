@@ -70,8 +70,16 @@ Each record states one decision: the context that forced it, what was decided, w
 | 054 | [`Observability` — change stream consumer lag metrics](054-changestream-lag-metrics.md) |
 | 055 | [Health Monitors — NVCRE Certification Monitor](055-nvcre-certification-monitor.md) |
 | 056 | [Performance — Concurrent Node-Partitioned Event Processing](056-concurrent-node-partitioned-event-processing.md) |
+| 057 | [Node Drainer — Pod Label Policies](057-pod-drain-policies.md) |
 | 058 | [Authentication — Host-Native Metadata Collector (proposed)](058-metadata-collector-host-authentication.md) |
 | 059 | [Health Events Analyzer — Operator Recovery of Derived Conditions (proposed)](059-derived-condition-recovery.md) |
 | 062 | [Fault Quarantine — Release Quarantine Actions Only at Session End (proposed)](062-fault-quarantine-release-at-session-end.md) |
 | 063 | [Node Drainer — Owner Kinds in Pod Drain Policies (proposed)](063-pod-drain-policies-owner-kinds.md) |
+| 064 | [Configuration — Node and Device Selection in Each Component (proposed)](064-node-and-device-selection.md) |
 | 065 | [Validation — Test Selection for Node Groups (proposed)](065-validation-node-groups.md) |
+| 066 | [Health Events Analyzer — Datastore-Neutral Rules (proposed)](066-health-events-analyzer-datastore-neutral-rules.md) |
+| 068 | [Datastore — Bounded Retention for the PostgreSQL Changelog (proposed)](068-postgresql-changelog-retention.md) |
+| 069 | [Janitor — Extend the GPU Reset Job with a Strategic Merge Patch](069-gpu-reset-job-extension.md) |
+| 070 | [Architecture — Vendor-Neutral Core and Vendor Plugins (proposed)](070-vendor-neutral-core.md) |
+| 071 | [Configuration — Device Scope for Partial Drains and Scoped Remediation (proposed)](071-device-scope-from-configuration.md) |
+| 072 | [Architecture — Run the Pod Device Mapper Apart from NVIDIA Discovery (proposed)](072-pod-device-mapper-daemonset.md) |

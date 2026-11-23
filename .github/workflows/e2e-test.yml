@@ -152,10 +152,10 @@ jobs:
 
       - name: Configure Helm repositories
         run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add bitnami https://charts.bitnami.com/bitnami
-          helm repo add jetstack https://charts.jetstack.io
-          helm repo update
+          ./scripts/retry.sh helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          ./scripts/retry.sh helm repo add bitnami https://charts.bitnami.com/bitnami
+          ./scripts/retry.sh helm repo add jetstack https://charts.jetstack.io
+          ./scripts/retry.sh helm repo update
 
       - name: Configure ctlptl registry authentication
         run: |
@@ -202,6 +202,8 @@ jobs:
           USE_DEPLOYMENT_PLATFORM_CONNECTOR: ${{ matrix.platform_connector == 'deployment' && '1' || '0' }}
           # Set architecture-specific test tags (mongodb tag applies to all MongoDB variants)
           TEST_TAGS: ${{ matrix.arch }}_group${{ contains(matrix.datastore, 'mongodb') && ',mongodb' || '' }}
+          # Run only the tests of this job and the tests in "all" in tests/e2e-shards.yaml.
+          E2E_SHARD: ${{ env.E2E_JOB_ID }}
         run: |
           make e2e-test-ci
 

@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,11 +28,12 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 	"k8s.io/client-go/util/retry"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 const (
@@ -57,7 +59,26 @@ var defaultListPodsBackoff = wait.Backoff{
 const defaultListPodsTimeout = 20 * time.Second
 
 type KubeletHTTPSClient interface {
-	ListPods() ([]corev1.Pod, error)
+	ListPods() ([]KubeletPod, error)
+}
+
+// KubeletPod is the part of a kubelet /pods entry that the mapper reads. Decoding skips every
+// other field, so the size of a pod's spec costs no memory. Annotations holds only the device
+// annotation: other annotations can be as large as the pod itself, for example kubectl's
+// last-applied-configuration, which is a copy of it.
+type KubeletPod struct {
+	Name        string
+	Namespace   string
+	Annotations map[string]string
+}
+
+// kubeletPodJSON is the subset of the pod schema that decodePodList reads.
+type kubeletPodJSON struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
 }
 
 type kubeletHTTPSClient struct {
@@ -160,21 +181,21 @@ In summary, we require:
 Example for how to make an equivalent request via CLI:
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:10250/pods
 */
-func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
+func (client *kubeletHTTPSClient) ListPods() ([]KubeletPod, error) {
 	// One deadline for the whole call: every attempt, its response-body read, and the sleeps
 	// between them. Neither half is bounded otherwise. The transport's timeouts cover only the
-	// header exchange, io.ReadAll has no deadline of its own, and retry.OnError sleeps through
-	// wait.ExponentialBackoff, which never consults a context. So a hung kubelet could hold
-	// ListPods well past the caller's poll period.
+	// header exchange, reading the body has no deadline of its own, and retry.OnError sleeps
+	// through wait.ExponentialBackoff, which never consults a context. So a hung kubelet could
+	// hold ListPods well past the caller's poll period.
 	ctx, cancel := context.WithTimeout(client.ctx, client.listPodsTimeout)
 	defer cancel()
 
-	var podBytes []byte
+	var pods []KubeletPod
 
 	err := retry.OnError(client.listPodsBackoff, retriableUntil(ctx), func() error {
 		var err error
 
-		podBytes, err = client.fetchPods(ctx)
+		pods, err = client.fetchPods(ctx)
 
 		return err
 	})
@@ -182,18 +203,13 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 		return nil, err
 	}
 
-	pods := corev1.PodList{}
-
-	err = json.Unmarshal(podBytes, &pods)
-	if err != nil {
-		return nil, fmt.Errorf("got an error unmarshalling response from /pods: %w", err)
-	}
-
-	return pods.Items, nil
+	return pods, nil
 }
 
 // fetchPods performs one attempt at the /pods request. The transport supplies authentication.
-func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error) {
+// The body is decoded while it is read, so a malformed body fails the attempt and is retried
+// like a failed read.
+func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]KubeletPod, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.listPodsURI, nil)
 	if err != nil {
 		return nil, err
@@ -219,12 +235,148 @@ func (client *kubeletHTTPSClient) fetchPods(ctx context.Context) ([]byte, error)
 		return nil, fmt.Errorf("got a non-200 response code from /pods endpoint: %d", resp.StatusCode)
 	}
 
-	podBytes, err := io.ReadAll(resp.Body)
+	pods, err := decodePodList(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("got an error reading response body from /pods endpoint: %w", err)
+		return nil, fmt.Errorf("got an error decoding response from /pods endpoint: %w", err)
 	}
 
-	return podBytes, nil
+	return pods, nil
+}
+
+// decodePodList reads a PodList one item at a time, so at most one pod's JSON is buffered.
+// Decoding the whole list in one call would buffer the entire response first. It returns pods
+// only for a complete list.
+func decodePodList(body io.Reader) ([]KubeletPod, error) {
+	decoder := json.NewDecoder(body)
+
+	if err := expectDelim(decoder, '{'); err != nil {
+		return nil, err
+	}
+
+	pods, err := decodePodListFields(decoder)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := expectDelim(decoder, '}'); err != nil {
+		return nil, err
+	}
+
+	if err := expectEnd(decoder); err != nil {
+		return nil, err
+	}
+
+	return pods, nil
+}
+
+// decodePodListFields reads the PodList's fields, decoding items and skipping the rest.
+func decodePodListFields(decoder *json.Decoder) ([]KubeletPod, error) {
+	var pods []KubeletPod
+
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("read pod list field: %w", unexpectedEOF(err))
+		}
+
+		if key != "items" {
+			var skipped json.RawMessage
+			if err := decoder.Decode(&skipped); err != nil {
+				return nil, fmt.Errorf("read pod list field %v: %w", key, err)
+			}
+
+			continue
+		}
+
+		pods, err = decodePodItems(decoder)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return pods, nil
+}
+
+// decodePodItems reads the items array. A null array is an empty list, as json.Unmarshal reads it.
+func decodePodItems(decoder *json.Decoder) ([]KubeletPod, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("read pod list items: %w", unexpectedEOF(err))
+	}
+
+	if token == nil {
+		return nil, nil
+	}
+
+	if token != json.Delim('[') {
+		return nil, fmt.Errorf("pod list items: expected an array, got %v", token)
+	}
+
+	var pods []KubeletPod
+
+	for decoder.More() {
+		var item kubeletPodJSON
+		if err := decoder.Decode(&item); err != nil {
+			return nil, fmt.Errorf("decode pod %d: %w", len(pods), err)
+		}
+
+		pods = append(pods, newKubeletPod(item.Metadata.Name, item.Metadata.Namespace, item.Metadata.Annotations))
+	}
+
+	if err := expectDelim(decoder, ']'); err != nil {
+		return nil, err
+	}
+
+	return pods, nil
+}
+
+// newKubeletPod keeps only the device annotation. A present but empty annotation is kept,
+// because the mapper removes an annotation only when it exists.
+func newKubeletPod(name, namespace string, annotations map[string]string) KubeletPod {
+	pod := KubeletPod{Name: name, Namespace: namespace}
+
+	if value, ok := annotations[model.PodDeviceAnnotationName]; ok {
+		pod.Annotations = map[string]string{model.PodDeviceAnnotationName: value}
+	}
+
+	return pod
+}
+
+func expectDelim(decoder *json.Decoder, want json.Delim) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("read %q: %w", want, unexpectedEOF(err))
+	}
+
+	if token != want {
+		return fmt.Errorf("expected %q, got %v", want, token)
+	}
+
+	return nil
+}
+
+// expectEnd rejects anything but whitespace after the pod list, as json.Unmarshal does.
+func expectEnd(decoder *json.Decoder) error {
+	_, err := decoder.Token()
+
+	switch {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read past the pod list: %w", err)
+	default:
+		return errors.New("unexpected data after the pod list")
+	}
+}
+
+// unexpectedEOF reports a body that ends inside the pod list as truncated. At some positions
+// the decoder's Token returns a plain io.EOF there, which reads as a clean end of input.
+func unexpectedEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+
+	return err
 }
 
 // retriableUntil retries any error until ctx is done. Returning false there is what stops

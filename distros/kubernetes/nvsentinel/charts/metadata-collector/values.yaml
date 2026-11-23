@@ -111,6 +111,11 @@ metrics:
   port: 2112
 
 podMapper:
+  # Runs the pod device mapper, which writes the dgxc.nvidia.com/devices annotation that partial
+  # drains need. Set false only where the mapper cannot work, for example when the kubelet reports
+  # pods that the collector cannot see through the Kubernetes API. The GPU metadata file is still
+  # written, and partial drains then fail.
+  enabled: true
   # Consecutive failed poll cycles tolerated before the container exits non-zero. The poll
   # period is 30s, so the default rides out 5 minutes of failures, enough to outlast a
   # credential rotation or a kubelet restart while still failing loudly if the collector is

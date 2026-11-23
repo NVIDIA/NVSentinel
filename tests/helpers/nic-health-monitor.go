@@ -634,7 +634,7 @@ func restoreNICDaemonSetArgsNoWait(ctx context.Context, t *testing.T,
 	t.Logf("Restoring args for daemonset %s/%s container %s (no rollout wait)",
 		NVSentinelNamespace, NICHealthMonitorDaemonSetName, NICHealthMonitorContainerName)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		daemonSet := &appsv1.DaemonSet{}
 		if getErr := client.Resources().Get(ctx, NICHealthMonitorDaemonSetName,
 			NVSentinelNamespace, daemonSet); getErr != nil {
@@ -662,7 +662,7 @@ func restoreNICDaemonSetArgsNoWait(ctx context.Context, t *testing.T,
 func updateConfigMapSysfsPaths(t *testing.T, ctx context.Context, client klient.Client) {
 	t.Helper()
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		cm := &corev1.ConfigMap{}
 		if getErr := client.Resources().Get(ctx, NICHealthMonitorConfigMapName,
 			NVSentinelNamespace, cm); getErr != nil {

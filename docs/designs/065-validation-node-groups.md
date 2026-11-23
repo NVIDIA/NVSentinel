@@ -15,7 +15,7 @@ Validation has two paths. Before this ADR, neither path could select a test for 
 
 In both paths, lifecycle-manager runs the tests, and uncordons the node only if all the tests pass.
 
-[ADR-064](https://github.com/NVIDIA/NVSentinel/pull/2026) (proposed) adds the same type of selection by node to node-drainer and fault-remediation. It lists validation as a non-goal. This ADR adds the selection to validation.
+[ADR-064](064-node-and-device-selection.md) (proposed) adds the same type of selection by node to node-drainer and fault-remediation. It lists validation as a non-goal. This ADR adds the selection to validation.
 
 ## Decision
 
@@ -68,7 +68,7 @@ A GB200 node with a fatal GPU event gets `dcgm-diag-test` and `nccl-loopback-nvs
 - **Tests are selected when the event arrives:** fault-quarantine checks the rule sets when an unhealthy event arrives, as before this ADR. It saves the event and its tests in the `quarantineValidationHealthEvent` annotation of the node.
 - **A failed selection does not stop the quarantine:** Sometimes fault-quarantine cannot check a rule set. For example, a `Node` condition needs the node from the cache, but the node is not in the cache yet. Then fault-quarantine cannot know if the rule set matches. Before this ADR, fault-quarantine skipped this rule set, so the node could miss a test that it needs. After this ADR, fault-quarantine still quarantines the node, and it saves the event as a pending selection. It logs an error and increments a metric with the rule set name.
 - **Try again:** fault-quarantine tries the selection again for each node, and waits longer after each failure. node-drainer tries again in the same way (`node-drainer/pkg/queue`). Thus, a failure on one node does not delay the events of other nodes. At startup, fault-quarantine finds the pending selections on the nodes and tries them again. How fault-quarantine saves a pending selection is an open question.
-- **The retry also does the steps after the selection:** If the node is still quarantined when the selection succeeds, fault-quarantine saves the tests, and nothing else changes. If the last unhealthy event of the node already recovered, the retry also checks the drain and creates the ValidationRequest. fault-quarantine removes the pending selection only after the ValidationRequest exists. If the rule sets select no test, fault-quarantine creates no ValidationRequest. It releases its quarantine only when no other validation work keeps the node out of service.
+- **The retry also does the steps after the selection:** If the node is still quarantined when the selection succeeds, fault-quarantine saves the tests, and nothing else changes. If the last unhealthy event of the node already recovered, the retry also checks the drain and creates the ValidationRequest. If the rule sets select tests, fault-quarantine removes the pending selection only after the ValidationRequest exists. If the rule sets select no test, fault-quarantine creates no ValidationRequest, and it removes the pending selection when the selection succeeds. Thus, a pending selection does not keep a node that needs no test cordoned. fault-quarantine releases its quarantine only when no other validation work keeps the node out of service.
 - **The node stays cordoned while a selection is pending:** When the last unhealthy event of the node recovers and a selection is pending, fault-quarantine does not uncordon the node, and it does not remove its taints. Before this ADR, fault-quarantine does the same when it cannot create the ValidationRequest (`triggerValidationOnUnquarantine` in `fault-quarantine/pkg/reconciler/reconciler.go`).
 
 ### New-node test selection
@@ -192,4 +192,4 @@ Each test in the validation configuration gets a `Node` condition, and a test ru
 - [ADR-040: External Remediation Request](040-external-remediation-request.md)
 - [ADR-049: Node Validation](049-node-validation.md)
 - [ADR-062: Release Quarantine Actions Only at Session End](062-fault-quarantine-release-at-session-end.md)
-- [PR #2026: ADR-064, node and device selection in each component (proposed)](https://github.com/NVIDIA/NVSentinel/pull/2026)
+- [ADR-064: Node and Device Selection in Each Component](064-node-and-device-selection.md)

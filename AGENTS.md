@@ -70,6 +70,7 @@ make protos-generate      # regenerate Go + Python protobuf bindings
 make dependencies-sync    # sync deps across modules via the Go workspace
 make go-mod-tidy-all      # go mod tidy in every module
 make license-headers-lint # Apache 2.0 headers on all source files
+make dependency-licenses-lint # third-party licenses of core module deps vs .dependency-licenses.yaml
 
 # Images
 make ko-build     # Go images (ko — no Dockerfile involved)
@@ -102,7 +103,7 @@ Do not do these without an explicit human instruction:
 - **Do not touch anything under `distros/kubernetes/nvsentinel/` chart versions or `.versions.yaml`** as a side effect of unrelated work — version bumps are their own change.
 - **Do not run `make dev-env`, `e2e-test`, or `kubectl` against a cluster you did not create.** Confirm your kube-context is the local Kind cluster first: `kubectl config current-context` must read `kind-nvsentinel` (defined in `.ctlptl.yaml`). Never run destructive commands against a context you do not recognise.
 - **Do not regenerate protobufs, run `go mod tidy`, or reformat files outside the scope of your change** — the diff noise buries the actual change.
-- **Do not add a dependency** without saying so; this project ships to customers and every dependency is a supply-chain surface.
+- **Do not add a dependency** without saying so; this project ships to customers and every dependency is a supply-chain surface. In a core module, `make dependency-licenses-lint` checks its license.
 - **Do not add `Co-Authored-By` or agent-attribution trailers** to commits.
 
 ## Architecture Decision Records
@@ -238,6 +239,10 @@ if err != nil {
 
 Everywhere else, `return err` bare loses the call site — wrap with `fmt.Errorf("context: %w", err)`.
 
+**In E2E tests, retry conflicts with `helpers.ConflictBackoff`, not `retry.DefaultRetry`.** `retry.DefaultRetry` stops after 5 tries in about 50 ms. During the tests, other writers update the same objects; for example, NVSentinel components update Nodes. Get the object inside the retry function: an `Update` of a stale copy gets the same 409 on every try.
+
+**Before you change an environment variable in a chart, find every place that reads it.** One variable can set more than one behaviour — `MONGODB_PING_TIMEOUT_TOTAL_SECONDS` sets four timeouts. Also compare the value with the code default, because some chart values override it.
+
 **Compare errors with `errors.Is`, never `==`.** `errorlint` is enabled and will fail CI, and `==` breaks on wrapped errors:
 
 ```go
@@ -288,13 +293,23 @@ defer resp.Body.Close()
 
 **Write in [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/).** It keeps documentation clear for every reader, including the many whose first language is not English. In practice:
 
-- One idea per sentence. Keep instructions under 20 words and descriptions under 25.
+- One idea per sentence. An instruction has at most 20 words, and a description at most 25. A sentence that starts with "If" or "To" and then gives an instruction is an instruction. The limits also apply in list items and table cells. A paragraph has at most six sentences.
+- Write an instruction in the imperative: "Set `x` to `true`", not "You should set" or "You can set". Put the condition first: "If the pod restarts, examine its logs." Give one instruction per sentence.
+- Use a numbered list for steps that the reader must do in order. Put each warning before the step that it applies to.
 - Active voice with a clear actor: "the drainer evicts the pod", not "the pod is evicted".
-- One word, one meaning. Pick a term and reuse it — a node is *cordoned*, never variously "cordoned", "blocked" or "fenced".
-- Simple, common words. Prefer "use" over "utilise", "before" over "prior to", "start" over "initiate".
+- Use the simple present tense for normal behaviour: "NVSentinel cordons the node", not "will cordon". Do not use progressive tenses: "runs", not "is running".
+- Use "must" for a requirement, "can" for a possibility and "do not" for a prohibition. Do not use "should", "may", "might", "could" or "would".
+- One word, one meaning. Pick a term and reuse it — a node is *cordoned*, never variously "cordoned", "blocked" or "fenced". [Terms](#terms) lists the shared ones.
+- Simple, common words. Prefer "use" over "utilise", "before" over "prior to" and "start" over "initiate". Prefer a simple verb to a phrasal verb: "configure", not "set up".
+- Do not use contractions or Latin abbreviations. Write "for example" for "e.g.", "through" or "with" for "via", and "and" or "compared to" for "vs.". Give the full list in place of "etc.".
+- No idioms, filler or marketing words, such as "simply", "just", "easily", "out of the box", "under the hood" or "blast radius".
+- Keep the articles ("a", "the") in sentences. Table cells and labels can be fragments.
+- Talk to the reader with "you" or the imperative. Do not write "the user", "we" or "our".
 - Say what to do, not what to avoid, unless the hazard is the point.
 
-This is a house style for prose, not a linter. Do not mangle a precise technical term to satisfy it.
+This is a house style for prose, not a linter. Do not mangle a precise technical term to satisfy it. Keep quoted log lines, error messages and command output verbatim.
+
+**After you split a long sentence, check each reference again.** Words such as "it", "this", "Otherwise" and "the row above" can point at a different thing after the split. Splitting is the most common way to change the meaning of a sentence by accident.
 
 **Keep any single document under 15 minutes of reading**, roughly 3000 words of prose. Past that, readers skim and stop finding things. Split by topic into documents that each stand alone, and link between them — one long page is harder to use than four short ones. Reference material that grows without bound (a command catalogue, a troubleshooting matrix) belongs in its own file from the start.
 
@@ -303,16 +318,56 @@ This is a house style for prose, not a linter. Do not mangle a precise technical
 ```markdown
 <!-- BAD - rewording the first clause reflows all three lines -->
 The node drainer evicts workloads from a quarantined node. It respects
-pod disruption budgets and will not evict pods that have no
+pod disruption budgets and does not evict pods that have no
 controller managing them.
 
 <!-- GOOD - a reworded sentence is a one-line diff -->
-The node drainer evicts workloads from a quarantined node. It respects pod disruption budgets and will not evict pods that have no controller managing them.
+The node drainer evicts workloads from a quarantined node. It respects pod disruption budgets and does not evict pods that have no controller managing them.
 ```
 
 This applies to new files and to sections you add. When editing a file that is already hard-wrapped throughout — `CODE_OF_CONDUCT.md`, for instance, which carries upstream Contributor Covenant text — match the surrounding style rather than leaving one reflowed paragraph in an otherwise wrapped document.
 
 Also: fenced code blocks need a language (` ```bash `, ` ```go `, ` ```text ` for diagrams), and blank lines go before and after headings, lists and fences.
+
+### Published docs
+
+The docs site, docs.nvidia.com/nvsentinel, publishes only the pages listed in [docs/index.yml](docs/index.yml). Each release tag freezes its own copy of `docs/`, so the site keeps the docs of every release. The release notes describe what changed. These rules apply to every page in `docs/index.yml`. The ADRs in `docs/designs/` record history, so [Architecture Decision Records](#architecture-decision-records) applies to them instead.
+
+- **Describe only the current release.** Do not write upgrade or rollback notes, "previously", "no longer", "in earlier versions" or "NVSentinel vX or later". Do not use roadmap words such as "currently", "planned" or "not yet". A minimum version of a dependency, such as "GPU Operator v26.7.1 or later", is current state.
+- **Write for users, not maintainers.** The readers operate NVSentinel, or extend it through its public interfaces. These include Helm values, CRDs, gRPC messages, metrics, labels, annotations, node conditions, Kubernetes events, log messages, CLI flags, environment variables and plugin interfaces. Describe internal behaviour as what the reader can see, for example "node-drainer retries the eviction every 10 seconds". Do not name private functions, structs or packages. Contributor workflows belong in [DEVELOPMENT.md](DEVELOPMENT.md) or the module README. Examples are Tilt, in-repo E2E tests and notes such as "when you add X, also update Y".
+- **No internal names.** Do not name internal clusters, teams, people, tickets, registries or hosts. Use `example.com` hostnames in examples.
+- **Links.** Link only to pages in `docs/index.yml`, because the site publishes no other page. If a published page needs a new page, add the new page to `docs/index.yml`. Do not link into `docs/designs/`, to source files, or to PRs and issues. If the reader needs a repository file, write its path in a code span. Link to external sites only for Kubernetes, CNCF projects and NVIDIA.
+- **A heading is an anchor.** Before you change a heading, search `docs/` for links to its anchor and update them.
+
+CI checks these pages in [fern-docs-ci.yml](.github/workflows/fern-docs-ci.yml). It runs `fern check` on the published form, an offline link check, and a check for `<img>` tags that do not close themselves. CI does not check the other rules in this section, so check them yourself.
+
+### Terms
+
+Use these terms in the same way on every page:
+
+| Term | Meaning |
+|---|---|
+| cordon | Mark a node unschedulable. |
+| quarantine | What fault-quarantine does when a rule matches. It cordons the node and applies the taints, labels and annotations of the rule. Do not use "cordon" and "quarantine" as synonyms. |
+| health event | A report from a health monitor. Do not write "event" alone if it can mean a Kubernetes Event. |
+| derived event | A health event that health-events-analyzer publishes. |
+| maintenance CR | A custom resource that fault-remediation creates, such as RebootNode, TerminateNode or GPUReset. Do not write "remediation CR" or "maintenance request". "CRD" means only the definition. |
+| datastore | The NVSentinel event store, MongoDB or PostgreSQL. "Database" means one MongoDB or PostgreSQL database. |
+| Helm value | A key in the chart values. Do not write "chart value". |
+
+Use one name for each component on a page. On a new page, use the lowercase module name, such as node-drainer.
+
+### Code examples
+
+- **Copy Helm values from the chart, and check that each key takes effect.** Read the template that uses the key. The `condition` in [Chart.yaml](distros/kubernetes/nvsentinel/Chart.yaml) enables each subchart. For most modules it is `global.<module>.enabled`, not `<subchart>.enabled`. In an override file for the umbrella chart, put subchart values under the subchart name, such as `fault-remediation:`.
+- **Use the real object names.** A command must use the Deployment, ConfigMap and label names that the chart creates.
+- **Placeholders in indented code blocks.** The publish workflow escapes `<`, `{` and `}` outside code, but it finds a code fence only at column 0. The site then shows these characters escaped in a fence that is indented under a list item. In such a fence, do not use `<name>` or `{name}` placeholders. Use a sample value, such as `my-node`, or an `example.com` host.
+- **Diagrams** use the terms of the page, not Go type names.
+
+### Facts
+
+- **Check each fact in the code or the chart before you write it.** An ADR records a decision, and the code can differ from it. A default in the docs must match `values.yaml`.
+- **Runbooks run on live clusters.** Keep each step in the order that the operator runs it. Before a step deletes state, stop the components that write that state again, for example by scaling them to zero.
 
 ## Testing
 
@@ -352,6 +407,18 @@ require.Eventually(t, func() bool {
 ```
 
 Use `require.Never` for the inverse — proving a node is *not* cordoned when it should not be. That pairing matters here: remediation code needs a test showing it does not fire in the healthy case, and `require.Never` is how you write it.
+
+**In an envtest controller test, wait for the cache before you call `Reconcile`.** The reconciler reads through the controller-runtime cache, which can lag a write that the test made through the API server. Wait until the cached client returns the write, then reconcile.
+
+**Show a flake fix with repeated runs.** Reproduce the failure with repeated runs under parallel load before the fix, and show zero failures in the same number of runs after it.
+
+## CI and E2E
+
+**List each new E2E test in `tests/e2e-shards.yaml`.** CI fails if a test is not listed. A test in `all` runs in every job, so its run time adds to each job. The header of the file says which tests go in `all` and where to put the others.
+
+**Run a network download in a CI step through `scripts/retry.sh`.** In a Dockerfile, use the inline retry loop around `go mod download` that the other Dockerfiles use, because some build contexts do not include `scripts/`.
+
+**Compare all E2E jobs before and after a change to CI time.** Use the test durations in `results/e2e-tests.json` of each job.
 
 ## Anti-Patterns
 

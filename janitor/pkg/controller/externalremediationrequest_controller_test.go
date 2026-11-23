@@ -29,16 +29,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	nvsentinelv1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
-	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -247,8 +248,17 @@ func prepareReleased(
 ) ctrlclient.ObjectKey {
 	GinkgoHelper()
 
-	Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+	node := newTestNode(nodeName, nil, nil)
+	Expect(r.Client.Create(ctx, node)).To(Succeed())
+	Expect(node.UID).NotTo(BeEmpty())
+
 	extrrObj := newTestExtRR(extrrName, nodeName)
+	extrrObj.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1",
+		Kind:       "Node",
+		Name:       nodeName,
+		UID:        node.UID,
+	}}
 	Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
 
 	key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
@@ -363,7 +373,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 
 			var node corev1.Node
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-			Expect(findTaintByKey(node.Spec.Taints, ReleaseTaintKey)).To(BeNil(),
+			Expect(findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey,
+				corev1.TaintEffectNoSchedule)).To(BeNil(),
 				"release taint must be removed after Complete=True")
 			Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey),
 				"managed label must be removed entirely (absence is the default-managed state)")
@@ -469,7 +480,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 
 			var node corev1.Node
 			Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-			Expect(findTaintByKey(node.Spec.Taints, ReleaseTaintKey)).To(BeNil())
+			Expect(findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey,
+				corev1.TaintEffectNoSchedule)).To(BeNil())
 			Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 
 			var got nvsentinelv1.ExternalRemediationRequest
@@ -541,7 +553,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 
 		var nodeAfterApply corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterApply)).To(Succeed())
-		Expect(findTaintByKey(nodeAfterApply.Spec.Taints, ReleaseTaintKey)).NotTo(BeNil())
+		Expect(findTaintByKeyAndEffect(nodeAfterApply.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).NotTo(BeNil())
 		Expect(nodeAfterApply.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
 
 		setExternalRemediationComplete(ctx, r.Client,
@@ -553,7 +566,8 @@ var _ = Describe("ExternalRemediationRequest Controller resolution paths (branch
 
 		var nodeAfterCleanup corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterCleanup)).To(Succeed())
-		Expect(findTaintByKey(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey)).To(BeNil(),
+		Expect(findTaintByKeyAndEffect(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).To(BeNil(),
 			"end-of-lifecycle: release taint removed")
 		Expect(nodeAfterCleanup.Labels).NotTo(HaveKey(managed.ManagedLabelKey),
 			"end-of-lifecycle: managed label removed")
@@ -593,7 +607,7 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 
 		Expect(nodeAfter.ResourceVersion).To(Equal(rvBefore),
 			"branch 5 must NOT PATCH the Node — taint+label remain because operator has no signal what state the external system left the node in")
-		taint := findTaintByKey(nodeAfter.Spec.Taints, ReleaseTaintKey)
+		taint := findTaintByKeyAndEffect(nodeAfter.Spec.Taints, ReleaseTaintKey, corev1.TaintEffectNoSchedule)
 		Expect(taint).NotTo(BeNil(), "release taint must remain in place on Complete=False")
 		Expect(taint.Value).To(Equal(key.Name))
 		Expect(nodeAfter.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse),
@@ -642,7 +656,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 
 		var nodeAtFalse corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAtFalse)).To(Succeed())
-		Expect(findTaintByKey(nodeAtFalse.Spec.Taints, ReleaseTaintKey)).NotTo(BeNil())
+		Expect(findTaintByKeyAndEffect(nodeAtFalse.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).NotTo(BeNil())
 		Expect(nodeAtFalse.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
 
 		// True retry → branch 4 cleanup.
@@ -654,7 +669,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 
 		var nodeAfterCleanup corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterCleanup)).To(Succeed())
-		Expect(findTaintByKey(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey)).To(BeNil(),
+		Expect(findTaintByKeyAndEffect(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).To(BeNil(),
 			"False->True retry must trigger branch 4 cleanup")
 		Expect(nodeAfterCleanup.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 	})
@@ -679,7 +695,8 @@ var _ = Describe("ExternalRemediationRequest Controller asymmetric False handlin
 
 		var nodeAfter corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfter)).To(Succeed())
-		Expect(findTaintByKey(nodeAfter.Spec.Taints, ReleaseTaintKey)).To(BeNil(),
+		Expect(findTaintByKeyAndEffect(nodeAfter.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).To(BeNil(),
 			"operator delete must trigger branch 2 cleanup even from the False state")
 		Expect(nodeAfter.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 
@@ -723,7 +740,7 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		var node corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
 
-		taint := findTaintByKey(node.Spec.Taints, ReleaseTaintKey)
+		taint := findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey, corev1.TaintEffectNoSchedule)
 		Expect(taint).NotTo(BeNil(), "release taint must be applied")
 		Expect(taint.Value).To(Equal(extrrObj.Name), "taint value must carry owning ExtRR's name")
 		Expect(taint.Effect).To(Equal(corev1.TaintEffectNoSchedule))
@@ -825,6 +842,57 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		Expect(drainEvents(r)).To(BeEmpty())
 	})
 
+	It("does not release a replacement Node with the same name", func() {
+		nodeName := "node-replaced-before-apply-1"
+		original := newTestNode(nodeName, nil, nil)
+		Expect(r.Client.Create(ctx, original)).To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		extrrObj := newTestExtRR("replaced-before-apply-extrr-1", nodeName)
+		extrrObj.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "v1",
+			Kind:       "Node",
+			Name:       nodeName,
+			UID:        original.UID,
+		}}
+		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
+		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
+
+		// Initialize the ExtRR, but replace its owner Node before apply runs.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.Client.Delete(ctx, original)).To(Succeed())
+
+		replacement := newTestNode(nodeName,
+			map[string]string{"operator.example/state": "keep"},
+			[]corev1.Taint{{
+				Key: "operator.example/taint", Value: "keep", Effect: corev1.TaintEffectNoSchedule,
+			}})
+		Expect(r.Client.Create(ctx, replacement)).To(Succeed())
+
+		var replacementBefore corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &replacementBefore)).To(Succeed())
+
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var replacementAfter corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &replacementAfter)).To(Succeed())
+		Expect(replacementAfter.ResourceVersion).To(Equal(replacementBefore.ResourceVersion),
+			"apply must not PATCH a replacement Node")
+		Expect(replacementAfter.Labels).To(Equal(replacementBefore.Labels))
+		Expect(replacementAfter.Spec.Taints).To(Equal(replacementBefore.Spec.Taints))
+
+		var got nvsentinelv1.ExternalRemediationRequest
+		Expect(r.Client.Get(ctx, key, &got)).To(Succeed())
+		released := findExtRRCondition(&got, ConditionNVSentinelOwnershipReleased)
+		Expect(released.Status).To(Equal("False"))
+		Expect(released.Reason).To(Equal(ReasonNodeNotFound))
+		Expect(released.Message).To(ContainSubstring("was replaced"))
+		Expect(got.Status.CompletionTime).NotTo(BeNil())
+	})
+
 	// Empty-nodeName rejection is covered by the webhook test suite.
 
 	It("requeues without acting when another maintenance resource holds the node lock", func() {
@@ -870,11 +938,195 @@ var _ = Describe("ExternalRemediationRequest Controller apply path (branch 3)", 
 		// And the Node is untouched.
 		var node corev1.Node
 		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-		Expect(findTaintByKey(node.Spec.Taints, ReleaseTaintKey)).To(BeNil())
+		Expect(findTaintByKeyAndEffect(node.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).To(BeNil())
 		Expect(node.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
 	})
 
+	It("replaces a stale release taint owned by another ExtRR so its own cleanup can remove it", func() {
+		nodeName := "node-stale-taint-1"
+		Expect(r.Client.Create(ctx, newTestNode(nodeName,
+			map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
+			[]corev1.Taint{
+				{Key: ReleaseTaintKey, Value: "operator", Effect: corev1.TaintEffectNoExecute},
+				{Key: ReleaseTaintKey, Value: "stale-extrr", Effect: corev1.TaintEffectNoSchedule},
+			}))).
+			To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		extrrObj := newTestExtRR("stale-taint-extrr-1", nodeName)
+		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
+		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
+
+		reconcileToSteadyState(ctx, r, key, 3)
+
+		var nodeAfterApply corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterApply)).To(Succeed())
+		taint := findTaintByKeyAndEffect(nodeAfterApply.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)
+		Expect(taint).NotTo(BeNil())
+		Expect(taint.Value).To(Equal(extrrObj.Name), "apply must take over a stale release taint")
+		operatorTaint := findTaintByKeyAndEffect(nodeAfterApply.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoExecute)
+		Expect(operatorTaint).NotTo(BeNil(), "apply must preserve the operator's NoExecute taint")
+		Expect(operatorTaint.Value).To(Equal("operator"))
+
+		// Reverse the two same-key taints before cleanup. Matching by key and
+		// effect must work regardless of list order.
+		patchNode(ctx, r, nodeName, func(n *corev1.Node) {
+			n.Spec.Taints = []corev1.Taint{
+				{Key: ReleaseTaintKey, Value: extrrObj.Name, Effect: corev1.TaintEffectNoSchedule},
+				{Key: ReleaseTaintKey, Value: "operator", Effect: corev1.TaintEffectNoExecute},
+			}
+		})
+
+		setExternalRemediationComplete(ctx, r.Client,
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var nodeAfterCleanup corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfterCleanup)).To(Succeed())
+		Expect(findTaintByKeyAndEffect(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)).To(BeNil())
+		operatorTaint = findTaintByKeyAndEffect(nodeAfterCleanup.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoExecute)
+		Expect(operatorTaint).NotTo(BeNil(), "cleanup must preserve the operator's NoExecute taint")
+		Expect(operatorTaint.Value).To(Equal("operator"))
+		Expect(nodeAfterCleanup.Labels).NotTo(HaveKey(managed.ManagedLabelKey))
+	})
+
 })
+
+var _ = Describe("ExternalRemediationRequest Controller cleanup ownership", func() {
+	var (
+		ctx context.Context
+		r   *ExternalRemediationRequestReconciler
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		r = newExtRRReconciler()
+	})
+
+	It("leaves the Node unchanged on delete when the release taint belongs to another ExtRR", func() {
+		nodeName := "node-own-other-1"
+		key := prepareReleased(ctx, r, "own-other-extrr-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		patchNode(ctx, r, nodeName, func(n *corev1.Node) {
+			n.Spec.Taints = []corev1.Taint{{
+				Key: ReleaseTaintKey, Value: "other-extrr", Effect: corev1.TaintEffectNoSchedule,
+			}}
+		})
+
+		var nodeBefore corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeBefore)).To(Succeed())
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var nodeAfter corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfter)).To(Succeed())
+		Expect(nodeAfter.ResourceVersion).To(Equal(nodeBefore.ResourceVersion),
+			"cleanup must not PATCH a Node whose release taint belongs to another ExtRR")
+		taint := findTaintByKeyAndEffect(nodeAfter.Spec.Taints, ReleaseTaintKey, corev1.TaintEffectNoSchedule)
+		Expect(taint).NotTo(BeNil())
+		Expect(taint.Value).To(Equal("other-extrr"))
+		Expect(nodeAfter.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
+
+		var got nvsentinelv1.ExternalRemediationRequest
+		err = r.Client.Get(ctx, key, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "finalizer must still be removed")
+	})
+
+	It("keeps an operator-set managed=false label when a completed ExtRR is deleted later", func() {
+		nodeName := "node-own-operator-1"
+		key := prepareReleased(ctx, r, "own-operator-extrr-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		setExternalRemediationComplete(ctx, r.Client,
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		patchNode(ctx, r, nodeName, func(n *corev1.Node) {
+			n.Labels = map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse}
+		})
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var nodeAfter corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &nodeAfter)).To(Succeed())
+		Expect(nodeAfter.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse),
+			"deleting a completed ExtRR must not remove a label the operator set afterwards")
+
+		var got nvsentinelv1.ExternalRemediationRequest
+		err = r.Client.Get(ctx, key, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("leaves a replacement Node with the same name unchanged on delete", func() {
+		nodeName := "node-own-replaced-1"
+		key := prepareReleased(ctx, r, "own-replaced-extrr-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		var original corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &original)).To(Succeed())
+		Expect(r.Client.Delete(ctx, &original)).To(Succeed())
+		Expect(r.Client.Create(ctx, newTestNode(nodeName,
+			map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
+			[]corev1.Taint{{
+				Key: ReleaseTaintKey, Value: key.Name, Effect: corev1.TaintEffectNoSchedule,
+			}}))).To(Succeed())
+
+		var replacementBefore corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &replacementBefore)).To(Succeed())
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var replacementAfter corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &replacementAfter)).To(Succeed())
+		Expect(replacementAfter.ResourceVersion).To(Equal(replacementBefore.ResourceVersion),
+			"cleanup must not PATCH a replacement Node even when its taint value matches the ExtRR")
+		taint := findTaintByKeyAndEffect(replacementAfter.Spec.Taints, ReleaseTaintKey,
+			corev1.TaintEffectNoSchedule)
+		Expect(taint).NotTo(BeNil())
+		Expect(taint.Value).To(Equal(key.Name))
+		Expect(replacementAfter.Labels).To(HaveKeyWithValue(managed.ManagedLabelKey, managed.ManagedLabelValueFalse))
+	})
+})
+
+// patchNode applies mutate to the latest Node and patches it, as an operator would.
+func patchNode(
+	ctx context.Context, r *ExternalRemediationRequestReconciler, nodeName string, mutate func(*corev1.Node),
+) {
+	GinkgoHelper()
+
+	var node corev1.Node
+	Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+
+	updated := node.DeepCopy()
+	mutate(updated)
+	Expect(r.Client.Patch(ctx, updated, ctrlclient.MergeFrom(&node))).To(Succeed())
+}
 
 func TestExtRRReconciler_NeedsInitialization(t *testing.T) {
 	r := &ExternalRemediationRequestReconciler{}
@@ -983,6 +1235,24 @@ func deleteNodeForCleanup(ctx context.Context, r *ExternalRemediationRequestReco
 	}
 }
 
+func forceNodeFinalizerRemoval(
+	ctx context.Context, r *ExternalRemediationRequestReconciler, nodeName string,
+) {
+	var node corev1.Node
+	if err := r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node); err != nil {
+		if !apierrors.IsNotFound(err) {
+			fmt.Fprintf(GinkgoWriter, "cleanup Get(node/%s): %v\n", nodeName, err)
+		}
+
+		return
+	}
+
+	node.Finalizers = nil
+	if err := r.Client.Update(ctx, &node); err != nil && !apierrors.IsNotFound(err) {
+		fmt.Fprintf(GinkgoWriter, "cleanup Update(node/%s): %v\n", nodeName, err)
+	}
+}
+
 func findExtRRCondition(extrrObj *nvsentinelv1.ExternalRemediationRequest, condType string) *protos.Condition {
 	if extrrObj.Status == nil {
 		return nil
@@ -1061,9 +1331,60 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		Expect(testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(
 			janitormetrics.ExtRRPhaseReleased, janitormetrics.ExtRRResultSuccess))-releasedBefore).
 			To(BeNumerically("==", 1.0), "released{success} must NOT double-count on re-reconciles")
+		Expect(testutil.ToFloat64(janitormetrics.ExtRROpen.WithLabelValues(
+			nodeName, testRecommendedActionLabel, janitormetrics.ExtRROpenStateAwaiting))).
+			To(BeNumerically("==", 1.0), "err_open must stay at 1 across re-reconciles")
 
 		events := drainEvents(r)
 		Expect(events).To(ContainElement(ContainSubstring(eventReasonReleaseTaintApplied)))
+	})
+
+	It("keeps err_open at 0 when the ExtRR is deleted before the release taint was applied", func() {
+		nodeName := "node-obs-open-predelete-1"
+		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		extrrObj := newTestExtRR("obs-open-predelete-1", nodeName)
+		Expect(r.Client.Create(ctx, extrrObj)).To(Succeed())
+		DeferCleanup(forceFinalizerRemoval, ctx, r, extrrObj)
+
+		key := ctrlclient.ObjectKey{Name: extrrObj.Name, Namespace: extrrObj.Namespace}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(r.Client.Delete(ctx, extrrObj)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(testutil.ToFloat64(janitormetrics.ExtRROpen.WithLabelValues(
+			nodeName, testRecommendedActionLabel, janitormetrics.ExtRROpenStateAwaiting))).
+			To(BeNumerically("==", 0.0), "closing an ExtRR that never opened must not push err_open below 0")
+	})
+
+	It("rebuilds err_open after a janitor restart and sets it to 0 on close", func() {
+		nodeName := "node-obs-open-restart-1"
+		key := prepareReleased(ctx, r, "obs-open-restart-1", nodeName)
+		DeferCleanup(forceFinalizerRemovalByKey, ctx, r, key)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		openLabels := []string{nodeName, testRecommendedActionLabel, janitormetrics.ExtRROpenStateAwaiting}
+
+		// A restart wipes the in-memory gauge.
+		janitormetrics.ExtRROpen.DeleteLabelValues(openLabels...)
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutil.ToFloat64(janitormetrics.ExtRROpen.WithLabelValues(openLabels...))).
+			To(BeNumerically("==", 1.0), "reconciling an open ExtRR must restore err_open")
+
+		setExternalRemediationComplete(ctx, r.Client,
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(testutil.ToFloat64(janitormetrics.ExtRROpen.WithLabelValues(openLabels...))).
+			To(BeNumerically("==", 0.0), "closing the ExtRR must set err_open to 0")
 	})
 
 	It("increments closed{success} + external_response{success} + observes age on True cleanup", func() {
@@ -1180,4 +1501,180 @@ var _ = Describe("ExternalRemediationRequest Controller observability", func() {
 		Expect(events).To(ContainElement(ContainSubstring(eventReasonReleaseTaintRemoved)))
 		Expect(events).To(ContainElement(ContainSubstring(closeReasonOperatorInitiated)))
 	})
+
+	It("records operator_deleted when the Node owner reference still matches the live Node", func() {
+		nodeName := "node-obs-owner-match-1"
+		key := prepareReleased(ctx, r, "obs-owner-match-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		var node corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+		setNodeOwner(ctx, r, key, nodeName, node.UID)
+		drainEvents(r)
+
+		operatorBefore := closedCount(janitormetrics.ExtRRResultOperatorDeleted)
+		nodeDeletedBefore := closedCount(janitormetrics.ExtRRResultNodeDeleted)
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(closedCount(janitormetrics.ExtRRResultOperatorDeleted) - operatorBefore).To(BeNumerically("==", 1.0))
+		Expect(closedCount(janitormetrics.ExtRRResultNodeDeleted) - nodeDeletedBefore).To(BeNumerically("==", 0.0))
+		Expect(drainEvents(r)).NotTo(ContainElement(ContainSubstring(eventReasonOwnerNodeDeleted)))
+	})
+
+	It("records node_deleted + emits OwnerNodeDeleted when an open ExtRR's Node is gone", func() {
+		nodeName := "node-obs-node-gone-1"
+		key := prepareReleased(ctx, r, "obs-node-gone-1", nodeName)
+
+		var node corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+		Expect(r.Client.Delete(ctx, &node)).To(Succeed())
+		drainEvents(r)
+
+		operatorBefore := closedCount(janitormetrics.ExtRRResultOperatorDeleted)
+		nodeDeletedBefore := closedCount(janitormetrics.ExtRRResultNodeDeleted)
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(closedCount(janitormetrics.ExtRRResultNodeDeleted) - nodeDeletedBefore).To(BeNumerically("==", 1.0))
+		Expect(closedCount(janitormetrics.ExtRRResultOperatorDeleted) - operatorBefore).To(BeNumerically("==", 0.0))
+
+		events := drainEvents(r)
+		Expect(events).To(ContainElement(ContainSubstring(eventReasonOwnerNodeDeleted)))
+		Expect(events).NotTo(ContainElement(ContainSubstring(eventReasonOperatorDeleteRequest)))
+	})
+
+	It("records node_deleted while an open ExtRR's Node is terminating", func() {
+		nodeName := "node-obs-node-terminating-1"
+		key := prepareReleased(ctx, r, "obs-node-terminating-1", nodeName)
+		DeferCleanup(forceNodeFinalizerRemoval, ctx, r, nodeName)
+
+		patchNode(ctx, r, nodeName, func(n *corev1.Node) {
+			n.Finalizers = append(n.Finalizers, "test.nvsentinel.nvidia.com/hold-node")
+		})
+
+		var node corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+		Expect(r.Client.Delete(ctx, &node)).To(Succeed())
+
+		var terminating corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &terminating)).To(Succeed())
+		Expect(terminating.DeletionTimestamp.IsZero()).To(BeFalse())
+		drainEvents(r)
+
+		operatorBefore := closedCount(janitormetrics.ExtRRResultOperatorDeleted)
+		nodeDeletedBefore := closedCount(janitormetrics.ExtRRResultNodeDeleted)
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(closedCount(janitormetrics.ExtRRResultNodeDeleted) - nodeDeletedBefore).To(BeNumerically("==", 1.0))
+		Expect(closedCount(janitormetrics.ExtRRResultOperatorDeleted) - operatorBefore).To(BeNumerically("==", 0.0))
+
+		events := drainEvents(r)
+		Expect(events).To(ContainElement(ContainSubstring(eventReasonOwnerNodeDeleted)))
+		Expect(events).NotTo(ContainElement(ContainSubstring(eventReasonOperatorDeleteRequest)))
+	})
+
+	It("records node_deleted when an open ExtRR's Node was replaced by one with a different UID", func() {
+		nodeName := "node-obs-node-replaced-1"
+		key := prepareReleased(ctx, r, "obs-node-replaced-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		var original corev1.Node
+		Expect(r.Client.Get(ctx, ctrlclient.ObjectKey{Name: nodeName}, &original)).To(Succeed())
+		setNodeOwner(ctx, r, key, nodeName, original.UID)
+
+		Expect(r.Client.Delete(ctx, &original)).To(Succeed())
+		Expect(r.Client.Create(ctx, newTestNode(nodeName, nil, nil))).To(Succeed())
+		drainEvents(r)
+
+		nodeDeletedBefore := closedCount(janitormetrics.ExtRRResultNodeDeleted)
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(closedCount(janitormetrics.ExtRRResultNodeDeleted) - nodeDeletedBefore).To(BeNumerically("==", 1.0))
+		Expect(drainEvents(r)).To(ContainElement(ContainSubstring(eventReasonOwnerNodeDeleted)))
+	})
+
+	It("emits CompletedRequestDeleted and records no close metric when a completed ExtRR is deleted", func() {
+		nodeName := "node-obs-completed-del-1"
+		key := prepareReleased(ctx, r, "obs-completed-del-1", nodeName)
+		DeferCleanup(deleteNodeForCleanup, ctx, r, nodeName)
+
+		setExternalRemediationComplete(ctx, r.Client,
+			&nvsentinelv1.ExternalRemediationRequest{
+				Name: key.Name, Namespace: key.Namespace}, "True", "ExternalRemediationSucceeded")
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		drainEvents(r)
+
+		results := []string{
+			janitormetrics.ExtRRResultSuccess,
+			janitormetrics.ExtRRResultOperatorDeleted,
+			janitormetrics.ExtRRResultNodeDeleted,
+		}
+		before := map[string]float64{}
+
+		for _, result := range results {
+			before[result] = closedCount(result)
+		}
+
+		Expect(r.Client.Delete(ctx, &nvsentinelv1.ExternalRemediationRequest{
+			Name: key.Name, Namespace: key.Namespace,
+		})).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, result := range results {
+			Expect(closedCount(result)-before[result]).To(BeNumerically("==", 0.0),
+				"closed{%s} must not change when an already-completed ExtRR is deleted", result)
+		}
+
+		events := drainEvents(r)
+		Expect(events).To(ContainElement(ContainSubstring(eventReasonCompletedDeleted)))
+		Expect(events).NotTo(ContainElement(ContainSubstring(eventReasonOperatorDeleteRequest)))
+
+		var got nvsentinelv1.ExternalRemediationRequest
+		err = r.Client.Get(ctx, key, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "finalizer must still be removed")
+	})
 })
+
+func closedCount(result string) float64 {
+	return testutil.ToFloat64(janitormetrics.ExtRRTotal.WithLabelValues(janitormetrics.ExtRRPhaseClosed, result))
+}
+
+// setNodeOwner adds the Node owner reference that fault-remediation sets on
+// every maintenance CR. envtest runs no garbage collector, so the reference
+// never deletes the ExtRR by itself.
+func setNodeOwner(
+	ctx context.Context, r *ExternalRemediationRequestReconciler, key ctrlclient.ObjectKey,
+	nodeName string, nodeUID types.UID,
+) {
+	GinkgoHelper()
+
+	var extrrObj nvsentinelv1.ExternalRemediationRequest
+	Expect(r.Client.Get(ctx, key, &extrrObj)).To(Succeed())
+
+	updated := extrrObj.DeepCopy()
+	updated.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1", Kind: "Node", Name: nodeName, UID: nodeUID,
+	}}
+	Expect(r.Client.Patch(ctx, updated, ctrlclient.MergeFrom(&extrrObj))).To(Succeed())
+}

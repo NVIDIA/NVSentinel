@@ -164,7 +164,11 @@ func run() error {
 
 	nicMonitor.EnablePollStallDetection(*pollStallDeadline, stallStrategy)
 
-	return runServerAndLoops(ctx, rc, nicMonitor)
+	// Arms the shutdown publish-drain clock: one deadline at the signal
+	// that every late publish draws on (see defaultPublishDrain).
+	nicMonitor.ArmPublishDrain(ctx)
+
+	return runServerAndLoops(ctx, rc, nicMonitor, stateManager)
 }
 
 // dialPlatformConnector routes the dial through the shared healthpub
@@ -339,9 +343,11 @@ func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifi
 		"written nic_topology)", *metadataPath, err)
 }
 
-// runServerAndLoops starts the metrics server alongside the state
-// polling loop under an errgroup.
-func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor) error {
+// runServerAndLoops runs the metrics server and polling loops, then flushes
+// committed counter state on graceful shutdown.
+func runServerAndLoops(
+	ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor, stateManager *statefile.Manager,
+) error {
 	// Health checker reports unhealthy if the state polling loop has not
 	// completed an iteration within 3x the state polling interval. The
 	// counter loop deliberately does not mark it: at its 1s cadence it
@@ -381,7 +387,17 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 		return nicMonitor.RunPollStallWatchdog(gCtx)
 	})
 
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	if errors.Is(ctx.Err(), context.Canceled) {
+		if err := stateManager.FlushPendingCounterState(); err != nil {
+			slog.Warn("Failed to flush pending counter state on shutdown", "error", err)
+		}
+	}
+
+	return nil
 }
 
 // buildChecks instantiates the enabled checks.

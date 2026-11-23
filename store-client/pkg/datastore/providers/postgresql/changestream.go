@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/lib/pq"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -38,8 +40,14 @@ const (
 	// PostgreSQL NOTIFY channel for instant change notifications
 	notifyChannel = "nvsentinel_changes"
 
-	recentEventIDLimit = 10000
-	recentEventIDTTL   = 5 * time.Minute
+	// pendingDeliveryLimit exceeds the default partitioned processor's 1000 in-flight
+	// events plus the watcher and adapter buffers (100 each). Older positions are
+	// summarized by pendingFloor, so bookkeeping stays bounded without blocking delivery.
+	pendingDeliveryLimit = 4096
+
+	recentEventIDLimit  = 10000
+	recentEventIDTTL    = 5 * time.Minute
+	resumeRetryMaxDelay = 30 * time.Second
 )
 
 // ChangeStreamMode defines the operating mode for the changestream watcher
@@ -61,11 +69,36 @@ type notificationPayload struct {
 	Operation string `json:"operation"` // INSERT/UPDATE/DELETE
 }
 
+// pendingDelivery identifies one enqueue attempt in delivery order, independently of id order.
+type pendingDelivery struct {
+	id        int64
+	timestamp time.Time
+	seq       uint64
+}
+
+const (
+	// changelogBatchSize is the most changelog rows one poll reads.
+	changelogBatchSize = 100
+	// notifiedIDLimit bounds the notified changelog ids kept between two lookups of the fetch
+	// loop. Ids that arrive while the list is full are dropped, see fetchNotifiedRows.
+	notifiedIDLimit = 1000
+	// fetchRetryDelay is how long the fetch loop waits before it makes a failed pass again. It
+	// bounds how long a late row waits after a transient read error, and keeps the error logs to
+	// one failed pass a second while the database is unhealthy.
+	fetchRetryDelay = time.Second
+	// notifySilentAfter is how long the LISTEN connection can go without a notification before
+	// NOTIFY counts as silent. The fallback poller then polls on its own, and the fetch loop no
+	// longer moves a filtered watcher up to the newest row, see mayMoveToNewestRow.
+	notifySilentAfter = 30 * time.Second
+)
+
 // PostgreSQLChangeStreamWatcher implements ChangeStreamWatcher for PostgreSQL
 // Supports three modes: polling (original), notify (LISTEN/NOTIFY), and hybrid (recommended)
 //
-// Resume Strategy: Uses timestamp-based resume (like MongoDB) for reliable replay of time-window events.
-// The resume token stores both `lastTimestamp` and `lastEventID` for precise positioning.
+// Resume Strategy: Uses a (changed_at, id) resume position for ordered polling and stores both
+// values in the resume token. This is best-effort replay: neither field is assigned at commit, so
+// a transaction that commits after the cursor has passed its sort position can be missed if its
+// NOTIFY was not received.
 //
 // Filtering Strategy: Two-layer filtering for optimal performance:
 // 1. Server-side: SQL WHERE clause filters events in the database query (reduces volume)
@@ -76,23 +109,75 @@ type PostgreSQLChangeStreamWatcher struct {
 	tableName      string
 	events         chan datastore.EventWithToken
 	stopCh         chan struct{}
+	startOnce      sync.Once
+	closeOnce      sync.Once
+	workerMu       sync.Mutex
+	workerWG       sync.WaitGroup
+	workerCancel   context.CancelFunc
 	lastEventID    int64        // For tie-breaking when timestamps are equal
 	lastTimestamp  time.Time    // Primary resume position (timestamp-based, like MongoDB)
-	mu             sync.RWMutex // Protects lastEventID, lastTimestamp, and lastNotifyTime
+	mu             sync.RWMutex // Protects read, persisted, pending delivery, notification, and readiness state
+	listenerMu     sync.RWMutex // Protects listener
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
 	pipeline       any             // Raw pipeline for SQL filter building
+	// sendMu serializes delivery order and prevents Close from closing events during a send.
+	sendMu      sync.Mutex
+	pending     []pendingDelivery
+	deliverySeq uint64
+	// pendingFloor holds the minimum evicted position and maximum evicted sequence.
+	// A nonzero sequence marks an active saturation episode, cleared by a tracked ack.
+	pendingFloor pendingDelivery
+
+	// Last successfully persisted pair; mu serializes rewind and acknowledgment saves.
+	persistedTimestamp time.Time
+	persistedEventID   int64
+	// persistedUncertain is set after a failed save. The write may still have committed,
+	// so the stored pair is unknown and the next late delivery must save its rewind first.
+	persistedUncertain bool
+
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
 
+	// highestReadEventID is the highest changelog id this watcher has read or resumed from.
+	// Acknowledgments cannot raise it: verifying an unread id does not constitute a read.
+	// It is never below lastEventID. The cursor moves in (changed_at, id)
+	// order, so its id can drop below ids already read, and an ack for such a row must not
+	// need the row's changed_at: the row can have been purged by then.
+	highestReadEventID int64
+
+	resumeRetryInterval time.Duration // Initial legacy lookup retry delay; overridden in tests
+	positionInitialized bool          // Set by construction or by Start's own initialization; no reload afterwards
+
 	// Hybrid mode fields
-	mode           ChangeStreamMode
-	listener       *pq.Listener // LISTEN connection for notifications
-	lastNotifyTime time.Time    // Last time we received a NOTIFY
-	connString     string       // Connection string for LISTEN
+	mode               ChangeStreamMode
+	listener           *pq.Listener // LISTEN connection for notifications
+	listenerConnected  bool
+	listenerSubscribed bool
+	pollReady          bool
+	readFailed         bool
+	catchUpPending     bool
+	catchUpGeneration  uint64
+	lastNotifyTime     time.Time // Last time we received a NOTIFY
+	connString         string    // Connection string for LISTEN
 
 	// lag carries the two timestamps change_stream_lag_seconds is derived from. See ADR-054.
 	lag lagstate.Tracker
+
+	// handleNotification hands notified changelog ids to the fetch loop through these, so the
+	// goroutine that reads the LISTEN connection never runs a query or waits for the consumer.
+	// mu guards all of them but wake.
+	wake        chan struct{}      // holds at most one wake-up, which covers any number of notifications
+	notifiedIDs []int64            // notified ids in the order they arrived, at most notifiedIDLimit
+	unreadIDs   map[int64]struct{} // the notified ids no read has returned yet
+	droppedIDs  int                // notified ids not kept since the last lookup, because notifiedIDs was full
+
+	// fetchMu serializes cursor reads and event delivery. The fallback poller and fetch loop
+	// would otherwise read the same rows from the same position and deliver them twice.
+	fetchMu sync.Mutex
+
+	// retryDelay is fetchRetryDelay, which tests shorten.
+	retryDelay time.Duration
 }
 
 // LagState reports when this poller last saw a poll return no rows and the changed_at of the
@@ -102,7 +187,60 @@ func (w *PostgreSQLChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRea
 	return w.lag.LagState()
 }
 
-// NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
+// IsReady reports whether a subscribed listener or successful poll can process events.
+// A failed database read overrides an active LISTEN connection until a read succeeds.
+func (w *PostgreSQLChangeStreamWatcher) IsReady() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return !w.readFailed && ((w.listenerConnected && w.listenerSubscribed) || w.pollReady)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) listenerIsActive() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.listenerConnected && w.listenerSubscribed
+}
+
+func (w *PostgreSQLChangeStreamWatcher) isStopped() bool {
+	select {
+	case <-w.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) setListenerConnected(connected bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if connected && w.isStopped() {
+		connected = false
+	}
+
+	w.listenerConnected = connected
+}
+
+func (w *PostgreSQLChangeStreamWatcher) setPollReady(ready bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.pollReady = ready
+	w.readFailed = !ready
+}
+
+func (w *PostgreSQLChangeStreamWatcher) markCatchUpPending() {
+	w.mu.Lock()
+	w.catchUpPending = true
+	w.catchUpGeneration++
+	w.mu.Unlock()
+}
+
+// NewPostgreSQLChangeStreamWatcher allocates a watcher without database I/O.
+// Use an error-returning construction path to prepare its durable position.
+// Start initializes directly allocated watchers before launching readers.
 func NewPostgreSQLChangeStreamWatcher(
 	db *sql.DB, clientName string, tableName string, connString string, mode ChangeStreamMode,
 ) *PostgreSQLChangeStreamWatcher {
@@ -116,6 +254,8 @@ func NewPostgreSQLChangeStreamWatcher(
 		stopCh:         make(chan struct{}),
 		pollInterval:   10 * time.Millisecond, // Aggressive poll interval (used in polling and fallback modes)
 		recentEventIDs: make(map[int64]time.Time),
+		wake:           make(chan struct{}, 1),
+		retryDelay:     fetchRetryDelay,
 	}
 }
 
@@ -126,74 +266,107 @@ func (w *PostgreSQLChangeStreamWatcher) Events() <-chan datastore.EventWithToken
 
 // Start starts the change stream watcher
 func (w *PostgreSQLChangeStreamWatcher) Start(ctx context.Context) {
-	// Load last processed event ID
-	if err := w.loadResumePosition(ctx); err != nil {
-		slog.Error("Failed to load resume position", "client", w.clientName, "error", err)
-	}
-
-	switch w.mode {
-	case ModePolling:
-		slog.Info("Starting PostgreSQL changestream in POLLING mode",
-			"client", w.clientName,
-			"mode", "polling",
-			"pollInterval", w.pollInterval,
-			"description", "Queries changelog table every interval")
-
-		go w.pollForChanges(ctx)
-
-	case ModeNotify:
-		slog.Info("Starting PostgreSQL changestream in LISTEN/NOTIFY mode (experimental)",
-			"client", w.clientName,
-			"mode", "notify",
-			"description", "Uses PostgreSQL NOTIFY for instant notifications")
-
-		go w.listenForNotifications(ctx)
-
-	case ModeHybrid:
-		hasConnString := w.connString != ""
-		effectiveMode := "hybrid-notify"
-
-		if !hasConnString {
-			effectiveMode = "hybrid-degraded-to-polling"
-			slog.Warn("PostgreSQL changestream HYBRID mode degraded to POLLING (no connString)",
-				"client", w.clientName,
-				"mode", effectiveMode,
-				"reason", "connString is empty, cannot create LISTEN connection",
-				"fallbackBehavior", "will use polling only")
-		} else {
-			slog.Info("Starting PostgreSQL changestream in HYBRID mode (LISTEN/NOTIFY + adaptive fallback)",
-				"client", w.clientName,
-				"mode", effectiveMode,
-				"fallbackPollInterval", w.pollInterval,
-				"description", "Uses LISTEN/NOTIFY with intelligent polling fallback")
+	w.startOnce.Do(func() {
+		if w.isStopped() {
+			return
 		}
 
-		go w.hybridChangeStream(ctx)
+		// Constructors prepare the durable position; direct callers initialize here.
+		if !w.positionInitialized {
+			if err := w.initializeResumePosition(ctx); err != nil {
+				slog.Error("Failed to initialize PostgreSQL watcher position", "client", w.clientName, "error", err)
 
-	default:
-		slog.Error("Unknown changestream mode, defaulting to polling",
-			"client", w.clientName,
-			"requestedMode", w.mode,
-			"actualMode", "polling-fallback")
+				return
+			}
+		}
 
-		go w.pollForChanges(ctx)
+		// A cancelled legacy resume lookup must not launch a worker.
+		if ctx.Err() != nil {
+			return
+		}
+
+		switch w.mode {
+		case ModePolling:
+			slog.Info("Starting PostgreSQL changestream in POLLING mode",
+				"client", w.clientName,
+				"mode", "polling",
+				"pollInterval", w.pollInterval,
+				"description", "Queries changelog table every interval")
+
+			w.startWorker(ctx, w.pollForChanges)
+
+		case ModeNotify:
+			slog.Info("Starting PostgreSQL changestream in LISTEN/NOTIFY mode (experimental)",
+				"client", w.clientName,
+				"mode", "notify",
+				"description", "Uses PostgreSQL NOTIFY for instant notifications")
+
+			w.startWorker(ctx, w.listenForNotifications)
+
+		case ModeHybrid:
+			hasConnString := w.connString != ""
+			effectiveMode := "hybrid-notify"
+
+			if !hasConnString {
+				effectiveMode = "hybrid-degraded-to-polling"
+				slog.Warn("PostgreSQL changestream HYBRID mode degraded to POLLING (no connString)",
+					"client", w.clientName,
+					"mode", effectiveMode,
+					"reason", "connString is empty, cannot create LISTEN connection",
+					"fallbackBehavior", "will use polling only")
+			} else {
+				slog.Info("Starting PostgreSQL changestream in HYBRID mode (LISTEN/NOTIFY + adaptive fallback)",
+					"client", w.clientName,
+					"mode", effectiveMode,
+					"fallbackPollInterval", w.pollInterval,
+					"description", "Uses LISTEN/NOTIFY with intelligent polling fallback")
+			}
+
+			w.startWorker(ctx, w.hybridChangeStream)
+
+		default:
+			slog.Error("Unknown changestream mode, defaulting to polling",
+				"client", w.clientName,
+				"requestedMode", w.mode,
+				"actualMode", "polling-fallback")
+
+			w.startWorker(ctx, w.pollForChanges)
+		}
+	})
+}
+
+func (w *PostgreSQLChangeStreamWatcher) startWorker(
+	ctx context.Context,
+	run func(context.Context),
+) {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+
+	if w.isStopped() {
+		return
 	}
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	w.workerCancel = cancel
+	w.workerWG.Add(1)
+
+	go func() {
+		defer w.workerWG.Done()
+
+		run(workerCtx)
+	}()
 }
 
 // MarkProcessed marks events as processed up to the given token
-// Uses timestamp-based resume for reliable replay
+// Uses the persisted (changed_at, id) position for best-effort replay.
 func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	var eventID int64
 
-	var timestamp time.Time
-
 	if len(token) == 0 {
-		// When token is empty, use the current position (similar to MongoDB's behavior)
-		// This handles the common case where event processors pass empty tokens
-		// and expect the watcher to track its own position.
+		// Preserve the legacy processed UPDATE at the read cursor. Empty tokens do not
+		// acknowledge pending deliveries; checkpointPositionLocked still bounds the save.
 		w.mu.RLock()
 		eventID = w.lastEventID
-		timestamp = w.lastTimestamp
 		w.mu.RUnlock()
 
 		if eventID == 0 {
@@ -205,8 +378,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 
 		slog.Debug("Using current stream position for empty token",
 			"client", w.clientName,
-			"eventID", eventID,
-			"timestamp", timestamp)
+			"eventID", eventID)
 	} else {
 		// Token is the event ID as string
 		eventIDStr := string(token)
@@ -218,29 +390,18 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 			return fmt.Errorf("invalid token format: %w", err)
 		}
 
-		// Query the timestamp for this event
-		timestampQuery := `
-			SELECT changed_at FROM datastore_changelog
-			WHERE id = $1
-		`
-
-		if err := w.db.QueryRowContext(ctx, timestampQuery, eventID).Scan(&timestamp); err != nil {
-			slog.Warn("Failed to get timestamp for event, using current time",
-				"client", w.clientName,
-				"eventID", eventID,
-				"error", err)
-
-			timestamp = time.Now()
+		if _, err := w.timestampForAck(ctx, eventID); err != nil {
+			return fmt.Errorf("resolve acknowledgement timestamp: %w", err)
 		}
 	}
 
 	processedEventID := eventID
 
-	// Mark all events up to and including this eventID as processed
-	// This is safe because:
-	// 1. The application only calls MarkProcessed after successfully processing an event
-	// 2. Events are delivered in order (by ID)
-	// 3. If an event is filtered by the pipeline, we never send it, so MarkProcessed is never called for it
+	// Mark rows up to and including this id as processed. Rows are delivered in (changed_at, id)
+	// order, not by id, so with out-of-order rows this can also mark a lower-id row that hasn't
+	// been delivered yet. Today that only skews GetUnprocessedEventCount, because
+	// cleanup_changelog() is never called (#2170) and ADR-068 doesn't delete by this flag.
+	// Retention must not delete by processed without revisiting this.
 	query := `
 		UPDATE datastore_changelog
 		SET processed = TRUE
@@ -252,23 +413,23 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		return fmt.Errorf("failed to mark event as processed: %w", err)
 	}
 
-	// Serialize resume position selection and persistence so concurrent
-	// MarkProcessed calls cannot persist an older bookmark after a newer one.
+	// Serialize acknowledgment, boundary selection and persistence with delivery registration.
 	w.mu.Lock()
 
-	if processedEventID > w.lastEventID {
-		w.lastEventID = processedEventID
-		w.lastTimestamp = timestamp
+	// Only reads advance the cursor or highestReadEventID. Even a verified unknown
+	// token must not skip unread rows on the next poll or durable checkpoint.
+	// Empty tokens retain the legacy processed UPDATE, but certify no deliveries.
+	if len(token) > 0 {
+		w.acknowledgeDeliveryLocked(processedEventID)
 	}
 
-	resumeEventID := w.lastEventID
-	resumeTimestamp := w.lastTimestamp
+	resumeTimestamp, resumeEventID := w.checkpointPositionLocked()
 	saveErr := w.saveResumePosition(ctx, resumeTimestamp, resumeEventID)
 
 	w.mu.Unlock()
 
 	if saveErr != nil {
-		slog.Error("Failed to save resume position", "error", saveErr)
+		return fmt.Errorf("persist acknowledged position: %w", saveErr)
 	}
 
 	slog.Debug("Marked events processed",
@@ -281,13 +442,51 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	return nil
 }
 
+// timestampForAck only looks up a timestamp when the ack is ahead of every row read so far.
+func (w *PostgreSQLChangeStreamWatcher) timestampForAck(ctx context.Context, eventID int64) (time.Time, error) {
+	w.mu.RLock()
+	highestReadEventID := w.highestReadEventID
+	w.mu.RUnlock()
+
+	// Acks for ids at or below the read high-water mark keep working if rows were purged.
+	// Unread ids above it still require validation, but never move the read cursor.
+	// The cursor's own id is not enough here: it moves in (changed_at, id) order and can sit
+	// below ids already read, and those acks must keep working too.
+	if eventID <= highestReadEventID {
+		return time.Time{}, nil
+	}
+
+	query := `SELECT changed_at FROM datastore_changelog WHERE id = $1`
+
+	var timestamp time.Time
+
+	if err := w.db.QueryRowContext(ctx, query, eventID).Scan(&timestamp); err != nil {
+		return time.Time{}, fmt.Errorf("failed to get timestamp for event %d: %w", eventID, err)
+	}
+
+	return timestamp, nil
+}
+
 // Close closes the change stream watcher
 func (w *PostgreSQLChangeStreamWatcher) Close(ctx context.Context) error {
-	close(w.stopCh)
-	close(w.events)
+	w.closeOnce.Do(func() {
+		w.workerMu.Lock()
+		close(w.stopCh)
 
-	// Close LISTEN connection if in notify or hybrid mode
-	w.closeListener()
+		if w.workerCancel != nil {
+			w.workerCancel()
+		}
+
+		w.closeListener()
+		w.workerMu.Unlock()
+
+		w.workerWG.Wait()
+		w.setPollReady(false)
+		w.sendMu.Lock()
+		defer w.sendMu.Unlock()
+
+		close(w.events)
+	})
 
 	return nil
 }
@@ -319,8 +518,32 @@ func (w *PostgreSQLChangeStreamWatcher) pollForChanges(ctx context.Context) {
 
 // hybridChangeStream implements hybrid mode: LISTEN/NOTIFY with adaptive fallback polling
 func (w *PostgreSQLChangeStreamWatcher) hybridChangeStream(ctx context.Context) {
+	if w.connString == "" {
+		w.pollForChanges(ctx)
+
+		return
+	}
+
+	adaptiveStopCh := make(chan struct{})
+	adaptiveCtx, cancelAdaptive := context.WithCancel(ctx)
+
+	adaptiveDone := make(chan struct{})
+	go func() {
+		defer close(adaptiveDone)
+
+		w.adaptiveFallbackPoller(adaptiveCtx, adaptiveStopCh)
+	}()
+
 	// Initialize LISTEN connection
 	if err := w.initializeListener(ctx); err != nil {
+		close(adaptiveStopCh)
+		cancelAdaptive()
+		<-adaptiveDone
+
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+
 		slog.Error("Failed to initialize LISTEN connection, degrading to POLLING-ONLY mode",
 			"client", w.clientName,
 			"requestedMode", "hybrid",
@@ -333,18 +556,12 @@ func (w *PostgreSQLChangeStreamWatcher) hybridChangeStream(ctx context.Context) 
 		return
 	}
 
+	defer func() {
+		close(adaptiveStopCh)
+		cancelAdaptive()
+		<-adaptiveDone
+	}()
 	defer w.closeListener()
-
-	// Initialize last notify time to now (assume NOTIFY is working initially)
-	w.mu.Lock()
-	w.lastNotifyTime = time.Now()
-	w.mu.Unlock()
-
-	// Start adaptive fallback polling in a separate goroutine
-	adaptiveStopCh := make(chan struct{})
-	defer close(adaptiveStopCh)
-
-	go w.adaptiveFallbackPoller(ctx, adaptiveStopCh)
 
 	// Main loop: listen for notifications
 	w.listenLoop(ctx)
@@ -369,51 +586,23 @@ func (w *PostgreSQLChangeStreamWatcher) listenForNotifications(ctx context.Conte
 
 // initializeListener sets up the pq.Listener for LISTEN/NOTIFY
 func (w *PostgreSQLChangeStreamWatcher) initializeListener(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if w.connString == "" {
 		return fmt.Errorf("connString is empty, cannot create LISTEN connection")
 	}
 
-	// Event callback for listener lifecycle events
-	eventCallback := func(ev pq.ListenerEventType, err error) {
-		switch ev {
-		case pq.ListenerEventConnected:
-			slog.Info("LISTEN connection established",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "connected")
-		case pq.ListenerEventDisconnected:
-			slog.Warn("LISTEN connection lost, will reconnect",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "disconnected",
-				"error", err)
-		case pq.ListenerEventReconnected:
-			slog.Info("LISTEN connection restored",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "reconnected")
-		case pq.ListenerEventConnectionAttemptFailed:
-			slog.Error("LISTEN connection attempt failed",
-				"client", w.clientName,
-				"mode", w.mode,
-				"channel", notifyChannel,
-				"status", "connection-failed",
-				"error", err)
-		}
+	// Create listener with automatic reconnection.
+	// minReconnectInterval: 10s, maxReconnectInterval: 1min.
+	listener := pq.NewListener(w.connString, 10*time.Second, time.Minute, w.listenerEventCallback())
+	if err := w.registerListener(ctx, listener); err != nil {
+		return err
 	}
 
-	// Create listener with automatic reconnection
-	// minReconnectInterval: 10s, maxReconnectInterval: 1min
-	w.listener = pq.NewListener(w.connString, 10*time.Second, time.Minute, eventCallback)
-
-	// Subscribe to the notification channel
-	if err := w.listener.Listen(notifyChannel); err != nil {
-		w.listener.Close()
-
-		return fmt.Errorf("failed to LISTEN on channel %s: %w", notifyChannel, err)
+	if err := w.subscribeListener(ctx, listener); err != nil {
+		return err
 	}
 
 	slog.Info("Successfully subscribed to NOTIFY channel",
@@ -423,24 +612,192 @@ func (w *PostgreSQLChangeStreamWatcher) initializeListener(ctx context.Context) 
 	return nil
 }
 
+func (w *PostgreSQLChangeStreamWatcher) listenerEventCallback() pq.EventCallbackType {
+	return func(ev pq.ListenerEventType, err error) {
+		switch ev {
+		case pq.ListenerEventConnected:
+			w.setListenerConnected(true)
+			slog.Info("LISTEN connection established",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "connected")
+		case pq.ListenerEventDisconnected:
+			w.setListenerConnected(false)
+			slog.Warn("LISTEN connection lost, will reconnect",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "disconnected",
+				"error", err)
+		case pq.ListenerEventReconnected:
+			w.markCatchUpPending()
+			w.setListenerConnected(true)
+			slog.Info("LISTEN connection restored",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "reconnected")
+		case pq.ListenerEventConnectionAttemptFailed:
+			w.setListenerConnected(false)
+			slog.Error("LISTEN connection attempt failed",
+				"client", w.clientName,
+				"mode", w.mode,
+				"channel", notifyChannel,
+				"status", "connection-failed",
+				"error", err)
+		}
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) registerListener(ctx context.Context, listener *pq.Listener) error {
+	w.listenerMu.Lock()
+	defer w.listenerMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		_ = listener.Close()
+
+		return err
+	}
+
+	select {
+	case <-w.stopCh:
+		_ = listener.Close()
+
+		return context.Canceled
+	default:
+	}
+
+	w.listener = listener
+
+	return nil
+}
+
+func (w *PostgreSQLChangeStreamWatcher) subscribeListener(ctx context.Context, listener *pq.Listener) error {
+	listenResult := make(chan error, 1)
+	go func() {
+		listenResult <- listener.Listen(notifyChannel)
+	}()
+
+	select {
+	case err := <-listenResult:
+		if err != nil {
+			w.closeListenerIfCurrent(listener)
+
+			return fmt.Errorf("failed to LISTEN on channel %s: %w", notifyChannel, err)
+		}
+	case <-ctx.Done():
+		w.closeListenerIfCurrent(listener)
+
+		if err := <-listenResult; err != nil {
+			slog.Debug("LISTEN stopped during context cancellation", "client", w.clientName, "error", err)
+		}
+
+		return ctx.Err()
+	case <-w.stopCh:
+		w.closeListenerIfCurrent(listener)
+
+		if err := <-listenResult; err != nil {
+			slog.Debug("LISTEN stopped while watcher was closing", "client", w.clientName, "error", err)
+		}
+
+		return context.Canceled
+	}
+
+	if err := ctx.Err(); err != nil {
+		w.closeListenerIfCurrent(listener)
+
+		return err
+	}
+
+	select {
+	case <-w.stopCh:
+		w.closeListenerIfCurrent(listener)
+
+		return context.Canceled
+	default:
+	}
+
+	w.mu.Lock()
+	w.listenerSubscribed = true
+	w.catchUpPending = true
+	w.catchUpGeneration++
+	w.mu.Unlock()
+
+	return nil
+}
+
 // closeListener closes the LISTEN connection
 func (w *PostgreSQLChangeStreamWatcher) closeListener() {
-	if w.listener != nil {
-		if err := w.listener.Close(); err != nil {
-			slog.Warn("Error closing LISTEN connection",
-				"client", w.clientName,
-				"error", err)
-		} else {
-			slog.Info("Closed LISTEN connection",
-				"client", w.clientName)
-		}
+	w.listenerMu.Lock()
+	listener := w.listener
+	w.listener = nil
+	w.listenerMu.Unlock()
+
+	w.mu.Lock()
+	w.listenerConnected = false
+	w.listenerSubscribed = false
+	w.pollReady = false
+	w.mu.Unlock()
+
+	if listener != nil {
+		w.closeListenerConnection(listener)
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) closeListenerIfCurrent(listener *pq.Listener) {
+	w.listenerMu.Lock()
+	if w.listener != listener {
+		w.listenerMu.Unlock()
+
+		return
+	}
+
+	w.listener = nil
+	w.listenerMu.Unlock()
+
+	w.mu.Lock()
+	w.listenerConnected = false
+	w.listenerSubscribed = false
+	w.mu.Unlock()
+
+	w.closeListenerConnection(listener)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) closeListenerConnection(listener *pq.Listener) {
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Warn("Error closing LISTEN connection",
+			"client", w.clientName,
+			"error", err)
+	} else {
+		slog.Info("Closed LISTEN connection",
+			"client", w.clientName)
 	}
 }
 
 // listenLoop is the main event loop for receiving NOTIFY messages
 func (w *PostgreSQLChangeStreamWatcher) listenLoop(ctx context.Context) {
+	w.listenerMu.RLock()
+	listener := w.listener
+	w.listenerMu.RUnlock()
+
+	if listener == nil {
+		slog.Error("LISTEN loop cannot start without an initialized listener", "client", w.clientName)
+
+		return
+	}
+
+	// Drain the gap between the first poll and subscription before advancing
+	// the cursor to any newly notified row.
+	w.processNotification(ctx, nil)
+
 	slog.Info("Started LISTEN loop",
 		"client", w.clientName)
+
+	// Notifications only record ids. The fetch loop reads the changelog, so a slow consumer
+	// holds up the fetch loop and never the reading of the LISTEN connection.
+	stopFetchLoop := w.startFetchLoop(ctx)
+	defer stopFetchLoop()
 
 	for {
 		select {
@@ -456,30 +813,80 @@ func (w *PostgreSQLChangeStreamWatcher) listenLoop(ctx context.Context) {
 
 			return
 
-		case notification := <-w.listener.Notify:
-			if notification != nil {
-				// Update last notify time for adaptive fallback
-				w.mu.Lock()
-				w.lastNotifyTime = time.Now()
-				w.mu.Unlock()
+		case notification, ok := <-listener.Notify:
+			if !ok {
+				slog.Warn("LISTEN notification channel closed", "client", w.clientName)
 
-				// Handle the notification
-				if err := w.handleNotification(ctx, notification); err != nil {
-					slog.Error("Error handling notification",
-						"client", w.clientName,
-						"error", err)
-				}
+				return
 			}
+
+			w.processNotification(ctx, notification)
 
 		case <-time.After(90 * time.Second):
 			// Keepalive ping to ensure connection is alive
 			go func() {
-				if err := w.listener.Ping(); err != nil {
+				if err := listener.Ping(); err != nil {
 					slog.Warn("LISTEN ping failed",
 						"client", w.clientName,
 						"error", err)
 				}
 			}()
+		}
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) processNotification(ctx context.Context, notification *pq.Notification) {
+	if notification == nil {
+		w.markCatchUpPending()
+		w.wakeFetchLoop()
+
+		return
+	}
+
+	// Update last notify time for adaptive fallback.
+	w.mu.Lock()
+	w.lastNotifyTime = time.Now()
+	w.mu.Unlock()
+
+	if err := w.handleNotification(ctx, notification); err != nil {
+		slog.Error("Error handling notification",
+			"client", w.clientName,
+			"error", err)
+	}
+}
+
+// catchUpAfterSubscribe drains every batch before a newer notification can move
+// the cursor past rows written while LISTEN was unavailable. Keep the barrier on
+// failure so the next notification retries instead of skipping the missing rows.
+func (w *PostgreSQLChangeStreamWatcher) catchUpAfterSubscribe(ctx context.Context) error {
+	for {
+		w.mu.RLock()
+		pending, generation := w.catchUpPending, w.catchUpGeneration
+		timestamp, id := w.lastTimestamp, w.lastEventID
+		w.mu.RUnlock()
+
+		if !pending {
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := w.fetchNewChanges(ctx); err != nil {
+			return err
+		}
+
+		w.mu.Lock()
+
+		caughtUp := timestamp.Equal(w.lastTimestamp) && id == w.lastEventID && generation == w.catchUpGeneration
+		if caughtUp {
+			w.catchUpPending = false
+		}
+		w.mu.Unlock()
+
+		if caughtUp {
+			return nil
 		}
 	}
 }
@@ -498,83 +905,317 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 		"table", payload.Table,
 		"operation", payload.Operation)
 
-	// Fetch the full event from the changelog table
-	// We only store minimal info in the NOTIFY payload (8KB limit)
-	w.mu.RLock()
-	lastEventID := w.lastEventID
-	w.mu.RUnlock()
-
-	if payload.ID <= lastEventID {
-		if w.hasRecentlySeenEventID(payload.ID) {
-			slog.Debug("Skipping already-processed event from NOTIFY",
-				"client", w.clientName,
-				"notifiedID", payload.ID,
-				"lastEventID", lastEventID)
-
-			return nil
-		}
-
-		slog.Debug("Recovering out-of-order NOTIFY below current bookmark",
-			"client", w.clientName,
-			"notifiedID", payload.ID,
-			"lastEventID", lastEventID)
-
-		if err := w.fetchChangeByID(ctx, payload.ID); err != nil {
-			return fmt.Errorf("failed to recover out-of-order changelog event %d: %w", payload.ID, err)
-		}
-
+	if payload.Table != w.tableName {
 		return nil
 	}
 
-	if err := w.fetchChangeByID(ctx, payload.ID); err != nil {
-		return fmt.Errorf("failed to fetch notified changelog event %d: %w", payload.ID, err)
-	}
-
-	// Fetch any additional events we might have missed after this one.
-	if err := w.fetchNewChanges(ctx); err != nil {
-		return fmt.Errorf("failed to fetch changes after NOTIFY: %w", err)
-	}
+	// This runs on the goroutine that reads the LISTEN connection, so it never queries the
+	// database or waits for the consumer. It records the id and wakes the fetch loop.
+	// addNotifiedID leaves out a row a poll has read, whatever its id: the cursor follows
+	// (changed_at, id), so a row already read can have a higher id than the cursor.
+	w.addNotifiedID(payload.ID)
 
 	return nil
 }
 
-func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eventID int64) error {
+// queryNotifiedRows reads the changelog rows of this watcher's table with the given ids that are
+// at or behind the read position, in the order the poll reads them. The bound is the poll's own
+// comparison turned around, so a row past the position, which the poll reads in order, is neither
+// read here nor counted as read for the lag metric. A row not visible yet or of another table is
+// not returned either.
+func (w *PostgreSQLChangeStreamWatcher) queryNotifiedRows(
+	ctx context.Context, ids []int64,
+) ([]datastore.EventWithToken, error) {
+	w.mu.RLock()
+	lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
+	w.mu.RUnlock()
+
 	query := `
 		SELECT id, record_id, operation, old_values, new_values, changed_at
 		FROM datastore_changelog
-		WHERE table_name = $1 AND id = $2
+		WHERE table_name = $1 AND id = ANY($2)
+		  AND (changed_at, id) <= ($3, $4)
+		ORDER BY changed_at ASC, id ASC
 	`
 
-	rows, err := w.db.QueryContext(ctx, query, w.tableName, eventID)
+	rows, err := w.db.QueryContext(ctx, query, w.tableName, pq.Array(ids), lastTimestamp, lastEventID)
 	if err != nil {
-		return fmt.Errorf("failed to query changelog event by ID: %w", err)
+		return nil, fmt.Errorf("failed to query notified changelog rows: %w", err)
 	}
 	defer rows.Close()
 
 	events, err := w.processChangelogRows(rows)
 	if err != nil {
-		return fmt.Errorf("failed to process recovered changelog row %d: %w", eventID, err)
+		return nil, fmt.Errorf("failed to process notified changelog rows: %w", err)
 	}
 
-	if len(events) == 0 {
-		slog.Debug("Out-of-order NOTIFY row was not visible or did not match table",
-			"client", w.clientName,
-			"eventID", eventID)
+	return events, nil
+}
 
+// addNotifiedID records a notified changelog id for the fetch loop and wakes it. It never blocks.
+// When notifiedIDLimit ids are already waiting, the id is dropped and counted instead. A row a
+// poll has read by now is left out, under the lock the read is recorded with, so no pass looks it
+// up and delivers it a second time. Only a recorded id wakes the fetch loop: an id left out needs
+// no pass, and one that is dropped or already waiting comes while ids wait, so a pass that takes
+// them is already due.
+func (w *PostgreSQLChangeStreamWatcher) addNotifiedID(id int64) {
+	w.mu.Lock()
+
+	_, read := w.recentEventIDs[id]
+	_, waiting := w.unreadIDs[id]
+	recorded := false
+
+	if !read && !waiting {
+		if len(w.notifiedIDs) < notifiedIDLimit {
+			if w.unreadIDs == nil {
+				w.unreadIDs = make(map[int64]struct{})
+			}
+
+			w.unreadIDs[id] = struct{}{}
+			w.notifiedIDs = append(w.notifiedIDs, id)
+			recorded = true
+		} else {
+			w.droppedIDs++
+		}
+	}
+
+	w.mu.Unlock()
+
+	if recorded {
+		w.wakeFetchLoop()
+	}
+}
+
+// takeNotifiedIDs returns the notified ids no read has returned yet, in arrival order, with the
+// number dropped since the last call, and starts a new list.
+func (w *PostgreSQLChangeStreamWatcher) takeNotifiedIDs() ([]int64, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	ids := make([]int64, 0, len(w.unreadIDs))
+
+	for _, id := range w.notifiedIDs {
+		if _, unread := w.unreadIDs[id]; unread {
+			ids = append(ids, id)
+		}
+	}
+
+	dropped := w.droppedIDs
+	w.notifiedIDs = nil
+	w.droppedIDs = 0
+	clear(w.unreadIDs)
+
+	return ids, dropped
+}
+
+// wakeFetchLoop asks the fetch loop for a pass. One pending wake-up covers any number of calls.
+func (w *PostgreSQLChangeStreamWatcher) wakeFetchLoop() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+// startFetchLoop starts the goroutine that reads the changelog for the LISTEN loop. The returned
+// function stops it and waits for it to return.
+func (w *PostgreSQLChangeStreamWatcher) startFetchLoop(ctx context.Context) func() {
+	fetchCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		w.fetchLoop(fetchCtx)
+	}()
+
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// fetchLoop makes a pass right away and then whenever it is woken: by handleNotification, or by
+// a poll that read a full batch. A consumer that is slow to take events slows this loop down,
+// while the LISTEN connection keeps being read. After a failed pass it makes another one after
+// retryDelay unless it is woken sooner: a late row is only delivered by the lookup of its
+// notified id, and on a quiet table no other notification may come.
+func (w *PostgreSQLChangeStreamWatcher) fetchLoop(ctx context.Context) {
+	// retry is stopped until a pass fails.
+	retry := time.NewTimer(w.retryDelay)
+	retry.Stop()
+
+	defer retry.Stop()
+
+	for {
+		// The first pass reads what was committed before LISTEN was acknowledged, which no
+		// notification announces.
+		if err := w.readChangelog(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("Failed to read the changelog", "client", w.clientName, "error", err)
+			retry.Reset(w.retryDelay)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		case <-w.wake:
+			retry.Stop()
+		case <-retry.C:
+		}
+	}
+}
+
+// readChangelog polls, looks up the notified ids, and repeats until a poll leaves the read position
+// where it was. Every row committed past the position is read in (changed_at, id) order, and a full
+// batch is followed by the next poll right away, not by the next notification or fallback tick.
+// The lookup after every poll empties the list of notified ids, so during a long catch-up the list
+// holds what was notified during one poll, not during the whole catch-up, and a late row's id is
+// not dropped because the list filled up meanwhile. An id notified after a lookup woke the fetch
+// loop, so the next pass takes it.
+func (w *PostgreSQLChangeStreamWatcher) readChangelog(ctx context.Context) error {
+	for {
+		w.mu.RLock()
+		lastTimestamp, lastEventID := w.lastTimestamp, w.lastEventID
+		catchUpPending, catchUpGeneration := w.catchUpPending, w.catchUpGeneration
+		w.mu.RUnlock()
+
+		if err := w.fetchNewChangesFor(ctx, fetchLoopReader); err != nil {
+			return fmt.Errorf("failed to poll the changelog: %w", err)
+		}
+
+		if err := w.fetchNotifiedRows(ctx); err != nil {
+			return err
+		}
+
+		if !w.positionMovedFrom(lastTimestamp, lastEventID) || ctx.Err() != nil {
+			if catchUpPending && ctx.Err() == nil {
+				w.mu.Lock()
+				if w.catchUpGeneration == catchUpGeneration {
+					w.catchUpPending = false
+				}
+				w.mu.Unlock()
+			}
+
+			return ctx.Err()
+		}
+	}
+}
+
+// positionMovedFrom reports whether the read position is no longer (lastTimestamp, lastEventID).
+func (w *PostgreSQLChangeStreamWatcher) positionMovedFrom(lastTimestamp time.Time, lastEventID int64) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return !w.lastTimestamp.Equal(lastTimestamp) || w.lastEventID != lastEventID
+}
+
+// fetchNotifiedRows looks up every notified row no read has returned yet and delivers the ones at
+// or behind the read position, in the order the poll reads them. A row whose transaction committed
+// after the read position had passed it is only found this way, and it is delivered without moving
+// the position back. A row past the position is left to the polls, which read it in order.
+// Delivering it here would move the position over rows that committed meanwhile and that no read
+// has returned, and one of those whose id is dropped would never be delivered.
+func (w *PostgreSQLChangeStreamWatcher) fetchNotifiedRows(ctx context.Context) error {
+	// Taking the ids and fetching them is one read: a poll in between could deliver a taken row
+	// that the lookup then delivers again.
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
+	// Close does not wait for the fetch loop, and the loop can still start a pass when a wake
+	// or the retry is ready together with the stop. Nothing may be looked up or delivered then.
+	select {
+	case <-w.stopCh:
+		return nil
+	default:
+	}
+
+	ids, dropped := w.takeNotifiedIDs()
+
+	if dropped > 0 {
+		slog.Warn("Fetch loop fell behind notifications, dropped notified changelog ids",
+			"client", w.clientName, "dropped", dropped, "limit", notifiedIDLimit)
+	}
+
+	if len(ids) == 0 {
 		return nil
 	}
 
+	// One query looks every id up, so no lookup starts after the stop check above.
+	events, err := w.queryNotifiedRows(ctx, ids)
+
+	w.setPollReady(err == nil)
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		// The pass is retried, so the ids stay pending. A late row is only ever delivered by its
+		// lookup, so dropping them here would lose it.
+		w.keepNotifiedIDs(ids, dropped)
+
+		return fmt.Errorf("failed to fetch %d notified changelog rows: %w", len(ids), err)
+	}
+
 	if err := w.sendEventsToChannel(ctx, events); err != nil {
-		return fmt.Errorf("failed to deliver recovered changelog row %d: %w", eventID, err)
+		w.keepNotifiedIDs(ids, dropped)
+
+		return fmt.Errorf("failed to deliver notified changelog rows: %w", err)
 	}
 
 	return nil
+}
+
+// keepNotifiedIDs puts the ids of a failed lookup back in front of the ones notified since, and
+// adds the lookup's dropped count back, so the retry sees the same state. An id notified again in
+// the meantime is listed once, and the list is cut at notifiedIDLimit as before.
+func (w *PostgreSQLChangeStreamWatcher) keepNotifiedIDs(ids []int64, dropped int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.unreadIDs == nil {
+		w.unreadIDs = make(map[int64]struct{})
+	}
+
+	kept := make([]int64, 0, len(ids)+len(w.notifiedIDs))
+
+	for _, id := range ids {
+		if _, read := w.recentEventIDs[id]; read {
+			continue
+		}
+
+		if _, waiting := w.unreadIDs[id]; waiting {
+			continue
+		}
+
+		kept = append(kept, id)
+		w.unreadIDs[id] = struct{}{}
+	}
+
+	kept = append(kept, w.notifiedIDs...)
+
+	if len(kept) > notifiedIDLimit {
+		for _, id := range kept[notifiedIDLimit:] {
+			delete(w.unreadIDs, id)
+		}
+
+		dropped += len(kept) - notifiedIDLimit
+		kept = kept[:notifiedIDLimit]
+	}
+
+	w.notifiedIDs = kept
+	w.droppedIDs += dropped
 }
 
 // adaptiveFallbackPoller implements adaptive polling based on NOTIFY health
 func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Context, stopCh chan struct{}) {
 	// Start with infrequent polling (30s) assuming NOTIFY is working
 	checkInterval := 30 * time.Second
+	if !w.listenerIsActive() {
+		checkInterval = 5 * time.Second
+	}
+
 	ticker := time.NewTicker(checkInterval)
 
 	defer ticker.Stop()
@@ -590,64 +1231,125 @@ func (w *PostgreSQLChangeStreamWatcher) adaptiveFallbackPoller(ctx context.Conte
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			// Check when we last received a NOTIFY
-			w.mu.RLock()
-			timeSinceLastNotify := time.Since(w.lastNotifyTime)
-			lastEventID := w.lastEventID
-			w.mu.RUnlock()
-
-			// Determine if NOTIFY seems to be working
-			if timeSinceLastNotify > 30*time.Second {
-				// NOTIFY might be silent or broken, poll more aggressively
-				newInterval := 5 * time.Second
-
-				if checkInterval != newInterval {
-					slog.Warn("HYBRID MODE: NOTIFY appears silent, increasing fallback poll frequency",
-						"client", w.clientName,
-						"mode", "hybrid-active-fallback",
-						"timeSinceLastNotify", timeSinceLastNotify,
-						"oldInterval", checkInterval,
-						"newInterval", newInterval,
-						"reason", "No NOTIFY received for >30s")
-					checkInterval = newInterval
-					ticker.Reset(checkInterval)
-				}
-
-				// Perform fallback poll
-				slog.Debug("Executing fallback poll (NOTIFY silent)",
-					"client", w.clientName,
-					"mode", "hybrid-polling",
-					"lastEventID", lastEventID)
-
-				if err := w.fetchNewChanges(ctx); err != nil {
-					slog.Error("Fallback poll failed",
-						"client", w.clientName,
-						"error", err)
-				}
-			} else {
-				// NOTIFY is working well, reduce fallback polling
-				newInterval := 30 * time.Second
-				if checkInterval != newInterval {
-					slog.Info("HYBRID MODE: NOTIFY is healthy, reducing fallback poll frequency",
-						"client", w.clientName,
-						"mode", "hybrid-notify-active",
-						"timeSinceLastNotify", timeSinceLastNotify,
-						"oldInterval", checkInterval,
-						"newInterval", newInterval,
-						"reason", "NOTIFY working well")
-					checkInterval = newInterval
-					ticker.Reset(checkInterval)
-				}
-			}
+			w.pollAccordingToNotificationHealth(ctx, ticker, &checkInterval)
 		}
 	}
 }
 
-// fetchNewChanges fetches new changes from the changelog table.
+func (w *PostgreSQLChangeStreamWatcher) pollAccordingToNotificationHealth(
+	ctx context.Context,
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+) {
+	w.mu.RLock()
+	lastNotifyTime := w.lastNotifyTime
+	timeSinceLastNotify := time.Since(lastNotifyTime)
+	lastEventID := w.lastEventID
+	pending := w.catchUpPending
+	w.mu.RUnlock()
+
+	if !pending && !lastNotifyTime.IsZero() && timeSinceLastNotify <= notifySilentAfter && w.IsReady() {
+		w.reduceFallbackPolling(ticker, checkInterval, timeSinceLastNotify)
+
+		return
+	}
+
+	w.increaseFallbackPolling(ticker, checkInterval, timeSinceLastNotify)
+	slog.Debug("Executing fallback poll (NOTIFY silent)",
+		"client", w.clientName,
+		"mode", "hybrid-polling",
+		"lastEventID", lastEventID)
+
+	poll := func(ctx context.Context) error { return w.fetchNewChangesFor(ctx, fallbackReader) }
+	if pending {
+		poll = w.catchUpAfterSubscribe
+	}
+
+	if err := poll(ctx); err != nil {
+		slog.Error("Fallback poll failed",
+			"client", w.clientName,
+			"error", err)
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) increaseFallbackPolling(
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+	timeSinceLastNotify time.Duration,
+) {
+	newInterval := 5 * time.Second
+	if *checkInterval == newInterval {
+		return
+	}
+
+	slog.Warn("HYBRID MODE: NOTIFY appears silent, increasing fallback poll frequency",
+		"client", w.clientName,
+		"mode", "hybrid-active-fallback",
+		"timeSinceLastNotify", timeSinceLastNotify,
+		"oldInterval", *checkInterval,
+		"newInterval", newInterval,
+		"reason", "No NOTIFY received for >30s")
+	*checkInterval = newInterval
+	ticker.Reset(*checkInterval)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) reduceFallbackPolling(
+	ticker *time.Ticker,
+	checkInterval *time.Duration,
+	timeSinceLastNotify time.Duration,
+) {
+	newInterval := 30 * time.Second
+	if *checkInterval == newInterval {
+		return
+	}
+
+	slog.Info("HYBRID MODE: NOTIFY is healthy, reducing fallback poll frequency",
+		"client", w.clientName,
+		"mode", "hybrid-notify-active",
+		"timeSinceLastNotify", timeSinceLastNotify,
+		"oldInterval", *checkInterval,
+		"newInterval", newInterval,
+		"reason", "NOTIFY working well")
+	*checkInterval = newInterval
+	ticker.Reset(*checkInterval)
+}
+
+// changelogReader names the loop a poll is made for. Only the fetch loop's polls may move a
+// filtered watcher up to the newest row, see mayMoveToNewestRow.
+type changelogReader int
+
+const (
+	// pollingReader is pollForChanges, in polling mode or in hybrid mode without a LISTEN
+	// connection.
+	pollingReader changelogReader = iota
+	// fallbackReader is the adaptive fallback poller, which polls once NOTIFY has gone silent.
+	fallbackReader
+	// fetchLoopReader is the fetch loop next to the LISTEN loop, which looks the notified ids up
+	// after every poll.
+	fetchLoopReader
+)
+
+// fetchNewChanges is the poll pollForChanges makes. It never moves the read position past a row
+// it has not read.
+func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) error {
+	return w.fetchNewChangesFor(ctx, pollingReader)
+}
+
+// fetchNewChangesFor fetches new changes from the changelog table for the loop reader names.
 // Uses two-layer filtering:
 // 1. Server-side: SQL WHERE clause reduces volume at the database level
 // 2. Application-side: PipelineFilter handles edge cases (in sendEventsToChannel)
-func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) error {
+func (w *PostgreSQLChangeStreamWatcher) fetchNewChangesFor(ctx context.Context, reader changelogReader) error {
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
+	// A reader that waited for another one must not start a read after Close.
+	select {
+	case <-w.stopCh:
+		return nil
+	default:
+	}
+
 	w.mu.RLock()
 	lastTimestamp := w.lastTimestamp
 	lastEventID := w.lastEventID
@@ -656,22 +1358,35 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 	// Build server-side SQL filter from pipeline (if configured)
 	sqlFilterClause, sqlFilterArgs := w.buildSQLFilter()
 
+	// The filter hides the rows it rejects, so the position only moves on rows the poll returns.
+	// It would stay at the last row the filter accepted, and every poll would scan every row
+	// since. Where moving up to the newest row is safe, that row is read before the poll.
+	headTS, headID, headKnown, err := w.readChangelogHead(ctx, w.mayMoveToNewestRow(reader, sqlFilterClause != ""))
+	if err != nil {
+		w.setPollReady(false)
+
+		return err
+	}
+
 	// Base query: Timestamp-based with ID tie-breaking (like MongoDB)
 	// Server-side filter is appended if available
+	//
+	// The row comparison means changed_at > $2 OR (changed_at = $2 AND id > $3),
+	// but PostgreSQL can use it as a bound on idx_changelog_resume_all: the scan
+	// starts at the resume position and stops at the LIMIT. With the OR form the
+	// scan starts at the oldest row of the table, so a consumer that is behind
+	// reads every row before its position on each poll.
 	baseQuery := `
 		SELECT id, record_id, operation, old_values, new_values, changed_at
 		FROM datastore_changelog
 		WHERE table_name = $1
-		  AND (
-		      changed_at > $2
-		      OR (changed_at = $2 AND id > $3)
-		  )`
+		  AND (changed_at, id) > ($2, $3)`
 
 	// Append server-side filter if available
 	//nolint:gosec // G202 - sqlFilterClause uses parameterized $N placeholders, not raw user input
 	query := baseQuery + sqlFilterClause + `
 		ORDER BY changed_at ASC, id ASC
-		LIMIT 100
+		LIMIT ` + strconv.Itoa(changelogBatchSize) + `
 	`
 
 	// Build args: base args + filter args
@@ -680,6 +1395,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		w.setPollReady(false)
 		slog.Error("Failed to query changelog", "client", w.clientName, "error", err)
 
 		return fmt.Errorf("failed to query changelog: %w", err)
@@ -688,12 +1404,24 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	events, err := w.processChangelogRows(rows)
 	if err != nil {
+		w.setPollReady(false)
 		slog.Error("Failed to process changelog rows", "client", w.clientName, "error", err)
 
 		return err
 	}
 
 	slog.Debug("Fetched events from changelog", "client", w.clientName, "eventCount", len(events))
+
+	// A full batch can leave more rows to read. Once it is delivered, wake the fetch loop, which
+	// reads until it is caught up, so the fallback poller does not leave a backlog at one batch per
+	// tick. A batch that left the read position where it was would only come back again.
+	if len(events) == changelogBatchSize {
+		defer func() {
+			if w.positionMovedFrom(lastTimestamp, lastEventID) {
+				w.wakeFetchLoop()
+			}
+		}()
+	}
 
 	// A poll that returned nothing is the empty batch: the changelog holds no row past this
 	// consumer's position that its server-side filter would accept. Rows are recorded in
@@ -702,7 +1430,108 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 		w.lag.RecordCaughtUp(time.Now())
 	}
 
-	return w.sendEventsToChannel(ctx, events)
+	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		w.setPollReady(false)
+
+		return err
+	}
+
+	w.setPollReady(true)
+	w.moveToNewestRowAfterShortBatch(headTS, headID, headKnown, len(events))
+
+	return nil
+}
+
+// mayMoveToNewestRow reports whether a short batch of this poll may move a watcher with a
+// server-side filter up to the newest row of its table. A row the filter accepts can still be in
+// an open transaction while newer rows commit, and once the position has moved past it, only the
+// lookup of its notified id delivers it. So only the fetch loop moves, since it looks the notified
+// ids up after every poll, and only while the LISTEN connection delivers notifications.
+// pollForChanges has no LISTEN connection, and the fallback poller polls because NOTIFY has gone
+// silent. Their position stays at the last row they read, and their next poll reads such a row.
+func (w *PostgreSQLChangeStreamWatcher) mayMoveToNewestRow(reader changelogReader, filtered bool) bool {
+	if reader != fetchLoopReader || !filtered {
+		return false
+	}
+
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return !w.lastNotifyTime.IsZero() && time.Since(w.lastNotifyTime) <= notifySilentAfter
+}
+
+// readChangelogHead returns the position of the newest changelog row of this watcher's table, and
+// false when it is not wanted or the table has none. It is its own statement, read before the poll.
+// Every row it can see is visible to the poll too, so a short batch holds every one of them that
+// the filter accepts. Reading it in the poll's snapshot would not narrow anything: a row that
+// commits after the poll's snapshot depends on its NOTIFY either way, and reading the newest row
+// first keeps the set of such rows the smallest.
+func (w *PostgreSQLChangeStreamWatcher) readChangelogHead(
+	ctx context.Context, wanted bool,
+) (time.Time, int64, bool, error) {
+	if !wanted {
+		return time.Time{}, 0, false, nil
+	}
+
+	var (
+		changedAt time.Time
+		id        int64
+	)
+
+	err := w.db.QueryRowContext(ctx, `
+		SELECT changed_at, id
+		FROM datastore_changelog
+		WHERE table_name = $1
+		ORDER BY changed_at DESC, id DESC
+		LIMIT 1
+	`, w.tableName).Scan(&changedAt, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, 0, false, nil
+	}
+
+	if err != nil {
+		return time.Time{}, 0, false, fmt.Errorf("failed to read the newest changelog row: %w", err)
+	}
+
+	return changedAt, id, true, nil
+}
+
+// moveToNewestRowAfterShortBatch moves the read position forward to (ts, id), the newest row read
+// before the poll, when the poll returned fewer than changelogBatchSize rows. Such a batch holds
+// every row the poll could see past the position that the filter accepts, so each row up to
+// (ts, id) is read by now, rejected by the filter, or was not committed when the poll started. A
+// row of the last kind comes from the lookup of its notified id, so the position does not move
+// while notified ids are being dropped: such a row's id can be one of them, and the next poll
+// reads the row only if the position is still behind it. The position never moves back, and
+// does not move once the watcher is closed.
+func (w *PostgreSQLChangeStreamWatcher) moveToNewestRowAfterShortBatch(
+	ts time.Time, id int64, known bool, batch int,
+) {
+	if !known || batch >= changelogBatchSize {
+		return
+	}
+
+	select {
+	case <-w.stopCh:
+		return
+	default:
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.droppedIDs > 0 || len(w.notifiedIDs) >= notifiedIDLimit {
+		return
+	}
+
+	if positionAfter(ts, id, w.lastTimestamp, w.lastEventID) {
+		w.lastTimestamp, w.lastEventID = ts, id
+
+		// highestReadEventID is never below lastEventID.
+		if id > w.highestReadEventID {
+			w.highestReadEventID = id
+		}
+	}
 }
 
 // buildSQLFilter builds a SQL WHERE clause from the pipeline filter.
@@ -777,12 +1606,8 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 
 		events = append(events, eventWithToken)
 
-		// NOTE: Do NOT update lastEventID here!
-		// lastEventID should only be updated in sendEventsToChannel() after the event
-		// is successfully sent to the channel. This ensures that:
-		// 1. Filtered events don't advance the resume position
-		// 2. Events are only marked as "seen" after they're actually delivered
-		// 3. MarkProcessed() with empty token uses the correct position
+		// sendEventsToChannel advances the read cursor and registers matching deliveries
+		// atomically. Building a batch alone must not move a durable checkpoint.
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1117,35 +1942,35 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	ctx context.Context,
 	events []datastore.EventWithToken,
 ) error {
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+
 	sentCount := 0
 	filteredCount := 0
 
 	for _, event := range events {
-		// Extract event ID and timestamp from event for tracking
-		// CRITICAL FIX: Update position BEFORE filtering to prevent deadlock.
-		// This matches MongoDB's behavior where resume tokens advance independently of filtering.
-		eventID := w.advancePosition(event)
+		matches := w.pipelineFilter == nil || w.pipelineFilter.MatchesEvent(event)
 
-		if w.pipelineFilter != nil && !w.pipelineFilter.MatchesEvent(event) {
-			slog.Debug("Event filtered out by pipeline", "client", w.clientName, "eventID", eventID)
+		delivery, err := w.prepareDelivery(ctx, event, matches)
+		if err != nil {
+			return err
+		}
 
+		if matches && delivery.seq == 0 {
+			return nil // Stopped before registering a delivery.
+		}
+
+		if !matches {
 			filteredCount++
 
 			continue
 		}
 
-		select {
-		case w.events <- event:
-			sentCount++
-		case <-ctx.Done():
-			slog.Debug("Context cancelled while sending event", "client", w.clientName)
-
-			return ctx.Err()
-		case <-w.stopCh:
-			slog.Debug("Stop channel triggered while sending event", "client", w.clientName)
-
-			return nil
+		if err := w.publishDelivery(ctx, event); err != nil {
+			return err
 		}
+
+		sentCount++
 	}
 
 	if len(events) > 0 {
@@ -1163,51 +1988,183 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	return nil
 }
 
-// advancePosition parses the event's resume token and updates the watcher's
-// position so the changestream advances even for filtered events.
-func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWithToken) int64 {
-	eventIDStr := string(event.ResumeToken)
-
-	eventID, err := strconv.ParseInt(eventIDStr, 10, 64)
-	if err != nil {
-		w.mu.RLock()
-		current := w.lastEventID
-		w.mu.RUnlock()
-
-		slog.Error("Failed to parse event ID from resume token",
-			"client", w.clientName, "error", err, "currentEventID", current)
-
-		return current
+// publishDelivery keeps abandoned attempts pending: the read cursor already includes them,
+// and a shutdown watermark must not certify a row the consumer never received.
+func (w *PostgreSQLChangeStreamWatcher) publishDelivery(ctx context.Context, event datastore.EventWithToken) error {
+	select {
+	case w.events <- event:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("publish delivery: %w", ctx.Err())
+	case <-w.stopCh:
+		return nil
 	}
-
-	eventTimestamp := w.extractEventTimestamp(event.Event, eventID)
-
-	w.mu.Lock()
-	w.recordRecentEventIDLocked(eventID, time.Now())
-
-	if eventID > w.lastEventID {
-		w.lastEventID = eventID
-		w.lastTimestamp = eventTimestamp
-	}
-
-	w.mu.Unlock()
-
-	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
-
-	return eventID
 }
 
-func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bool {
+// prepareDelivery registers a matching delivery before publishing its read position.
+// A checkpoint can therefore never see an advanced cursor without its pending delivery.
+// The caller holds sendMu; registration and cursor advancement acquire mu only once.
+func (w *PostgreSQLChangeStreamWatcher) prepareDelivery(
+	ctx context.Context, event datastore.EventWithToken, matches bool,
+) (pendingDelivery, error) {
+	id, err := strconv.ParseInt(string(event.ResumeToken), 10, 64)
+	if err != nil {
+		return pendingDelivery{}, fmt.Errorf("parse delivery token: %w", err)
+	}
+
+	delivery := pendingDelivery{id: id, timestamp: w.extractEventTimestamp(event.Event, id)}
+
+	select {
+	case <-ctx.Done():
+		return pendingDelivery{}, fmt.Errorf("prepare delivery: %w", ctx.Err())
+	case <-w.stopCh:
+		return pendingDelivery{}, nil
+	default:
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.pruneRecentEventIDsLocked(time.Now())
-	_, recentlySeen := w.recentEventIDs[eventID]
+	// A late row may precede an already durable checkpoint. Save the new bound before
+	// registering or handing it out. Failure leaves its id unread for the next lookup;
+	// the fetch loop retries failed passes without stalling the LISTEN connection.
+	if matches {
+		if err := w.rewindCheckpointLocked(ctx, delivery); err != nil {
+			return pendingDelivery{}, err
+		}
+	}
 
-	return recentlySeen
+	w.advancePositionLocked(delivery.timestamp, id)
+
+	if matches {
+		w.deliverySeq++
+		delivery.seq = w.deliverySeq
+		w.registerDeliveryLocked(delivery)
+	}
+
+	return delivery, nil
+}
+
+// rewindCheckpointLocked persists a late delivery's strict predecessor when necessary.
+// The caller holds mu through the write, as MarkProcessed does, so saves cannot overtake.
+func (w *PostgreSQLChangeStreamWatcher) rewindCheckpointLocked(ctx context.Context, delivery pendingDelivery) error {
+	if !w.persistedUncertain &&
+		!positionAfter(w.persistedTimestamp, w.persistedEventID, delivery.timestamp, delivery.id-1) {
+		return nil
+	}
+
+	ts, id := w.checkpointPositionLocked()
+	if positionAfter(ts, id, delivery.timestamp, delivery.id-1) {
+		ts, id = delivery.timestamp, delivery.id-1
+	}
+
+	if err := w.saveResumePosition(ctx, ts, id); err != nil {
+		slog.Error("Failed to persist checkpoint rewind; delivery will be retried",
+			"client", w.clientName, "eventID", delivery.id, "error", err)
+
+		return fmt.Errorf("persist checkpoint before late delivery %d: %w", delivery.id, err)
+	}
+
+	return nil
+}
+
+// registerDeliveryLocked evicts only bookkeeping, preserving the oldest unacknowledged
+// position in a floor. Saturation never waits for a consumer that may be dropping events.
+func (w *PostgreSQLChangeStreamWatcher) registerDeliveryLocked(delivery pendingDelivery) {
+	if len(w.pending) < pendingDeliveryLimit {
+		w.pending = append(w.pending, delivery)
+
+		return
+	}
+
+	evicted := w.pending[0]
+	if w.pendingFloor.seq == 0 {
+		slog.Warn("Pending delivery limit reached; retaining evicted positions in checkpoint floor",
+			"client", w.clientName, "limit", pendingDeliveryLimit)
+		w.pendingFloor = evicted
+	}
+
+	if positionAfter(w.pendingFloor.timestamp, w.pendingFloor.id, evicted.timestamp, evicted.id) {
+		w.pendingFloor.timestamp, w.pendingFloor.id = evicted.timestamp, evicted.id
+	}
+
+	w.pendingFloor.seq = max(w.pendingFloor.seq, evicted.seq)
+	copy(w.pending, w.pending[1:])
+	w.pending[len(w.pending)-1] = delivery
+}
+
+// advancePositionLocked preserves the read cursor's (changed_at, id) order, including
+// filtered rows and late NOTIFY rows. The caller holds mu.
+func (w *PostgreSQLChangeStreamWatcher) advancePositionLocked(eventTimestamp time.Time, eventID int64) {
+	w.recordRecentEventIDLocked(eventID, time.Now())
+
+	if eventID > w.highestReadEventID {
+		w.highestReadEventID = eventID
+	}
+
+	// The poll reads rows in (changed_at, id) order, so the cursor has to move in that order.
+	// A row can have a higher id and an earlier changed_at than rows read after it: changed_at
+	// is when its transaction started and the id is taken when its statement ends. Moving by id
+	// alone pinned the cursor on such a row, and every later poll read the same rows again.
+	// A row behind the cursor, such as a late commit fetched from its NOTIFY, is still
+	// delivered but does not move the cursor back.
+	if positionAfter(eventTimestamp, eventID, w.lastTimestamp, w.lastEventID) {
+		w.lastEventID = eventID
+		w.lastTimestamp = eventTimestamp
+	}
+}
+
+// acknowledgeDeliveryLocked removes only the earliest tracked matching delivery and its
+// prefix. Its sequence also covers all evicted entries. Unknown tokens remove nothing.
+func (w *PostgreSQLChangeStreamWatcher) acknowledgeDeliveryLocked(id int64) {
+	for i, delivery := range w.pending {
+		if delivery.id == id {
+			n := copy(w.pending, w.pending[i+1:])
+			clear(w.pending[n:])
+			w.pending = w.pending[:n]
+
+			if delivery.seq > w.pendingFloor.seq {
+				w.pendingFloor = pendingDelivery{}
+			}
+
+			return
+		}
+	}
+}
+
+// checkpointPositionLocked bounds the cursor by every outstanding delivery, including
+// late NOTIFY rows below the cursor. Rewinding a saved checkpoint permits safe replay.
+func (w *PostgreSQLChangeStreamWatcher) checkpointPositionLocked() (time.Time, int64) {
+	ts, id := w.lastTimestamp, w.lastEventID
+	if w.pendingFloor.seq > 0 && positionAfter(ts, id, w.pendingFloor.timestamp, w.pendingFloor.id-1) {
+		ts, id = w.pendingFloor.timestamp, w.pendingFloor.id-1
+	}
+
+	for _, delivery := range w.pending {
+		// Changelog ids are positive BIGSERIAL values, so id-1 is a strict predecessor
+		// at the same timestamp and the next poll will include this delivery again.
+		if positionAfter(ts, id, delivery.timestamp, delivery.id-1) {
+			ts, id = delivery.timestamp, delivery.id-1
+		}
+	}
+
+	return ts, id
+}
+
+// positionAfter reports whether (ts, id) comes after (otherTS, otherID) in the order the poll
+// reads the changelog: changed_at first, then id.
+func positionAfter(ts time.Time, id int64, otherTS time.Time, otherID int64) bool {
+	if c := ts.Compare(otherTS); c != 0 {
+		return c > 0
+	}
+
+	return id > otherID
 }
 
 func (w *PostgreSQLChangeStreamWatcher) recordRecentEventIDLocked(eventID int64, now time.Time) {
+	// A row that was read is no longer one for the fetch loop to look up by id.
+	delete(w.unreadIDs, eventID)
+
 	if w.recentEventIDs == nil {
 		w.recentEventIDs = make(map[int64]time.Time)
 	}
@@ -1243,123 +2200,143 @@ func (w *PostgreSQLChangeStreamWatcher) pruneRecentEventIDsLocked(now time.Time)
 	w.recentEventSeq = w.recentEventSeq[:writeIdx]
 }
 
-// parseTimestampFromToken extracts the timestamp from a resume token map.
-func parseTimestampFromToken(token map[string]any) (time.Time, bool) {
-	timestampVal, exists := token["timestamp"]
-	if !exists {
-		return time.Time{}, false
+// restoreResumePosition validates a saved pair or resolves a legacy ID without writing it.
+// errMalformedResumeToken marks a saved token that cannot be parsed or validated. Construction
+// keeps such a row for an operator and replays from the beginning instead of failing on every
+// restart.
+var errMalformedResumeToken = errors.New("malformed resume token")
+
+func (w *PostgreSQLChangeStreamWatcher) restoreResumePosition(ctx context.Context, tokenJSON []byte) error {
+	var token struct {
+		Timestamp *time.Time `json:"timestamp"`
+		EventID   *int64     `json:"eventID"`
 	}
 
-	timestampStr, ok := timestampVal.(string)
-	if !ok {
-		return time.Time{}, false
-	}
-
-	parsedTime, err := time.Parse(time.RFC3339Nano, timestampStr)
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	return parsedTime, true
-}
-
-// parseEventIDFromToken extracts the eventID from a resume token map.
-func parseEventIDFromToken(token map[string]any) (int64, bool) {
-	eventIDVal, exists := token["eventID"]
-	if !exists {
-		return 0, false
-	}
-
-	eventIDFloat, ok := eventIDVal.(float64)
-	if !ok {
-		return 0, false
-	}
-
-	return int64(eventIDFloat), true
-}
-
-// loadResumePosition loads the last processed position from resume tokens table
-// Uses timestamp-based resume (like MongoDB) for reliable replay of time-window events
-func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) error {
-	query := `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
-
-	var tokenJSON []byte
-
-	err := w.db.QueryRowContext(ctx, query, w.clientName).Scan(&tokenJSON)
-	if err != nil {
-		return w.handleNoResumeToken(err)
-	}
-
-	var token map[string]any
 	if err := json.Unmarshal(tokenJSON, &token); err != nil {
-		return fmt.Errorf("failed to unmarshal resume token: %w", err)
+		return fmt.Errorf("parse resume token for %s: %w: %w", w.clientName, errMalformedResumeToken, err)
 	}
 
-	// Parse timestamp and eventID from token
-	if ts, ok := parseTimestampFromToken(token); ok {
-		w.lastTimestamp = ts
+	if token.EventID == nil || *token.EventID < 0 {
+		return fmt.Errorf("%w: invalid resume eventID for %s", errMalformedResumeToken, w.clientName)
 	}
 
-	if eventID, ok := parseEventIDFromToken(token); ok {
-		w.lastEventID = eventID
+	w.lastEventID = *token.EventID
+
+	if token.Timestamp != nil {
+		if token.Timestamp.IsZero() {
+			return fmt.Errorf("%w: invalid resume timestamp for %s", errMalformedResumeToken, w.clientName)
+		}
+
+		// PostgreSQL JSON uses an explicit offset, which Go can parse with a local location.
+		w.lastTimestamp = token.Timestamp.UTC()
+	} else {
+		if w.lastEventID == 0 {
+			return fmt.Errorf("%w: missing resume timestamp for %s", errMalformedResumeToken, w.clientName)
+		}
+
+		if err := w.convertOldTokenToTimestamp(ctx); err != nil {
+			// Never leave (zero timestamp, old id): its poll can resend the same rows forever.
+			w.lastEventID = 0
+
+			return fmt.Errorf("convert legacy resume token for %s: %w", w.clientName, err)
+		}
 	}
 
-	// Backward compatibility: convert old ID-based token to timestamp
-	if w.lastTimestamp.IsZero() && w.lastEventID > 0 {
-		w.convertOldTokenToTimestamp(ctx)
-	}
+	// For a legacy ID token, restart resolves the same pair through the conversion above.
+	w.persistedTimestamp, w.persistedEventID = w.lastTimestamp, w.lastEventID
+	w.highestReadEventID = w.lastEventID
 
-	slog.Info("Loaded resume position",
-		"client", w.clientName,
-		"timestamp", w.lastTimestamp,
-		"eventID", w.lastEventID)
+	slog.Info("Loaded resume position", "client", w.clientName,
+		"timestamp", w.lastTimestamp, "eventID", w.lastEventID)
 
 	return nil
 }
 
-// handleNoResumeToken handles the case when no resume token is found.
-func (w *PostgreSQLChangeStreamWatcher) handleNoResumeToken(err error) error {
-	if errors.Is(err, sql.ErrNoRows) {
-		// No resume token found - start from current time (like MongoDB does)
-		w.lastTimestamp = time.Now()
-		w.lastEventID = 0
-
-		slog.Info("No resume token found, starting from current time",
-			"client", w.clientName,
-			"timestamp", w.lastTimestamp,
-			"table", w.tableName)
-
-		return nil
-	}
-
-	return fmt.Errorf("failed to load resume position: %w", err)
-}
-
 // convertOldTokenToTimestamp queries the database to get timestamp for an old ID-based token.
-func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.Context) {
+func (w *PostgreSQLChangeStreamWatcher) convertOldTokenToTimestamp(ctx context.Context) error {
+	oldEventID := w.lastEventID
+
 	query := `SELECT changed_at FROM datastore_changelog WHERE id = $1`
 
 	var changedAt time.Time
 
-	err := w.db.QueryRowContext(ctx, query, w.lastEventID).Scan(&changedAt)
+	err := w.queryLegacyTimestamp(ctx, query, oldEventID, &changedAt)
 	if err == nil {
 		w.lastTimestamp = changedAt
 
 		slog.Info("Converted old ID-based token to timestamp",
 			"client", w.clientName,
-			"eventID", w.lastEventID,
+			"eventID", oldEventID,
 			"timestamp", w.lastTimestamp)
 
-		return
+		return nil
 	}
 
-	// Can't find the event - start from current time
-	w.lastTimestamp = time.Now()
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to get timestamp for old event %d: %w", oldEventID, err)
+	}
+
+	// The old row may have expired. Start at the earliest remaining timestamp after
+	// its ID, with ID zero to include every row at that timestamp. Replaying is safer
+	// than using the current time, which would skip events accumulated before restart.
+	fallbackQuery := `SELECT MIN(changed_at) FROM datastore_changelog WHERE id > $1`
+
+	var nextTimestamp sql.NullTime
+
+	if err := w.queryLegacyTimestamp(ctx, fallbackQuery, oldEventID, &nextTimestamp); err != nil {
+		return fmt.Errorf("failed to find timestamp after old event %d: %w", oldEventID, err)
+	}
+
+	if nextTimestamp.Valid {
+		w.lastTimestamp = nextTimestamp.Time
+	} else {
+		// No later rows remain; preserve the existing current-time startup behavior.
+		w.lastTimestamp = time.Now()
+	}
+
 	w.lastEventID = 0
 
-	slog.Warn("Could not find event for old token, starting from current time",
+	slog.Warn("Could not find event for old token, using fallback timestamp",
 		"client", w.clientName,
-		"oldEventID", w.lastEventID)
+		"oldEventID", oldEventID,
+		"timestamp", w.lastTimestamp)
+
+	return nil
+}
+
+// queryLegacyTimestamp retries the legacy timestamp lookup until success,
+// a missing row, or cancellation. The caller handles missing rows and NULL timestamps.
+func (w *PostgreSQLChangeStreamWatcher) queryLegacyTimestamp(
+	ctx context.Context, query string, eventID int64, timestamp any,
+) error {
+	interval := w.resumeRetryInterval
+	if interval <= 0 {
+		interval = client.DefaultRetryDelay
+	}
+
+	backoff := wait.Backoff{Duration: interval, Factor: 2, Jitter: 0.2, Steps: 32, Cap: resumeRetryMaxDelay}
+	delay := backoff.DelayFunc()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("legacy timestamp lookup cancelled: %w", err)
+		}
+
+		err := w.db.QueryRowContext(ctx, query, eventID).Scan(timestamp)
+		if err == nil || errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		retryDelay := min(delay(), resumeRetryMaxDelay)
+		slog.Warn("Failed to get legacy timestamp, retrying",
+			"client", w.clientName, "eventID", eventID, "error", err, "retryDelay", retryDelay)
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("legacy timestamp lookup cancelled: %w", ctx.Err())
+		case <-time.After(retryDelay):
+		}
+	}
 }
 
 // saveResumePosition saves the resume position to the resume tokens table
@@ -1387,8 +2364,14 @@ func (w *PostgreSQLChangeStreamWatcher) saveResumePosition(
 
 	_, err = w.db.ExecContext(ctx, query, w.clientName, tokenJSON)
 	if err != nil {
+		// The error can be ambiguous: the write may have committed anyway.
+		w.persistedUncertain = true
+
 		return fmt.Errorf("failed to save resume position: %w", err)
 	}
+
+	w.persistedTimestamp, w.persistedEventID = timestamp, eventID
+	w.persistedUncertain = false
 
 	return nil
 }
@@ -1735,6 +2718,11 @@ func (a *PostgreSQLChangeStreamAdapter) LagState() (lastEmptyBatch, lastEventRea
 	return a.watcher.LagState()
 }
 
+// IsReady delegates readiness to the underlying PostgreSQL watcher.
+func (a *PostgreSQLChangeStreamAdapter) IsReady() bool {
+	return a.watcher.IsReady()
+}
+
 // PostgreSQLChangeStreamWatcherWithUnwrap wraps PostgreSQLChangeStreamWatcher
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
@@ -1784,6 +2772,11 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) err
 // LagState delegates to the wrapped watcher so lag survives the wrapper.
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) LagState() (lastEmptyBatch, lastEventRead time.Time) {
 	return w.watcher.LagState()
+}
+
+// IsReady delegates readiness to the underlying PostgreSQL watcher.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) IsReady() bool {
+	return w.watcher.IsReady()
 }
 
 // Every type a consumer can be handed must report lag, or the assertion that looks for it

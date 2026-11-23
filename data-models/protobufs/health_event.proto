@@ -42,6 +42,30 @@ message HealthEventStatus {
   google.protobuf.BoolValue faultRemediated = 5;
   google.protobuf.Timestamp lastRemediationTimestamp = 6;
   map<string, string> spanIds = 7;
+  DrainDecision drainDecision = 8;
+  RemediationDecision remediationDecision = 9;
+}
+
+// DrainDecision is the drain decision that node-drainer records for an event before it acts.
+message DrainDecision {
+  // Rule set that applies: the winner, or the rule set of the reusedFrom event. Empty for the default.
+  string ruleSet = 1;
+  // BuiltIn or Custom. Empty when stopped.
+  string method = 2;
+  bool stopped = 3;
+  // Entity type and value of a partial drain. Empty for a drain of the full node.
+  Entity scope = 4;
+  // Event of the quarantine session whose method this event uses. Empty when this event selected it.
+  string reusedFrom = 5;
+}
+
+// RemediationDecision is the remediation decision that fault-remediation records for an event before it acts.
+message RemediationDecision {
+  // Rule set that won. Empty when no rule set matched.
+  string ruleSet = 1;
+  // Entry of maintenance.actions. Empty when stopped.
+  string action = 2;
+  bool stopped = 3;
 }
 
 // HealthEventWithStatus combines HealthEvent and HealthEventStatus for CRD generation.

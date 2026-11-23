@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Syslog Health Monitor module watches system logs for GPU errors (XID/SXID), GPU-fallen-off, and GPU reset events by reading journald logs. This document covers all Helm configuration options for system administrators.
+The syslog-health-monitor module reads journald logs. It watches the system logs for GPU errors (XID/SXID), GPU-fallen-off events, and GPU reset events. This document covers all Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the syslog-health-monitor module is deployed in the cluster.
+Controls whether Helm deploys the syslog-health-monitor module in the cluster.
 
 ```yaml
 global:
@@ -42,14 +42,29 @@ syslog-health-monitor:
 
 ## Journal Host Path
 
-Host directory holding the systemd journal the monitor reads.
+Host directory that holds the systemd journal that the monitor reads.
 
 ```yaml
 syslog-health-monitor:
   journalHostPath: /var/log
 ```
 
-Change it only when your distribution stores the journal elsewhere. The DaemonSet mounts this path into the pod, so a wrong value leaves the monitor with no journal to read.
+If your distribution stores the journal in a different location, change this value. Otherwise, keep the default. The DaemonSet mounts this path into the pod. Thus, with a wrong value, the monitor has no journal to read.
+
+`journalHostPath` is the directory that *contains* `journal/`. The DaemonSet mounts it at `/nvsentinel/var/log`, and the monitor reads `/nvsentinel/var/log/journal/`. If you set it to the journal directory itself, the monitor has nothing to read.
+
+To mount only the journal directory, set `journalDirectoryHostPath` instead. The DaemonSet mounts it directly at `/nvsentinel/var/log/journal` and ignores `journalHostPath`:
+
+```yaml
+syslog-health-monitor:
+  journalDirectoryHostPath: /var/log/journal
+```
+
+If the DaemonSet cannot mount the parent directory as-is, use this value. For example, the vcluster syncer rewrites a hostPath of exactly `/var/log` to a per-tenant directory. Thus, the default mount points at a directory with no journal. The syncer does not change `/var/log/journal`.
+
+The directory must exist on every node, or the pod does not start. The default mount of the parent directory prevents this problem on nodes without a persistent journal.
+
+This value applies to regular mode only. Kata mode always mounts `/var/log/journal`.
 
 ## Boot Lookback Window
 
@@ -60,13 +75,15 @@ syslog-health-monitor:
   bootLookbackWindow: "2h"
 ```
 
-Entries older than this window are skipped, so a reboot does not re-report XIDs that an operator already remediated by hand. Set it to `"0"` for unlimited lookback, which scans from the head of the journal with no clipping.
+The monitor skips the entries that are older than this window. Thus, a reboot does not report again the XIDs that an operator already remediated manually. For unlimited lookback, set it to `"0"`. The monitor then scans from the head of the journal, with no clipping.
 
-Widen the window on nodes that stay down for long service windows and whose faults you still want reported on return. Narrow it where a node accumulates historical errors you have already dealt with.
+The monitor keeps its state file under `/var/run`, and a reboot clears that directory. Thus, the monitor runs this scan each time it starts with no saved boot ID. A first install and a new node also start with no saved boot ID, so they read the same window. With `"0"`, the scan reads everything that the current boot logged.
+
+If nodes stay down for long service windows and you want their faults reported when they return, widen the window. If a node collects historical errors that you already resolved, narrow the window.
 
 ## Cancellation Rules
 
-Emits synthetic healthy events when one error code implies recovery from another. Without a cancellation, a fault stays latched until something explicitly clears it.
+Sends synthetic healthy health events when one error code implies recovery from another. Without a cancellation, a fault stays latched until something explicitly clears it.
 
 ```yaml
 syslog-health-monitor:
@@ -81,17 +98,17 @@ syslog-health-monitor:
 | Field | Purpose |
 |---|---|
 | `name` | The check these rules apply to, matching an entry in `enabledChecks` |
-| `enabled` | Turns the rule set on or off without deleting it |
-| `rules[].onErrorCode` | Error code that, when observed, triggers the cancellation |
-| `rules[].cancelErrorCodes` | Error codes cleared on the same entities, as healthy events |
+| `enabled` | Enables or disables the rule set without deleting it |
+| `rules[].onErrorCode` | Error code that triggers the cancellation when the monitor observes it |
+| `rules[].cancelErrorCodes` | Error codes that the monitor clears on the same entities, as healthy health events |
 
-The shipped rule reads XID 162 (PSHC re-engaged) as recovery from XID 163 (PSHC disengaged). Cancellation applies to the same entities that carried the original fault, so clearing one GPU does not clear another.
+The default rule reads XID 162 (PSHC re-engaged) as recovery from XID 163 (PSHC disengaged). Cancellation applies to the same entities that carried the original fault. Thus, a cancellation that clears one GPU does not clear another GPU.
 
-Add a rule only where one code genuinely proves recovery from the other. A wrong pairing clears a fault that is still present and returns a broken GPU to service.
+Add a rule only for a pair of codes in which one code truly proves recovery from the other. A wrong pairing clears a fault that is still present, and a broken GPU returns to service.
 
 ## Enabled Checks
 
-Configures which health checks are active. The module monitors journald logs for specific error patterns. Supported checks are `SysLogsXIDError`, `SysLogsSXIDError`, `SysLogsGPUFallenOff`, and `SysLogsNICDriverError`.
+Configures the health checks that are active. The module monitors journald logs for specific error patterns. The supported checks are `SysLogsXIDError`, `SysLogsSXIDError`, `SysLogsGPUFallenOff`, and `SysLogsNICDriverError`.
 
 ```yaml
 syslog-health-monitor:
@@ -105,16 +122,20 @@ syslog-health-monitor:
 ### Check Types
 
 #### SysLogsXIDError
-Monitors for XID (GPU error) and GPU reset messages in system logs. XIDs are NVIDIA GPU error codes that indicate hardware or software issues.
+
+Monitors the system logs for XID (GPU error) and GPU reset messages. XIDs are NVIDIA GPU error codes that indicate hardware or software issues.
 
 #### SysLogsSXIDError
+
 Monitors for SXID messages specific to NVSwitch errors in multi-GPU configurations.
 
 #### SysLogsGPUFallenOff
-Monitors for GPU fallen off events where the GPU becomes unresponsive or inaccessible to the system.
+
+Monitors for GPU fallen off events, in which the GPU stops responding or the system cannot access it.
 
 #### SysLogsNICDriverError
-Monitors for NIC driver error patterns (e.g. mlx5 TX/RX timeouts, NAPI soft lockups) in system logs. Detected errors are correlated with the syslog-detection-correlation logic described in the NIC Health Monitor documentation. Enable alongside `nicDriverDetection` configuration.
+
+Monitors the system logs for NIC driver error patterns, for example mlx5 TX/RX timeouts and NAPI soft lockups. NVSentinel correlates the detected errors with the syslog-detection-correlation logic. The NIC Health Monitor documentation describes this logic. Enable this check together with the `nicDriverDetection` configuration.
 
 ## XID Analyzer Sidecar
 
@@ -135,31 +156,39 @@ syslog-health-monitor:
 ### Parameters
 
 #### enabled
-Enables the XID analyzer sidecar container. When disabled, the monitor uses an embedded XID mapping file.
+
+Enables the XID analyzer sidecar container. If you disable the sidecar, the monitor uses an embedded XID mapping file.
 
 #### image.repository
+
 Container image for the XID analyzer sidecar service.
 
 #### image.tag
+
 Image tag for the XID analyzer sidecar.
 
 #### image.pullPolicy
+
 Pull policy for the sidecar image.
 
 ### XID Parsing Modes
 
 #### Embedded Parser (Default)
+
 When `xidSideCar.enabled: false`, the monitor uses an embedded Excel-based XID mapping file for parsing and analysis.
 
 **Characteristics:**
+
 - No additional container needed
 - Uses static XID mapping data
 - Suitable for most deployments
 
 #### Sidecar Parser
-When `xidSideCar.enabled: true`, the monitor sends XID messages to the sidecar service via HTTP for analysis.
+
+When `xidSideCar.enabled: true`, the monitor sends XID messages to the sidecar service through HTTP for analysis.
 
 **Characteristics:**
+
 - Dedicated analysis service
 - Dynamic XID interpretation
 - Can provide enhanced error context
@@ -178,7 +207,7 @@ syslog-health-monitor:
 
 ## XID Analyzer Sidecar API
 
-When the sidecar is enabled, the syslog health monitor communicates with it via HTTP REST API.
+If you enable the sidecar, syslog-health-monitor communicates with it through an HTTP REST API.
 
 ### Endpoint
 
@@ -186,7 +215,7 @@ When the sidecar is enabled, the syslog health monitor communicates with it via 
 POST http://localhost:8080/decode-xid
 ```
 
-The sidecar should listen on `localhost:8080` as it runs in the same pod as the syslog health monitor.
+The sidecar must listen on `localhost:8080`, because it runs in the same pod as syslog-health-monitor.
 
 ### Request Format
 
@@ -241,11 +270,11 @@ The sidecar should listen on `localhost:8080` as it runs in the same pod as the 
 
 #### Result Object
 
-- `number` (integer) - XID error code number (e.g., 48, 64, 79)
+- `number` (integer) - XID error code number (for example, 48, 64, 79)
 - `name` (string) - Human-readable name of the XID error
 - `mnemonic` (string) - Short mnemonic code for the error type
 - `context` (string) - Additional context about the error
-- `resolution` (string) - Recommended resolution action that should be performed by the system
+- `resolution` (string) - Recommended resolution action for the system to perform
 - `investigatory_action` (string) - Steps to investigate the error
 - `pcie_bdf` (string) - PCIe Bus:Device.Function identifier
 - `driver` (string) - Driver version
@@ -269,9 +298,10 @@ The module automatically deploys separate DaemonSets for standard and Kata Conta
 
 ### Kata Mode Differences
 
-For nodes labeled with `nvsentinel.dgxc.nvidia.com/kata: "true"`:
-- Adds containerd service filter to journald queries
-- Removes `SysLogsSXIDError` check (not supported in Kata environment)
-- Uses separate DaemonSet with `-kata` suffix
+For nodes labeled with `nvsentinel.dgxc.nvidia.com/kata.enabled: "true"`, the module:
 
-Configuration is automatic based on node labels. No manual configuration needed.
+- Adds a containerd service filter to journald queries
+- Removes the `SysLogsSXIDError` check (not supported in a Kata environment)
+- Uses a separate DaemonSet with the `-kata` suffix
+
+The module configures this automatically from the node labels. No manual configuration is necessary.

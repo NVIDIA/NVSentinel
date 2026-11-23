@@ -20,5 +20,7 @@ local_resource(
     "cd .. && docker build -t localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest -f log-collector/Dockerfile . && docker push localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest",
     deps=["./"],
     ignore=["./Tiltfile"],
-    labels=["images"]
+    labels=["images"],
+    # Without this, Tilt runs the build only while nothing else builds (see tilt/Tiltfile).
+    allow_parallel=True,
 )

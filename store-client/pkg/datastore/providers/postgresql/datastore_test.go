@@ -528,6 +528,190 @@ func TestEnsureIdempotencyIndex(t *testing.T) {
 	})
 }
 
+// TestChangelogResumeIndexStatement_MatchesPollQuery_NonPartialConcurrentBuild:
+// the index has the poll's columns in its ORDER BY order, has no predicate, so
+// the poll can use it, and does not block the changelog writes while it builds.
+func TestChangelogResumeIndexStatement_MatchesPollQuery_NonPartialConcurrentBuild(t *testing.T) {
+	assert.Equal(t,
+		"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_changelog_resume_all "+
+			"ON datastore_changelog (table_name, changed_at, id)",
+		createChangelogResumeIndexStatement)
+	assert.Equal(t, "DROP INDEX CONCURRENTLY IF EXISTS idx_changelog_resume_all", dropChangelogResumeIndexStatement)
+}
+
+// TestEnsureChangelogResumeIndex: the table setup builds the index
+// concurrently when it is missing, leaves a valid index or a build another
+// session is running alone, replaces an INVALID leftover, retries a build
+// aborted as a deadlock victim, and reports a build that did not end valid.
+func TestEnsureChangelogResumeIndex(t *testing.T) {
+	createStatement := regexp.QuoteMeta(createChangelogResumeIndexStatement)
+	dropStatement := regexp.QuoteMeta(dropChangelogResumeIndexStatement)
+	stateQuery := "SELECT i.indisvalid"
+	progressQuery := "pg_stat_progress_create_index"
+
+	expectIndex := func(mock sqlmock.Sqlmock, valid bool) {
+		mock.ExpectQuery(stateQuery).
+			WithArgs(changelogResumeIndexName, changelogTable).
+			WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}).AddRow(valid))
+	}
+	expectMissing := func(mock sqlmock.Sqlmock) {
+		mock.ExpectQuery(stateQuery).
+			WithArgs(changelogResumeIndexName, changelogTable).
+			WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}))
+	}
+	expectBuilding := func(mock sqlmock.Sqlmock, building bool) {
+		mock.ExpectQuery(progressQuery).
+			WithArgs(changelogResumeIndexName, changelogTable).
+			WillReturnRows(sqlmock.NewRows([]string{"building"}).AddRow(building))
+	}
+	newDB := func(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+		t.Helper()
+
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		return db, mock
+	}
+
+	t.Run("missing index is built concurrently and verified", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureChangelogResumeIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a valid index is left alone", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureChangelogResumeIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet(), "no DDL runs when the index is already valid")
+	})
+
+	t.Run("a build another session is running is left alone", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, true)
+
+		require.NoError(t, ensureChangelogResumeIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("an invalid leftover is dropped and built again", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureChangelogResumeIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed drop is reported and no create follows", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnError(errors.New("lock timeout"))
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "dropping the invalid changelog resume index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build that did not end valid is reported", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, false)
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "is not valid after the build")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed progress check is reported and no drop follows", func(t *testing.T) {
+		db, mock := newDB(t)
+		expectIndex(mock, false)
+		mock.ExpectQuery(progressQuery).
+			WithArgs(changelogResumeIndexName, changelogTable).
+			WillReturnError(errors.New("permission denied"))
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "checking whether the changelog resume index is being built")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failed check is reported", func(t *testing.T) {
+		db, mock := newDB(t)
+		mock.ExpectQuery(stateQuery).
+			WithArgs(changelogResumeIndexName, changelogTable).
+			WillReturnError(errors.New("connection refused"))
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "checking the changelog resume index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	noRetryDelay := func(t *testing.T) {
+		t.Helper()
+
+		previous := changelogResumeIndexRetryDelay
+		changelogResumeIndexRetryDelay = 0
+
+		t.Cleanup(func() { changelogResumeIndexRetryDelay = previous })
+	}
+	deadlock := &pq.Error{Code: pqerror.TRDeadlockDetected, Message: "deadlock detected"}
+
+	t.Run("a build aborted as deadlock victim drops its leftover and is built again", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(deadlock)
+		expectIndex(mock, false)
+		expectBuilding(mock, false)
+		mock.ExpectExec(dropStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(createStatement).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectIndex(mock, true)
+
+		require.NoError(t, ensureChangelogResumeIndex(context.Background(), db))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build that keeps losing is reported after the last attempt", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+
+		for range changelogResumeIndexBuildAttempts {
+			expectMissing(mock)
+			mock.ExpectExec(createStatement).WillReturnError(deadlock)
+		}
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "building the changelog resume index")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a build that fails for another reason is not tried again", func(t *testing.T) {
+		noRetryDelay(t)
+
+		db, mock := newDB(t)
+		expectMissing(mock)
+		mock.ExpectExec(createStatement).WillReturnError(errors.New("disk full"))
+
+		err := ensureChangelogResumeIndex(context.Background(), db)
+		require.ErrorContains(t, err, "disk full")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
 // TestWithSetupLock: the table setup runs once the advisory lock is held,
 // waiting while another component holds it, and releases the lock afterwards,
 // also when the setup fails.

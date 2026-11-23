@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -171,7 +172,7 @@ func TestGPUReset(t *testing.T) {
 		if err != nil || !found {
 			assert.Fail(t, "failed to find status conditions field in CR", gpuReset.GetName(), err)
 		}
-		var foundCompleteCondition bool
+		var foundCompleteCondition, foundSucceededCondition bool
 		for _, c := range conditions {
 			condMap := c.(map[string]interface{})
 
@@ -180,8 +181,15 @@ func TestGPUReset(t *testing.T) {
 				assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
 				assert.Equal(t, "True", condMap["status"].(string))
 			}
+
+			if condMap["type"].(string) == "Succeeded" {
+				foundSucceededCondition = true
+				assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
+				assert.Equal(t, "True", condMap["status"].(string))
+			}
 		}
 		assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+		assert.True(t, foundSucceededCondition, "Did not find Succeeded condition on CR", gpuReset.GetName())
 
 		// We explicitly set writeSysLogEvent to false in values-tilt.yaml to test that the Helm chart values
 		// propagate to the WRITE_SYSLOG_EVENT environment variable. Note that if the value isn't set in the Janitor
@@ -364,7 +372,7 @@ func TestGPUResetScale(t *testing.T) {
 				if err != nil || !found {
 					assert.Fail(t, "failed to find status conditions field in CR", gpuReset.GetName(), err)
 				}
-				var foundCompleteCondition bool
+				var foundCompleteCondition, foundSucceededCondition bool
 				for _, c := range conditions {
 					condMap := c.(map[string]interface{})
 
@@ -373,12 +381,26 @@ func TestGPUResetScale(t *testing.T) {
 						assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
 						assert.Equal(t, "True", condMap["status"].(string))
 					}
+
+					if condMap["type"].(string) == "Succeeded" {
+						foundSucceededCondition = true
+						assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
+						assert.Equal(t, "True", condMap["status"].(string))
+					}
 				}
 				assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+				assert.True(t, foundSucceededCondition, "Did not find Succeeded condition on CR", gpuReset.GetName())
 
 				if skipControllerFinalizer {
-					controllerutil.RemoveFinalizer(gpuReset, gpuResetFinalizer)
-					err := client.Resources().Update(ctx, gpuReset)
+					err := retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
+						if err := client.Resources().Get(ctx, gpuReset.GetName(), gpuReset.GetNamespace(), gpuReset); err != nil {
+							return err
+						}
+
+						controllerutil.RemoveFinalizer(gpuReset, gpuResetFinalizer)
+
+						return client.Resources().Update(ctx, gpuReset)
+					})
 					assert.NoError(t, err, "failed to remove finalizer on CR", gpuReset.GetName())
 				}
 				err = helpers.DeleteCR(ctx, t, client, gpuReset, true)

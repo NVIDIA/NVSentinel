@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -200,6 +201,265 @@ func TestApplyDriverBinPath_InvalidPath_ReturnsError(t *testing.T) {
 			err = applyDriverBinPath(template, test.driverBinPath)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "resetJob.driverBinPath")
+		})
+	}
+}
+
+// TestGetDefaultGPUResetJobTemplate_RunCount_LastRunReportsFailure verifies that gpu_reset.sh can count its runs:
+// the container restarts in the same pod, the run count file is in an emptyDir that outlives a restart, and the
+// last run that the backoff limit allows is the run that writes a failed result.
+func TestGetDefaultGPUResetJobTemplate_RunCount_LastRunReportsFailure(t *testing.T) {
+	for _, driverRoot := range []string{DriverRootMountPath, ContainerDriverRoot} {
+		t.Run(driverRoot, func(t *testing.T) {
+			template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+				ResourceRequirements{}, DefaultHostDriverRootPath, driverRoot, "", true, "")
+			require.NoError(t, err)
+
+			podSpec := template.Spec.Template.Spec
+			container := podSpec.Containers[0]
+
+			// With OnFailure, the Job controller fails the Job when the container restart count reaches the
+			// backoff limit, so the limit is the number of full runs.
+			assert.Equal(t, corev1.RestartPolicyOnFailure, podSpec.RestartPolicy)
+			require.NotNil(t, template.Spec.BackoffLimit)
+			assert.Equal(t, int32(ResetJobMaxRuns), *template.Spec.BackoffLimit)
+
+			maxRuns := findEnvVar(container.Env, ResetMaxRunsEnvVar)
+			require.NotNil(t, maxRuns)
+			assert.Equal(t, "2", maxRuns.Value)
+
+			countFile := findEnvVar(container.Env, ResetRunCountFileEnvVar)
+			require.NotNil(t, countFile)
+			assert.Equal(t, ResetStateMountPath+"/run-count", countFile.Value)
+
+			stateVolume := findVolume(podSpec.Volumes, ResetStateVolumeName)
+			require.NotNil(t, stateVolume)
+			assert.NotNil(t, stateVolume.EmptyDir)
+
+			stateMount := findVolumeMount(container.VolumeMounts, ResetStateVolumeName)
+			require.NotNil(t, stateMount)
+			assert.Equal(t, ResetStateMountPath, stateMount.MountPath)
+		})
+	}
+}
+
+func defaultTestJobTemplate(t *testing.T) *batchv1.JobTemplateSpec {
+	t.Helper()
+
+	template, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{}, DefaultHostDriverRootPath, DriverRootMountPath, "nvidia", true, "")
+	require.NoError(t, err)
+
+	return template
+}
+
+func TestApplyJobTemplatePatch_EmptyPatch_LeavesTemplateUnchanged(t *testing.T) {
+	for _, patch := range []string{"", " \n"} {
+		template := defaultTestJobTemplate(t)
+		want := template.DeepCopy()
+
+		patched, err := applyJobTemplatePatch(template, patch)
+		require.NoError(t, err)
+		assert.Equal(t, want, patched)
+	}
+}
+
+// TestApplyJobTemplatePatch_ADRExample_MergesIntoTheBuiltInTemplate applies the ADR-069 example and checks that the
+// built-in volumes, mounts, env vars and security context are still there, because lists merge by key.
+func TestApplyJobTemplatePatch_ADRExample_MergesIntoTheBuiltInTemplate(t *testing.T) {
+	template := defaultTestJobTemplate(t)
+	builtIn := template.DeepCopy()
+
+	patched, err := applyJobTemplatePatch(template, `
+spec:
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      serviceAccountName: provider-reset
+      volumes:
+        - name: host-systemd
+          hostPath:
+            path: /run/systemd
+      initContainers:
+        - name: stop-provider-daemonsets
+          image: provider/reset-hooks:1.0
+      containers:
+        - name: gpu-reset
+          command: ["/hooks/reset-with-restore.sh"]
+          volumeMounts:
+            - name: host-systemd
+              mountPath: /run/systemd
+`)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(900), *patched.Spec.ActiveDeadlineSeconds)
+	assert.Equal(t, builtIn.Spec.BackoffLimit, patched.Spec.BackoffLimit)
+	assert.Equal(t, builtIn.Spec.TTLSecondsAfterFinished, patched.Spec.TTLSecondsAfterFinished)
+
+	podSpec := patched.Spec.Template.Spec
+	assert.Equal(t, "provider-reset", podSpec.ServiceAccountName)
+	assert.Equal(t, builtIn.Spec.Template.Spec.Tolerations, podSpec.Tolerations)
+	assert.Equal(t, builtIn.Spec.Template.Spec.RuntimeClassName, podSpec.RuntimeClassName)
+
+	require.Len(t, podSpec.Volumes, len(builtIn.Spec.Template.Spec.Volumes)+1)
+	require.NotNil(t, findVolume(podSpec.Volumes, "host-systemd"))
+	assert.Equal(t, "/run/systemd", findVolume(podSpec.Volumes, "host-systemd").HostPath.Path)
+
+	require.Len(t, podSpec.InitContainers, 1)
+	assert.Equal(t, "stop-provider-daemonsets", podSpec.InitContainers[0].Name)
+	assert.Equal(t, "provider/reset-hooks:1.0", podSpec.InitContainers[0].Image)
+
+	require.Len(t, podSpec.Containers, 1)
+	container := podSpec.Containers[0]
+	builtInContainer := builtIn.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, GPUResetContainerName, container.Name)
+	assert.Equal(t, []string{"/hooks/reset-with-restore.sh"}, container.Command)
+	assert.Equal(t, builtInContainer.Image, container.Image)
+	assert.Equal(t, builtInContainer.Env, container.Env)
+	assert.Equal(t, builtInContainer.SecurityContext, container.SecurityContext)
+	assert.ElementsMatch(t, append(builtInContainer.VolumeMounts,
+		corev1.VolumeMount{Name: "host-systemd", MountPath: "/run/systemd"}), container.VolumeMounts)
+}
+
+func TestApplyJobTemplatePatch_PatchValueWinsOverResetJobKey(t *testing.T) {
+	patched, err := applyJobTemplatePatch(defaultTestJobTemplate(t), `
+spec:
+  template:
+    spec:
+      runtimeClassName: provider-runtime
+      containers:
+        - name: gpu-reset
+          image: provider/gpu-reset:1.0
+`)
+	require.NoError(t, err)
+
+	podSpec := patched.Spec.Template.Spec
+	require.NotNil(t, podSpec.RuntimeClassName)
+	assert.Equal(t, "provider-runtime", *podSpec.RuntimeClassName)
+	require.Len(t, podSpec.Containers, 1)
+	assert.Equal(t, "provider/gpu-reset:1.0", podSpec.Containers[0].Image)
+}
+
+// TestApplyJobTemplatePatch_Directive_IsApplied checks that a $patch directive takes effect, and that the strict
+// check does not reject it as an unknown field.
+func TestApplyJobTemplatePatch_Directive_IsApplied(t *testing.T) {
+	template := defaultTestJobTemplate(t)
+	require.NotNil(t, findEnvVar(template.Spec.Template.Spec.Containers[0].Env, UploadURLBaseEnvVar))
+
+	patched, err := applyJobTemplatePatch(template, `
+spec:
+  template:
+    spec:
+      containers:
+        - name: gpu-reset
+          env:
+            - name: UPLOAD_URL_BASE
+              $patch: delete
+`)
+	require.NoError(t, err)
+
+	env := patched.Spec.Template.Spec.Containers[0].Env
+	assert.Nil(t, findEnvVar(env, UploadURLBaseEnvVar))
+	assert.NotNil(t, findEnvVar(env, NodeNameEnvVar))
+}
+
+// TestApplyJobTemplatePatch_MergeRules covers the two merge rules that docs/configuration/janitor.md warns about: a
+// new mountPath adds a second mount, and tolerations are replaced.
+func TestApplyJobTemplatePatch_MergeRules(t *testing.T) {
+	t.Run("a new mountPath for driver-root adds a second mount", func(t *testing.T) {
+		patched, err := applyJobTemplatePatch(defaultTestJobTemplate(t), `
+spec:
+  template:
+    spec:
+      containers:
+        - name: gpu-reset
+          volumeMounts:
+            - name: driver-root
+              mountPath: /opt/driver
+`)
+		require.NoError(t, err)
+
+		var driverRootMountPaths []string
+
+		for _, mount := range patched.Spec.Template.Spec.Containers[0].VolumeMounts {
+			if mount.Name == DriverRootVolumeName {
+				driverRootMountPaths = append(driverRootMountPaths, mount.MountPath)
+			}
+		}
+
+		assert.ElementsMatch(t, []string{DriverRootMountPath, "/opt/driver"}, driverRootMountPaths)
+	})
+
+	t.Run("tolerations are replaced", func(t *testing.T) {
+		patched, err := applyJobTemplatePatch(defaultTestJobTemplate(t), `
+spec:
+  template:
+    spec:
+      tolerations:
+        - key: provider.example.com/maintenance
+          operator: Exists
+          effect: NoSchedule
+`)
+		require.NoError(t, err)
+
+		assert.Equal(t, []corev1.Toleration{{
+			Key:      "provider.example.com/maintenance",
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		}}, patched.Spec.Template.Spec.Tolerations)
+	})
+}
+
+func TestApplyJobTemplatePatch_InvalidPatch_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name    string
+		patch   string
+		wantErr string
+	}{
+		{
+			name:    "misspelled field",
+			patch:   "spec:\n  activeDeadlineSecond: 900\n",
+			wantErr: `unknown field "spec.activeDeadlineSecond"`,
+		},
+		{
+			name:    "misspelled list field",
+			patch:   "spec:\n  template:\n    spec:\n      initContainer:\n        - name: hook\n          image: hook:1.0\n",
+			wantErr: `unknown field "spec.template.spec.initContainer"`,
+		},
+		{
+			name:    "field name in the wrong case",
+			patch:   "spec:\n  ActiveDeadlineSeconds: 900\n",
+			wantErr: `unknown field "spec.ActiveDeadlineSeconds"`,
+		},
+		{
+			// The merge removes fields set to null, so only the check of the patch itself catches this one.
+			name:    "misspelled field set to null",
+			patch:   "spec:\n  template:\n    spec:\n      containers:\n        - name: gpu-reset\n          env:\n            - name: NODE_NAME\n              valuefrom: null\n              value: node\n",
+			wantErr: `unknown field "spec.template.spec.containers[0].env[0].valuefrom"`,
+		},
+		{
+			name:    "wrong type",
+			patch:   "spec:\n  activeDeadlineSeconds: soon\n",
+			wantErr: "failed to decode",
+		},
+		{
+			name:    "duplicate field",
+			patch:   "spec:\n  activeDeadlineSeconds: 900\n  activeDeadlineSeconds: 600\n",
+			wantErr: "not valid YAML",
+		},
+		{
+			name:    "not an object",
+			patch:   "- spec\n",
+			wantErr: "resetJob.jobTemplatePatch",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			patched, err := applyJobTemplatePatch(defaultTestJobTemplate(t), test.patch)
+			require.Error(t, err)
+			assert.Nil(t, patched)
+			assert.Contains(t, err.Error(), test.wantErr)
 		})
 	}
 }

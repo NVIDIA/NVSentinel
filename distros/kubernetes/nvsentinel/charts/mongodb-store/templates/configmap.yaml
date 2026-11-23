@@ -43,7 +43,6 @@ data:
   MONGODB_COLLECTION_NAME: "HealthEvents"
   MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: "MaintenanceEvents"
   MONGODB_TOKEN_COLLECTION_NAME: "ResumeTokens"
-  MONGODB_PING_TIMEOUT_TOTAL_SECONDS: "30"
   MONGODB_PING_INTERVAL_SECONDS: "5"
   CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: "360"
   CA_CERT_READ_INTERVAL_SECONDS: "5"
@@ -52,4 +51,4 @@ data:
   UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: "25"
   MONGODB_COLLECTION_EXPIRY_SECONDS: {{ include "mongodb-store.collectionExpirySeconds" . | quote }}
   MONGODB_OPLOG_SIZE_MB: {{ include "mongodb-store.oplogSizeMB" . | quote }}
-  MONGODB_OPLOG_ALLOW_SHRINK: {{ ternary "true" "false" (eq (.Values.oplogAllowShrink | toString) "true") | quote }}
+  MONGODB_OPLOG_ALLOW_SHRINK: {{ include "mongodb-store.oplogAllowShrink" . | quote }}

@@ -250,14 +250,21 @@ func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.R
 
 			slog.Debug("recommendation from log", "recommendation", recommendation)
 
+			// Drivers up to R595 print "GPU Reset Required" and "Node Reboot Required"; R610 and
+			// later print "PF FLR" and "OS Reboot" for the same recovery actions (values 0x1 and 0x2).
+			// R610 also adds "Bus Reset" (0x6) and "System Reboot" (0x7). A bus reset covers more than
+			// the single-GPU reset that COMPONENT_RESET runs, so both map to a node reboot.
 			switch recommendation {
-			case "GPU Reset Required", "Drain and Reset":
+			case "GPU Reset Required", "PF FLR", "Drain and Reset":
 				recommendedAction = pb.RecommendedAction_COMPONENT_RESET
-			case "Node Reboot Required":
+			case "Node Reboot Required", "OS Reboot", "Bus Reset", "System Reboot":
 				recommendedAction = pb.RecommendedAction_RESTART_BM
 			case "None":
 				recommendedAction = pb.RecommendedAction_NONE
 			default:
+				// Includes "Drain P2P" (0x3) and "Recover IMEX Domain" (0x5). NVSentinel cannot stop P2P
+				// traffic or recover a multi-node IMEX domain, so an operator decides. The gpu-health-monitor
+				// maps the matching DCGM_FR_GPU_RECOVERY_* codes to CONTACT_SUPPORT too.
 				recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
 			}
 		} else {

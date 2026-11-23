@@ -1,0 +1,133 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Pushes the Go module fixup of dependabot-gomod-tidy.yml to the Dependabot branch.
+#
+# A workflow_run workflow always runs from main, with the permissions below. The patch comes from a
+# run that executed code of the branch, so this workflow treats it as untrusted: it applies the patch
+# only when the patch changes only go.mod and go.sum files, and it runs no code of the branch.
+
+name: "Dependabot Go Mod Fixup: Push"
+
+on:
+  workflow_run:
+    workflows: ["Dependabot Go Mod Fixup: Tidy"]
+    types: [completed]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    name: Push Go module fixup
+    if: >
+      github.repository == 'nvidia/nvsentinel' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/go_modules/')
+    runs-on: linux-amd64-cpu4
+    permissions:
+      contents: write
+      actions: read
+    timeout-minutes: 10
+    steps:
+      # The tidy run uploads no patch when the branch needs no change.
+      - name: Check for the patch
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=gomod-fixup" --jq '.total_count')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Run ${RUN_ID} uploaded no patch. No Go module fixup changes needed."
+          fi
+
+      - name: Download the patch
+        if: steps.artifact.outputs.exists == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: gomod-fixup
+          path: ${{ runner.temp }}/gomod-fixup
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the patch metadata
+        if: steps.artifact.outputs.exists == 'true'
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          dir="${RUNNER_TEMP}/gomod-fixup"
+          if [ "$(cat "${dir}/branch")" != "$BRANCH" ] || [ "$(cat "${dir}/sha")" != "$SHA" ]; then
+            echo "::error::The patch is for $(cat "${dir}/branch")@$(cat "${dir}/sha"), not ${BRANCH}@${SHA}"
+            exit 1
+          fi
+
+      - name: Checkout Dependabot branch
+        if: steps.artifact.outputs.exists == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Apply the patch
+        if: steps.artifact.outputs.exists == 'true'
+        run: |
+          patch="${RUNNER_TEMP}/gomod-fixup/fixup.patch"
+
+          # Allow only regular files named go.mod or go.sum: no other paths, renames, symlinks, submodules or mode changes.
+          bad=$(git apply --numstat "$patch" | cut -f3- | grep -Ev '^([^ ]+/)?go\.(mod|sum)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Refusing a patch that changes non-module files:"
+            echo "$bad"
+            exit 1
+          fi
+          if git apply --summary "$patch" | grep -Eq 'mode change|rename|copy|mode 1[26]0000'; then
+            echo "::error::Refusing a patch that renames files or changes file modes:"
+            git apply --summary "$patch"
+            exit 1
+          fi
+
+          git apply --check "$patch"
+          git apply "$patch"
+
+          bad=$(git status --porcelain --untracked-files=all | cut -c4- | grep -Ev '^([^ ]+/)?go\.(mod|sum)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Refusing to commit non-module changes:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Commit and push Go module fixups
+        if: steps.artifact.outputs.exists == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- ':(glob)**/go.mod' ':(glob)**/go.sum'
+          git commit -m "chore: tidy Dependabot Go module updates"
+          # No force: if Dependabot pushed again since the tidy run, this fails and the run for the newer push tidies it.
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"

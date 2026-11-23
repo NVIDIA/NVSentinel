@@ -28,6 +28,8 @@ spec:
       {{- include "incluster-file-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-nginx.yaml") . | sha256sum }}
       labels:
         {{- include "incluster-file-server.selectorLabels" . | nindent 8 }}
     spec:
@@ -144,6 +146,10 @@ spec:
           env:
             - name: CLEANUP_METRICS_PORT
               value: "{{ .Values.cleanupMetricsPort }}"
+            {{- if eq (toString (dig "ipv6" "enabled" false (.Values.global | default dict))) "true" }}
+            - name: CLEANUP_METRICS_ADDR
+              value: "::"
+            {{- end }}
             - name: LOG_RETENTION_DAYS
               value: "{{ .Values.logCleanup.retentionDays }}"
             - name: LOG_CLEANUP_SLEEP_INTERVAL

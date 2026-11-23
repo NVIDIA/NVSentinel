@@ -41,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor/pkg/cacheconfig"
 	grpcclient "github.com/nvidia/nvsentinel/janitor/pkg/client"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -75,6 +76,16 @@ const requeueBackoffForTransientCSPError = 15 * time.Second
 // conditionReasonSucceeded is the reason stamped on conditions that completed
 // successfully.
 const conditionReasonSucceeded = "Succeeded"
+
+// conditionReasonNodeInService is the reason when janitor refuses maintenance on a node that is neither cordoned nor
+// quarantined, for example a request that outlived the quarantine of its node.
+const conditionReasonNodeInService = "NodeInService"
+
+// refuseNodeInService reports whether the node must not get maintenance: the check is required and the node is
+// neither cordoned nor quarantined.
+func refuseNodeInService(required *bool, node *corev1.Node) bool {
+	return required != nil && *required && !cacheconfig.NodeOutOfService(node)
+}
 
 //nolint:lll // kubebuilder RBAC marker must stay on one line
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
@@ -159,13 +170,9 @@ func (r *RebootNodeReconciler) completeDuplicateReboot(
 	rebootNode.SetInitialConditions()
 	rebootNode.SetStartTime()
 	rebootNode.SetCompletionTime()
-	rebootNode.SetCondition(metav1.Condition{
-		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             nodeAlreadyUnderMaintenanceReason,
-		Message:            fmt.Sprintf("RebootNode/%s is active for this node", holderName),
-		LastTransitionTime: metav1.Now(),
-	})
+	rebootNode.SetRebootCompletionCondition(metav1.ConditionFalse,
+		nodeAlreadyUnderMaintenanceReason,
+		fmt.Sprintf("RebootNode/%s is active for this node", holderName))
 
 	if err := r.updateRebootNodeStatusIfChanged(ctx, original, rebootNode); err != nil {
 		return ctrl.Result{}, err
@@ -414,13 +421,8 @@ func (r *RebootNodeReconciler) completeNodeReadyCheck(
 	conditionStatus metav1.ConditionStatus, reason, message, metricsStatus string,
 ) ctrl.Result {
 	rebootNode.SetCompletionTime()
-	rebootNode.SetCondition(metav1.Condition{
-		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-		Status:             conditionStatus,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	})
+	rebootNode.SetRebootCompletionCondition(conditionStatus, reason, message)
+
 	metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metricsStatus, node.Name)
 
 	return ctrl.Result{}
@@ -469,6 +471,20 @@ func (r *RebootNodeReconciler) handleRebootNotStarted(
 
 	if *r.Config.ManualMode {
 		return r.handleManualMode(ctx, rebootNode, node)
+	}
+
+	if refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+		slog.WarnContext(ctx, "Node is neither cordoned nor quarantined, janitor will not reboot it", "node", node.Name)
+		rebootNode.SetCompletionTime()
+		rebootNode.SetCondition(metav1.Condition{
+			Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
+			Status:             metav1.ConditionFalse,
+			Reason:             conditionReasonNodeInService,
+			Message:            "Node is neither cordoned nor quarantined, refusing to reboot it",
+			LastTransitionTime: metav1.Now(),
+		})
+
+		return ctrl.Result{}
 	}
 
 	return r.sendRebootSignalAndSetCondition(ctx, cspClient, rebootNode, node)

@@ -34,6 +34,14 @@ global:
   # janitor.config.cspProviderHost and fault-remediation.logCollector.uploadURL.
   # See docs/configuration/README.md#cluster-domain.
   clusterDomain: cluster.local
+  # IPv6 switch for NVSentinel's own charts. Set enabled: true on an IPv6-only
+  # or dual-stack cluster. It binds the GPU health monitor metrics server to "::"
+  # (unless metricsAddress is set to something other than "0.0.0.0"), turns on
+  # IPv6 in Bitnami and Percona MongoDB, and adds an IPv6 listener to the
+  # in-cluster file server. Every node must boot with IPv6 on. The GPU Operator
+  # needs its own setting. See docs/configuration/README.md#ipv6.
+  ipv6:
+    enabled: false
   # Default Kubernetes API client limits for core controllers. Components can
   # override these with their own qps and burst values.
   # qps: positive values throttle requests, 0 uses the client-go default,
@@ -232,6 +240,10 @@ global:
   #     # for the setup job to authenticate. Secret must have keys: username, password.
   #     # Not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
   #     adminSecret: ""
+  #     # Deadline for the setup job in seconds (default 600; 0 omits the deadline).
+  #     # A Job that exceeds it ends Failed; raising the value does not restart it,
+  #     # so delete the failed Job and run helm upgrade again.
+  #     activeDeadlineSeconds: 600
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.
@@ -540,6 +552,8 @@ platformConnector:
     enabled: false
 
   k8sConnector:
+    # Controls node-condition and Kubernetes Event writes for both connector roles.
+    # When false, their roles omit nodes/status and events permissions.
     enabled: true
     # Retry each failed Kubernetes write in place; completed writes are not repeated.
     # Zero or omission selects 25 retries per write. Negative values are invalid.
@@ -636,6 +650,13 @@ platformConnector:
       #   override:
       #     isFatal: false
       #     recommendedAction: "NONE"
+      # A rule can send a fault to a custom action. Set both fields; the name must have an
+      # entry in fault-remediation's maintenance.actions:
+      # - name: "nvlink-to-hardware-repair"
+      #   when: 'event.checkName == "GpuNvlinkWatch" && event.isFatal == true'
+      #   override:
+      #     recommendedAction: "CUSTOM"
+      #     customRecommendedAction: "hardware-repair"
 
 socketPath: "/var/run/nvsentinel.sock"
 

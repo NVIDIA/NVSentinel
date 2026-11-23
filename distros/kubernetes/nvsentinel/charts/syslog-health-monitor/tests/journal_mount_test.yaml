@@ -1,0 +1,114 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: journal mount
+release:
+  namespace: nvsentinel
+set:
+  global.platformConnectorAuth.enabled: false
+tests:
+  - it: regular mode mounts journalHostPath at /nvsentinel/var/log by default
+    template: templates/daemonset-regular.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: /var/log
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-log-vol
+            mountPath: /nvsentinel/var/log
+            readOnly: true
+
+  - it: regular mode keeps a custom journalHostPath at /nvsentinel/var/log
+    template: templates/daemonset-regular.yaml
+    set:
+      journalHostPath: /run/log
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: /run/log
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-log-vol
+            mountPath: /nvsentinel/var/log
+            readOnly: true
+
+  - it: regular mode mounts journalDirectoryHostPath where the monitor reads the journal
+    template: templates/daemonset-regular.yaml
+    set:
+      journalHostPath: /ignored
+      journalDirectoryHostPath: /var/log/journal
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: /var/log/journal
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-log-vol
+            mountPath: /nvsentinel/var/log/journal
+            readOnly: true
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-log-vol
+            mountPath: /nvsentinel/var/log
+            readOnly: true
+
+  - it: journalDirectoryHostPath is rendered verbatim, not cut at a YAML comment marker
+    template: templates/daemonset-regular.yaml
+    set:
+      journalDirectoryHostPath: "/srv/journal #2"
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: "/srv/journal #2"
+              type: Directory
+
+  - it: kata mode ignores journalDirectoryHostPath
+    template: templates/daemonset-kata.yaml
+    set:
+      journalDirectoryHostPath: /custom/journal
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: host-journal
+            hostPath:
+              path: /var/log/journal
+              type: Directory
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-log-vol
+            hostPath:
+              path: /custom/journal
+              type: Directory

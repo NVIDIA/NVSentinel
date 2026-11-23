@@ -47,6 +47,8 @@ jobs:
       - name: Check mergeable state
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
+          # Retries GitHub API calls that fail with a server error, such as HTTP 503.
+          retries: 3
           script: |
             const label = 'needs-rebase';
             const prBranch = context.ref.match(/^refs\/heads\/pull-request\/([0-9]+)$/);
@@ -85,6 +87,8 @@ jobs:
                   labels: [label],
                 });
                 await github.rest.issues.createComment({
+                  // A retried POST can post the comment twice.
+                  request: { retries: 0 },
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,

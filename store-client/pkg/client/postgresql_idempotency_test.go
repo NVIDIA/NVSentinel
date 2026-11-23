@@ -41,6 +41,7 @@ func TestClassifyPostgresDocumentError(t *testing.T) {
 		require.True(t, answered)
 		assert.Equal(t, 3, docErr.DocumentIndex)
 		assert.True(t, docErr.Duplicate)
+		assert.False(t, docErr.Permanent, "whether a duplicate repeats depends on the rows already stored")
 		assert.Equal(t, datastore.HealthEventIdempotencyIndexName, docErr.IndexName)
 		assert.Equal(t, pqErr.Message, docErr.Message)
 	})
@@ -66,6 +67,7 @@ func TestClassifyPostgresDocumentError(t *testing.T) {
 		docErr, answered := ClassifyPostgresDocumentError(1, pqErr)
 		require.True(t, answered)
 		assert.False(t, docErr.Duplicate)
+		assert.True(t, docErr.Permanent)
 		assert.Empty(t, docErr.IndexName)
 	})
 
@@ -76,6 +78,26 @@ func TestClassifyPostgresDocumentError(t *testing.T) {
 		require.True(t, answered)
 		assert.Equal(t, 2, docErr.DocumentIndex)
 		assert.False(t, docErr.Duplicate)
+		assert.True(t, docErr.Permanent)
+	})
+
+	t.Run("only an answer that depends on the document alone is permanent", func(t *testing.T) {
+		for _, test := range []struct {
+			code      pqerror.Code
+			permanent bool
+		}{
+			{code: pqerror.StringDataRightTruncation, permanent: true},
+			{code: pqerror.UntranslatableCharacter, permanent: true},
+			{code: pqerror.NotNullViolation, permanent: true},
+			{code: pqerror.CheckViolation, permanent: true},
+			{code: pqerror.ForeignKeyViolation, permanent: false},
+			{code: pqerror.ExclusionViolation, permanent: false},
+			{code: pqerror.UniqueViolation, permanent: false},
+		} {
+			docErr, answered := ClassifyPostgresDocumentError(0, &pq.Error{Code: test.code})
+			require.True(t, answered, test.code)
+			assert.Equal(t, test.permanent, docErr.Permanent, test.code)
+		}
 	})
 
 	t.Run("a server shutdown is not an answer about the document", func(t *testing.T) {

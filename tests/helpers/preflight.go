@@ -246,7 +246,7 @@ func ApplyPreflightInheritanceTestConfig(
 ) {
 	t.Helper()
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		cm := &v1.ConfigMap{}
 		if getErr := client.Resources().Get(
 			ctx, PreflightConfigMapName, NVSentinelNamespace, cm,
@@ -302,7 +302,7 @@ func restartPreflightDeployment(
 ) {
 	t.Helper()
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(ConflictBackoff, func() error {
 		deployment := &appsv1.Deployment{}
 		if getErr := client.Resources().Get(
 			ctx, deploymentName, NVSentinelNamespace, deployment,

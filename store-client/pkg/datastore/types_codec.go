@@ -33,6 +33,8 @@ func (h HealthEventStatus) MarshalBSON() ([]byte, error) {
 		FaultRemediated:           encodeWrappedBool(h.FaultRemediated),
 		LastRemediationTimestamp:  h.LastRemediationTimestamp,
 		SpanIds:                   h.SpanIds,
+		DrainDecision:             h.DrainDecision,
+		RemediationDecision:       h.RemediationDecision,
 	})
 }
 
@@ -92,6 +94,8 @@ func (h HealthEventStatus) MarshalJSON() ([]byte, error) {
 		FaultRemediated:           encodeWrappedBool(h.FaultRemediated),
 		LastRemediationTimestamp:  h.LastRemediationTimestamp,
 		SpanIds:                   h.SpanIds,
+		DrainDecision:             h.DrainDecision,
+		RemediationDecision:       h.RemediationDecision,
 	})
 }
 
@@ -142,6 +146,8 @@ type healthEventStatusBSON struct {
 	FaultRemediated           any                    `bson:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `bson:"lastremediationtimestamp,omitempty"`
 	SpanIds                   map[string]string      `bson:"spanids,omitempty"`
+	DrainDecision             *DrainDecision         `bson:"draindecision,omitempty"`
+	RemediationDecision       *RemediationDecision   `bson:"remediationdecision,omitempty"`
 }
 
 type healthEventStatusJSON struct {
@@ -152,6 +158,8 @@ type healthEventStatusJSON struct {
 	FaultRemediated           any                    `json:"faultremediated"`
 	LastRemediationTimestamp  *timestamppb.Timestamp `json:"lastremediationtimestamp,omitempty"`
 	SpanIds                   map[string]string      `json:"spanids,omitempty"`
+	DrainDecision             *DrainDecision         `json:"draindecision,omitempty"`
+	RemediationDecision       *RemediationDecision   `json:"remediationdecision,omitempty"`
 }
 
 func encodeWrappedBool(value *bool) any {

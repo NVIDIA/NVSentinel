@@ -176,6 +176,13 @@ spec:
                    volume are injected by lambda-pod-identity-webhook, keyed off
                    the ServiceAccount annotation, so nothing is declared here. */}}
             {{- end }}
+            {{- if eq .Values.cspName "akamai" }}
+            - name: LINODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "akamaiApiTokenSecret.name must be set when cspName=akamai" (.Values.akamaiApiTokenSecret).name }}
+                  key: {{ (.Values.akamaiApiTokenSecret).key | default "LINODE_TOKEN" }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}

@@ -27,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/configfile"
@@ -66,9 +68,46 @@ type Connectors struct {
 	sink   *grpcsink.GRPCSinkConnector
 	queues []*ringbuffer.RingBuffer
 	// stopCh, on the queued path, ends the Kubernetes connector's loop and
-	// the retries of the batch it is on.
-	stopCh chan struct{}
+	// the retries of the batch it is on. Shutdown closes it, once, when the
+	// loops are stopped: at the drain timeout, or after they have returned.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	// loops are the queue loops on the queued path, which running tracks.
+	// Each returns once its queue is shut down and empty, or once it is
+	// stopped.
+	loops   []*queueLoop
+	running sync.WaitGroup
+	// drainTimeout and stopTimeout, when set, replace queueDrainTimeout and
+	// queueStopTimeout; tests shorten them.
+	drainTimeout time.Duration
+	stopTimeout  time.Duration
 }
+
+// queueLoop is a connector's queue loop as Shutdown sees it: its name, its
+// queue, the cancel of its context, and whether it has returned.
+type queueLoop struct {
+	name  string
+	queue *ringbuffer.RingBuffer
+	stop  context.CancelFunc
+	done  atomic.Bool
+}
+
+// queueDrainTimeout bounds the wait at shutdown for the queue loops to process
+// the batches their queues still hold, which were acknowledged when they were
+// queued. Counting from SIGTERM on the node-local DaemonSet, requests in flight
+// take up to 10 s and this wait ends by 20 s, so the queued events are safe by
+// then. Loops still running then are stopped and get up to queueStopTimeout to
+// return, and the datastore disconnect, the metrics server and the trace
+// exporter take up to 5 s each after that, 40 s in all, which the pod's
+// termination grace period has to cover.
+const queueDrainTimeout = 10 * time.Second
+
+// queueStopTimeout bounds the wait, after the drain timeout, for the loops it
+// stopped to return. A loop held by a datastore call that does not end with
+// its context, a PostgreSQL insert to a host that stopped answering for
+// example, would otherwise keep Shutdown from closing the connections until
+// the pod is killed.
+const queueStopTimeout = 5 * time.Second
 
 // looped is a connector with the loop that drains its ring buffer on the
 // queued path.
@@ -220,7 +259,17 @@ func (c *Connectors) add(
 	ctx context.Context, queue *ringbuffer.RingBuffer, name string, connector looped, bestEffort bool,
 ) {
 	if queue != nil {
-		go connector.FetchAndProcessHealthMetric(ctx)
+		// Shutdown waits for the loop, and cancels its context only when it
+		// is still running at the drain timeout.
+		loopCtx, stop := context.WithCancel(ctx)
+		loop := &queueLoop{name: name, queue: queue, stop: stop}
+		c.loops = append(c.loops, loop)
+
+		c.running.Go(func() {
+			defer loop.done.Store(true)
+
+			connector.FetchAndProcessHealthMetric(loopCtx)
+		})
 
 		c.Set = append(c.Set, queue)
 
@@ -236,17 +285,16 @@ func (c *Connectors) add(
 	c.Set = append(c.Set, connector)
 }
 
-// Shutdown stops the connectors once the server accepts no more requests: the
-// Kubernetes loop is told to stop (ending the retries of the batch it is on),
-// every queue is drained, and the sink and datastore connections are closed.
+// Shutdown stops the connectors once the server accepts no more requests:
+// every queue stops taking batches, every loop, the Kubernetes one included,
+// processes what its queue holds, and the sink and datastore connections are
+// closed once the loops have returned.
 func (c *Connectors) Shutdown(ctx context.Context) {
-	if c.stopCh != nil {
-		close(c.stopCh)
-	}
-
 	for _, queue := range c.queues {
 		queue.ShutDownHealthMetricQueue()
 	}
+
+	c.waitForLoops(ctx)
 
 	if c.sink != nil {
 		if err := c.sink.Close(); err != nil {
@@ -261,5 +309,98 @@ func (c *Connectors) Shutdown(ctx context.Context) {
 		if err := c.Store.Disconnect(disconnectCtx); err != nil {
 			slog.WarnContext(ctx, "Error disconnecting store connector", "error", err)
 		}
+	}
+}
+
+// waitForLoops waits for the queue loops, so a batch acknowledged before the
+// shutdown is processed before the connections it is written through close.
+// A loop still running at the drain timeout, behind a datastore that stays
+// down for example, is stopped (see stopLoops); the store connector logs at
+// Error the batches it drops. A loop that has not returned queueStopTimeout
+// later is left behind, so the connections still close and the pod exits
+// within its grace period. Such a loop logs nothing about its batches, so they
+// are logged here, at Error.
+func (c *Connectors) waitForLoops(ctx context.Context) {
+	returned := make(chan struct{})
+
+	// This goroutine outlives Shutdown only while a loop left behind runs.
+	go func() {
+		c.running.Wait()
+		close(returned)
+	}()
+
+	drainTimeout := orDefault(c.drainTimeout, queueDrainTimeout)
+	if closedWithin(returned, drainTimeout) {
+		c.stopLoops()
+
+		return
+	}
+
+	slog.WarnContext(ctx, "Connector queues not drained before shutdown, stopping their loops",
+		"timeout", drainTimeout, "loops", c.runningLoops())
+	c.stopLoops()
+
+	stopTimeout := orDefault(c.stopTimeout, queueStopTimeout)
+	if closedWithin(returned, stopTimeout) {
+		return
+	}
+
+	for _, loop := range c.loops {
+		if !loop.done.Load() {
+			// A loop still running holds the batch it is on, so batchCount is
+			// that batch and what its queue still holds.
+			slog.ErrorContext(ctx, "Connector loop still running after it was stopped, dropping its batches permanently",
+				"loop", loop.name, "batchCount", loop.queue.CurrentLength()+1, "timeout", stopTimeout)
+		}
+	}
+}
+
+// runningLoops names the loops that have not returned.
+func (c *Connectors) runningLoops() []string {
+	var running []string
+
+	for _, loop := range c.loops {
+		if !loop.done.Load() {
+			running = append(running, loop.name)
+		}
+	}
+
+	return running
+}
+
+// closedWithin reports whether ch is closed within timeout.
+func closedWithin(ch <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// orDefault returns timeout, or def when timeout is not set.
+func orDefault(timeout, def time.Duration) time.Duration {
+	if timeout <= 0 {
+		return def
+	}
+
+	return timeout
+}
+
+// stopLoops ends the loops: closing stopCh ends the retries and API calls of
+// the batch the Kubernetes loop is on, and canceling each loop's context ends
+// the others' work.
+func (c *Connectors) stopLoops() {
+	c.stopOnce.Do(func() {
+		if c.stopCh != nil {
+			close(c.stopCh)
+		}
+	})
+
+	for _, loop := range c.loops {
+		loop.stop()
 	}
 }

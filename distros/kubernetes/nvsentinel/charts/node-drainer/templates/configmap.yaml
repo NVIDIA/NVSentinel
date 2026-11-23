@@ -66,5 +66,4 @@ data:
       kind = {{ .Values.customDrain.kind | quote }}
       statusConditionType = {{ .Values.customDrain.statusConditionType | quote }}
       statusConditionStatus = {{ .Values.customDrain.statusConditionStatus | quote }}
-      timeout = {{ .Values.customDrain.timeout | quote }}
     {{- end }}

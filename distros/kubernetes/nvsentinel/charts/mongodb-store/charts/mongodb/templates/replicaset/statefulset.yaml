@@ -256,7 +256,7 @@ spec:
             - name: MONGODB_PORT_NUMBER
               value: {{ .Values.containerPorts.mongodb | quote }}
             - name: MONGODB_ENABLE_IPV6
-              value: {{ ternary "yes" "no" .Values.enableIPv6 | quote }}
+              value: {{ ternary "yes" "no" (or .Values.enableIPv6 (eq (toString (dig "ipv6" "enabled" false (.Values.global | default dict))) "true")) | quote }}
             - name: MONGODB_ENABLE_DIRECTORY_PER_DB
               value: {{ ternary "yes" "no" .Values.directoryPerDB | quote }}
             {{- $extraFlags := .Values.extraFlags | join " " -}}

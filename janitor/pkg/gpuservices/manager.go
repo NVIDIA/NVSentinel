@@ -22,8 +22,11 @@ import (
 // Manager represents a specific GPU service manager configuration,
 // combining its resolved name with the detailed specification used for teardown.
 type Manager struct {
-	Name string      `mapstructure:"name" json:"name"`
-	Spec ManagerSpec `mapstructure:"spec" json:"spec"`
+	Name string `mapstructure:"name" json:"name"`
+	// Namespace overrides the namespace of a built-in manager. A custom spec sets its namespace in the spec.
+	// ResolveManager moves it into Spec.Namespace, which is the only namespace to read after resolution.
+	Namespace string      `mapstructure:"namespace" json:"namespace,omitempty"`
+	Spec      ManagerSpec `mapstructure:"spec" json:"spec"`
 }
 
 // ManagerSpec allows for the inline definition of a custom component and its applications.
@@ -126,6 +129,77 @@ var Registry = map[string]ManagerSpec{
 		RestoreTimeout:  10 * time.Minute,
 	},
 	// add additional GPU services managers here
+}
+
+// GPUClientsNodeLabel is the node label that GPU Operator 26.7 and later sets to "true" on each GPU node. A GPU
+// client pod that the GPU Operator does not manage selects this label, in its nodeSelector or in its required node
+// affinity. The GPU Operator sets the label to another value to remove these pods before it unloads the driver.
+const GPUClientsNodeLabel = "nvidia.com/gpu.deploy.client"
+
+// GPUClientsApp is the managed service for the GPU client pods that select GPUClientsNodeLabel. The pods can be in
+// any namespace, so the app has no pod selector. The controller finds the pods by the node label they select.
+func GPUClientsApp() AppSpec {
+	return AppSpec{
+		NodeLabel:     GPUClientsNodeLabel,
+		EnabledValue:  nodeLabelEnabled,
+		DisabledValue: nodeLabelDisabled,
+	}
+}
+
+// IsGPUClients reports whether the app is GPUClientsApp. An app in a custom spec that uses the same node label
+// with a pod selector is an ordinary app.
+func (a AppSpec) IsGPUClients() bool {
+	return a.NodeLabel == GPUClientsNodeLabel && len(a.AppSelector) == 0
+}
+
+// WithGPUClients returns the manager with GPUClientsApp added to its apps. It does not change the apps of the
+// given manager, which can share their array with the registry. A manager that already has an app for the node
+// label is returned unchanged. A manager without apps, which stops nothing, gets the timeouts of the gpu-operator
+// manager.
+func WithGPUClients(manager Manager) Manager {
+	for _, app := range manager.Spec.Apps {
+		if app.NodeLabel == GPUClientsNodeLabel {
+			return manager
+		}
+	}
+
+	if len(manager.Spec.Apps) == 0 {
+		manager.Spec.TeardownTimeout = Registry[managerGPUOperator].TeardownTimeout
+		manager.Spec.RestoreTimeout = Registry[managerGPUOperator].RestoreTimeout
+	}
+
+	apps := make([]AppSpec, 0, len(manager.Spec.Apps)+1)
+	apps = append(apps, manager.Spec.Apps...)
+	apps = append(apps, GPUClientsApp())
+	manager.Spec.Apps = apps
+
+	return manager
+}
+
+// ResolveManager resolves the configured manager with NewManager. When Namespace is set, it uses the built-in
+// manager for the name with its namespace replaced.
+func ResolveManager(config Manager) (Manager, error) {
+	if config.Namespace == "" {
+		return NewManager(config.Name, config.Spec)
+	}
+
+	if config.Name == "" {
+		return Manager{}, fmt.Errorf("GPU services manager Namespace requires a manager Name")
+	}
+
+	if config.Spec.Namespace != "" || len(config.Spec.Apps) > 0 {
+		return Manager{}, fmt.Errorf("GPU services manager Namespace applies only to a built-in manager; " +
+			"set the namespace of a custom spec in the spec")
+	}
+
+	manager, err := NewManager(config.Name, ManagerSpec{})
+	if err != nil {
+		return Manager{}, err
+	}
+
+	manager.Spec.Namespace = config.Namespace
+
+	return manager, nil
 }
 
 // NewManager constructs and resolves a Manager.

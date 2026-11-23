@@ -102,7 +102,7 @@ func TestNodeDrainerPodPolicies(t *testing.T) {
 		// KWOK simulates the workload finishing; the drainer must observe completion
 		// without sending an eviction or deletion for this policy.
 		for _, name := range pods["protected"] {
-			require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			require.NoError(t, retry.RetryOnConflict(helpers.ConflictBackoff, func() error {
 				pod := &v1.Pod{}
 				if err := client.Resources().Get(ctx, name, namespace, pod); err != nil {
 					return err

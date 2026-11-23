@@ -46,6 +46,14 @@ spec:
         seLinuxOptions:
           {{- toYaml . | nindent 10 }}
       {{- end }}
+      # Shutdown spends this budget: the metrics server closes within its
+      # own 5s grace in parallel with the final polls, and every publish
+      # those polls still owe draws on one shared 10s window armed at
+      # SIGTERM (defaultPublishDrain in pkg/monitor/publishdrain.go).
+      # 30s is the Kubernetes default, rendered explicitly because it is
+      # the drain window's outer bound; lowering it trades away delivery —
+      # a publish still retrying when SIGKILL lands loses its events.
+      terminationGracePeriodSeconds: 30
       initContainers:
         # The state hostPath is created root-owned by the kubelet
         # (DirectoryOrCreate), and Kubernetes does not apply fsGroup to

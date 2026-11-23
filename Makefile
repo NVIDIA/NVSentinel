@@ -26,6 +26,7 @@ BLACK_VERSION := $(shell $(YQ) '.linting.black' .versions.yaml)
 DEADCODE_VERSION := $(shell $(YQ) '.go_tools.deadcode' .versions.yaml)
 DOCKER_BUILDX_VERSION := $(shell $(YQ) '.container_tools.docker_buildx' .versions.yaml)
 GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
+GO_LICENSES_VERSION := $(shell $(YQ) '.go_tools.go_licenses' .versions.yaml)
 GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
 GOLANGCI_LINT_VERSION := $(shell $(YQ) '.go_tools.golangci_lint' .versions.yaml)
 GOTESTSUM_VERSION := $(shell $(YQ) '.go_tools.gotestsum' .versions.yaml)
@@ -133,7 +134,7 @@ dev-env-setup: ## Setup complete development environment (installs all required 
 
 # Install lint tools
 .PHONY: install-lint-tools
-install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura install-deadcode ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura, deadcode)
+install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura install-deadcode install-go-licenses ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura, deadcode, go-licenses)
 	@echo "All lint tools installed successfully"
 	@echo ""
 	@echo "=== Installed Tool Versions and Locations ==="
@@ -218,6 +219,17 @@ install-deadcode:
 		echo "deadcode is already installed"; \
 	fi
 
+# Install go-licenses
+.PHONY: install-go-licenses
+install-go-licenses:
+	@echo "Installing go-licenses..."
+	@if ! command -v go-licenses >/dev/null 2>&1; then \
+		echo "go-licenses not found, installing..."; \
+		$(GO) install github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION); \
+	else \
+		echo "go-licenses is already installed"; \
+	fi
+
 # Install Go $(GO_VERSION) for CI environments (Linux and macOS, amd64 and arm64)
 .PHONY: install-go-ci
 install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd64/arm64)
@@ -290,7 +302,7 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint renovate-lint dead-code-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
+lint-test-all: protos-lint license-headers-lint dependency-licenses-lint gomod-lint renovate-lint openvex-lint dead-code-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -376,6 +388,12 @@ license-headers-lint: ## Check license headers in source files
 		-ignore '**/vendor/**' \
 		.
 
+# Check the licenses of the core modules' third-party Go dependencies
+.PHONY: dependency-licenses-lint
+dependency-licenses-lint: ## Fail on a core module dependency whose license is not allowed by .dependency-licenses.yaml
+	@echo "Checking dependency licenses of the core modules..."
+	./scripts/check-dependency-licenses.sh
+
 # Check go.mod files for proper replace directives
 .PHONY: gomod-lint
 gomod-lint: ## Validate go.mod files for local module replace directives
@@ -386,6 +404,11 @@ gomod-lint: ## Validate go.mod files for local module replace directives
 .PHONY: renovate-lint
 renovate-lint: ## Validate the Renovate configuration and .versions.yaml annotations
 	./scripts/validate-renovate.sh
+
+# Check .openvex.json. publish.yml attests it to every image, so a syntax error fails every publish.
+.PHONY: openvex-lint
+openvex-lint: ## Check that .openvex.json is valid JSON with a statements array
+	jq -e '.statements | type == "array"' .openvex.json > /dev/null
 
 # Check all Go modules for dead code
 .PHONY: dead-code-lint
@@ -775,6 +798,9 @@ CTLPTL_CONFIG_FILE ?= .ctlptl.yaml
 CLUSTER_NAME ?= kind-nvsentinel
 REGISTRY_NAME ?= ctlptl-registry
 REGISTRY_PORT ?= 5001
+# Resources that tilt-ci builds and deploys at the same time. With 16, the image builds that
+# start first leave free slots for short steps on the critical path, such as cert-manager.
+TILT_MAX_PARALLEL_UPDATES ?= 16
 
 # Tilt development targets
 .PHONY: tilt-up
@@ -805,7 +831,7 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 	@echo "Starting Tilt with SKIP_KWOK_NODES_IN_TILT=1 (with retry logic)..."
 	@for i in 1 2 3; do \
 		echo "Attempt $$i of 3..."; \
-		if SKIP_KWOK_NODES_IN_TILT=1 tilt ci -f tilt/Tiltfile --timeout=10m; then \
+		if SKIP_KWOK_NODES_IN_TILT=1 TILT_MAX_PARALLEL_UPDATES=$(TILT_MAX_PARALLEL_UPDATES) tilt ci -f tilt/Tiltfile --timeout=10m; then \
 			echo "Tilt CI succeeded on attempt $$i"; \
 			break; \
 		else \

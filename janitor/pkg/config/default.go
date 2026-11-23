@@ -15,6 +15,8 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -25,6 +27,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	sigsjson "sigs.k8s.io/json"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -42,6 +47,15 @@ const (
 	NodeNameEnvVar            = "NODE_NAME"
 	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
 	DriverBinPathEnvVar       = "DRIVER_BIN_PATH"
+	ResetStateVolumeName      = "reset-state"
+	ResetStateMountPath       = "/run/nvsentinel-gpu-reset"
+	ResetRunCountFileEnvVar   = "RESET_RUN_COUNT_FILE"
+	ResetMaxRunsEnvVar        = "RESET_MAX_RUNS"
+	// ResetJobMaxRuns is how many times the reset Job runs gpu_reset.sh. With restartPolicy OnFailure, the
+	// Job controller fails the Job when the container restart count reaches backoffLimit, so a backoffLimit
+	// of ResetJobMaxRuns gives ResetJobMaxRuns full runs. The next run can start before the Job fails; the
+	// script then exits without a reset.
+	ResetJobMaxRuns = 2
 	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
 	// container itself instead of into the mounted driver filesystem.
 	ContainerDriverRoot = "/"
@@ -51,6 +65,7 @@ func applyConfigDefaults(config *Config) {
 	applyGlobalDefaults(config)
 	applyTimeoutDefaults(config)
 	applyManualModeDefaults(config)
+	applyRequireNodeOutOfServiceDefaults(config)
 	applyExclusionsDefaults(config)
 	applyCSPProviderHostDefaults(config)
 }
@@ -62,6 +77,10 @@ func applyGlobalDefaults(config *Config) {
 
 	if config.Global.ManualMode == nil {
 		config.Global.ManualMode = new(false)
+	}
+
+	if config.Global.RequireNodeOutOfService == nil {
+		config.Global.RequireNodeOutOfService = new(true)
 	}
 }
 
@@ -90,6 +109,20 @@ func applyManualModeDefaults(config *Config) {
 
 	if config.GPUReset.ManualMode == nil {
 		config.GPUReset.ManualMode = config.Global.ManualMode
+	}
+}
+
+func applyRequireNodeOutOfServiceDefaults(config *Config) {
+	if config.RebootNode.RequireNodeOutOfService == nil {
+		config.RebootNode.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
+	}
+
+	if config.TerminateNode.RequireNodeOutOfService == nil {
+		config.TerminateNode.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
+	}
+
+	if config.GPUReset.RequireNodeOutOfService == nil {
+		config.GPUReset.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
 	}
 }
 
@@ -234,7 +267,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 		Namespace: namespace,
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds:   new(int64(300)),
-			BackoffLimit:            new(int32(2)),
+			BackoffLimit:            new(int32(ResetJobMaxRuns)),
 			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -261,6 +294,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 							Name: HostSysVolumeName,
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: HostSysPath,
+							},
+						},
+						{
+							// gpu_reset.sh counts its runs here. An emptyDir outlives a container restart, and
+							// each new pod starts from zero.
+							Name: ResetStateVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
 					},
@@ -295,6 +336,14 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:  UploadURLBaseEnvVar,
 									Value: uploadURL,
 								},
+								{
+									Name:  ResetRunCountFileEnvVar,
+									Value: filepath.Join(ResetStateMountPath, "run-count"),
+								},
+								{
+									Name:  ResetMaxRunsEnvVar,
+									Value: strconv.Itoa(ResetJobMaxRuns),
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -312,6 +361,10 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								{
 									Name:      HostSysVolumeName,
 									MountPath: filepath.Join(driverRoot, HostSysPath),
+								},
+								{
+									Name:      ResetStateVolumeName,
+									MountPath: ResetStateMountPath,
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -365,4 +418,95 @@ func applyDriverBinPath(job *batchv1.JobTemplateSpec, driverBinPath string) erro
 	container.Env = append(container.Env, corev1.EnvVar{Name: DriverBinPathEnvVar, Value: driverBinPath})
 
 	return nil
+}
+
+// applyJobTemplatePatch applies jobTemplatePatch to the reset Job template as a strategic merge patch, using
+// JobTemplateSpec as the schema. An empty patch leaves the template unchanged.
+//
+// It checks the patch and the merged template strictly, so a misspelled field stops janitor at startup. Without the
+// check, the misspelled field would be dropped silently, and every reset Job would run without it.
+func applyJobTemplatePatch(job *batchv1.JobTemplateSpec, patch string) (*batchv1.JobTemplateSpec, error) {
+	if strings.TrimSpace(patch) == "" {
+		return job, nil
+	}
+
+	patchJSON, err := yaml.YAMLToJSONStrict([]byte(patch))
+	if err != nil {
+		return nil, fmt.Errorf("resetJob.jobTemplatePatch is not valid YAML: %w", err)
+	}
+
+	if err := validatePatchFields(patchJSON); err != nil {
+		return nil, err
+	}
+
+	original, err := json.Marshal(job)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal the GPU reset Job template: %w", err)
+	}
+
+	merged, err := strategicpatch.StrategicMergePatch(original, patchJSON, batchv1.JobTemplateSpec{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply resetJob.jobTemplatePatch: %w", err)
+	}
+
+	patched := &batchv1.JobTemplateSpec{}
+
+	strictErrs, err := sigsjson.UnmarshalStrict(merged, patched)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode the GPU reset Job template after resetJob.jobTemplatePatch: %w", err)
+	}
+
+	if len(strictErrs) > 0 {
+		return nil, fmt.Errorf("resetJob.jobTemplatePatch: %w", errors.Join(strictErrs...))
+	}
+
+	return patched, nil
+}
+
+// validatePatchFields checks that every field in the patch is a real Job field with the right type. Directives such
+// as $patch and $retainKeys are removed first, because they are not fields. Checking only the merged template misses
+// one case: the merge removes any field that the patch sets to null, so a misspelled field set to null never shows
+// up there.
+func validatePatchFields(patchJSON []byte) error {
+	var patch any
+	if err := json.Unmarshal(patchJSON, &patch); err != nil {
+		return fmt.Errorf("failed to decode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	fields, err := json.Marshal(withoutPatchDirectives(patch))
+	if err != nil {
+		return fmt.Errorf("failed to encode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	strictErrs, err := sigsjson.UnmarshalStrict(fields, &batchv1.JobTemplateSpec{})
+	if err != nil {
+		return fmt.Errorf("failed to decode resetJob.jobTemplatePatch: %w", err)
+	}
+
+	if len(strictErrs) > 0 {
+		return fmt.Errorf("resetJob.jobTemplatePatch: %w", errors.Join(strictErrs...))
+	}
+
+	return nil
+}
+
+// withoutPatchDirectives removes every key that starts with "$" from the decoded patch.
+func withoutPatchDirectives(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if strings.HasPrefix(key, "$") {
+				delete(typed, key)
+				continue
+			}
+
+			typed[key] = withoutPatchDirectives(item)
+		}
+	case []any:
+		for i, item := range typed {
+			typed[i] = withoutPatchDirectives(item)
+		}
+	}
+
+	return value
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/akamai"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/aws"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/azure"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/gcp"
@@ -41,6 +42,7 @@ const (
 	ProviderOCI     Provider = "oci"
 	ProviderNebius  Provider = "nebius"
 	ProviderLambda  Provider = "lambda"
+	ProviderAkamai  Provider = "akamai"
 	ProviderGeneric Provider = "generic"
 	ProviderLabel   Provider = "label"
 )
@@ -91,6 +93,8 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 		return nebius.NewClientFromEnv(ctx)
 	case ProviderLambda:
 		return lambda.NewClientFromEnv(ctx)
+	case ProviderAkamai:
+		return akamai.NewClientFromEnv(ctx)
 	case ProviderGeneric:
 		return generic.NewClient(ctx)
 	case ProviderLabel:
@@ -128,6 +132,8 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 		return ProviderNebius, nil
 	case "lambda":
 		return ProviderLambda, nil
+	case "akamai":
+		return ProviderAkamai, nil
 	case "generic":
 		return ProviderGeneric, nil
 	case "label":

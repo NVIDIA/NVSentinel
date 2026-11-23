@@ -730,3 +730,104 @@ gpuResetController:
 	assert.Nil(t, config)
 	assert.Contains(t, err.Error(), "resetJob.driverBinPath")
 }
+
+// TestLoadConfig_GPUResetJobTemplatePatch loads a patch written as a YAML string, the way the chart renders it. It
+// checks that camelCase field names survive Viper, and that a namespace in the patch does not move the reset Jobs.
+func TestLoadConfig_GPUResetJobTemplatePatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+gpuResetController:
+  enabled: true
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+    jobTemplatePatch: |
+      metadata:
+        namespace: provider-system
+      spec:
+        activeDeadlineSeconds: 900
+        template:
+          spec:
+            serviceAccountName: provider-reset
+            initContainers:
+              - name: stop-provider-daemonsets
+                image: provider/reset-hooks:1.0
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	template := config.GPUReset.ResolvedJobTemplate
+	require.NotNil(t, template)
+	assert.Equal(t, testNamespace, template.Namespace)
+	assert.Equal(t, int64(900), *template.Spec.ActiveDeadlineSeconds)
+	assert.Equal(t, "provider-reset", template.Spec.Template.Spec.ServiceAccountName)
+	require.Len(t, template.Spec.Template.Spec.InitContainers, 1)
+	assert.Equal(t, "stop-provider-daemonsets", template.Spec.Template.Spec.InitContainers[0].Name)
+}
+
+func TestLoadConfig_GPUResetInvalidJobTemplatePatch_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+gpuResetController:
+  enabled: true
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+    jobTemplatePatch: |
+      spec:
+        activeDeadlineSecond: 900
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	config, err := LoadConfig(configPath, testNamespace)
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.Contains(t, err.Error(), "resetJob.jobTemplatePatch")
+}
+
+func TestLoadConfig_RequireNodeOutOfService(t *testing.T) {
+	load := func(t *testing.T, content string) *Config {
+		t.Helper()
+
+		configPath := filepath.Join(t.TempDir(), "janitor-config.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte(content), 0644))
+
+		config, err := LoadConfig(configPath, testNamespace)
+		require.NoError(t, err)
+
+		return config
+	}
+
+	t.Run("defaults to true for every controller", func(t *testing.T) {
+		config := load(t, "")
+		assert.True(t, *config.Global.RequireNodeOutOfService)
+		assert.True(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.True(t, *config.TerminateNode.RequireNodeOutOfService)
+		assert.True(t, *config.GPUReset.RequireNodeOutOfService)
+	})
+
+	t.Run("the global value applies to every controller", func(t *testing.T) {
+		config := load(t, "global:\n  requireNodeOutOfService: false\n")
+		assert.False(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.False(t, *config.TerminateNode.RequireNodeOutOfService)
+		assert.False(t, *config.GPUReset.RequireNodeOutOfService)
+	})
+
+	t.Run("a controller value overrides the global value", func(t *testing.T) {
+		config := load(t, "global:\n  requireNodeOutOfService: false\n"+
+			"rebootNodeController:\n  requireNodeOutOfService: true\n")
+		assert.True(t, *config.RebootNode.RequireNodeOutOfService)
+		assert.False(t, *config.TerminateNode.RequireNodeOutOfService)
+	})
+}

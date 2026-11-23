@@ -15,11 +15,14 @@
 package evaluator
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
 	multierror "github.com/hashicorp/go-multierror"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 )
@@ -80,13 +83,13 @@ func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) 
 		switch rule.Kind {
 		// Add cases for other kinds of evaluators as needed
 		case "HealthEvent":
-			eval, err = NewHealthEventRuleEvaluator(rule.Expression)
+			eval, err = newHealthEventRule(rule.Expression)
 
 		case "Node":
 			if nodeInformer == nil {
 				err = fmt.Errorf("NodeInformer must be provided for Node rule kind")
 			} else {
-				eval, err = newNodeRuleEvaluator(rule.Expression, nodeInformer.Lister(), nodeInformer)
+				eval, err = newNodeRule(rule.Expression, nodeInformer)
 			}
 
 		default:
@@ -102,4 +105,46 @@ func createEvaluators(rules []config.Rule, nodeInformer *informer.NodeInformer) 
 	}
 
 	return evaluators, errs.ErrorOrNil()
+}
+
+type healthEventRule struct {
+	rule *celrule.HealthEventRule
+}
+
+func newHealthEventRule(expression string) (RuleEvaluator, error) {
+	rule, err := celrule.NewHealthEventRule(expression)
+	if err != nil {
+		return nil, err
+	}
+
+	return &healthEventRule{rule: rule}, nil
+}
+
+func (r *healthEventRule) Evaluate(_ context.Context, event *protos.HealthEvent) (bool, error) {
+	return r.rule.Evaluate(event)
+}
+
+// nodeRule evaluates a Node rule against the node of the event. It reads the
+// node through GetRuleNode, so cold start evaluates against the live node.
+type nodeRule struct {
+	rule         *celrule.NodeRule
+	nodeInformer *informer.NodeInformer
+}
+
+func newNodeRule(expression string, nodeInformer *informer.NodeInformer) (RuleEvaluator, error) {
+	rule, err := celrule.NewNodeRule(expression)
+	if err != nil {
+		return nil, err
+	}
+
+	return &nodeRule{rule: rule, nodeInformer: nodeInformer}, nil
+}
+
+func (r *nodeRule) Evaluate(ctx context.Context, event *protos.HealthEvent) (bool, error) {
+	node, err := r.nodeInformer.GetRuleNode(ctx, event.NodeName)
+	if err != nil {
+		return false, fmt.Errorf("failed to get node metadata: %w", err)
+	}
+
+	return r.rule.Evaluate(node)
 }

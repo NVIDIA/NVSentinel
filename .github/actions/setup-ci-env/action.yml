@@ -29,6 +29,7 @@ runs:
         fi
         
         # Load all versions from .versions.yaml
+        echo "os_version=$(. /etc/os-release && echo "$VERSION_ID")" >> $GITHUB_OUTPUT
         echo "go_version=$(yq '.languages.go' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "python_version=$(yq '.languages.python' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "poetry_version=$(yq '.build_tools.poetry' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -47,6 +48,7 @@ runs:
         echo "gocover_cobertura_version=$(yq '.go_tools.gocover_cobertura' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "deadcode_version=$(yq '.go_tools.deadcode' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "go_licenses_version=$(yq '.go_tools.go_licenses' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_unittest_version=$(yq '.testing_tools.helm_unittest' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -54,14 +56,32 @@ runs:
     - name: Install base dependencies
       shell: bash
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
+        # scripts/retry.sh tries again after a transient network or mirror error.
+        ./scripts/retry.sh sudo apt-get update -qq
+        ./scripts/retry.sh sudo apt-get install -y -qq python3 python3-pip curl git wget unzip build-essential
+
+    # The self-hosted runners start with an empty tool cache, so setup-python downloads Python from
+    # GitHub release assets, which answer HTTP 429 when many jobs start at the same time. The Actions
+    # cache restores Python from an earlier run if present. When missing, setup-python downloads it
+    # and saves immediately to the cache before other tools install packages into it.
+    - name: Restore cached Python
+      id: python-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ runner.os }}-${{ steps.versions.outputs.os_version }}-${{ runner.arch }}-python-${{ steps.versions.outputs.python_version }}
 
     - name: Set up Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
       with:
         python-version: ${{ steps.versions.outputs.python_version }}
-        cache: 'pip'
+
+    - name: Save Python to the cache
+      if: steps.python-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.tool_cache }}/Python
+        key: ${{ steps.python-cache.outputs.cache-primary-key }}
 
     - name: Cache Poetry dependencies
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -80,7 +100,7 @@ runs:
         pip install --break-system-packages poetry==${{ steps.versions.outputs.poetry_version }} poetry-plugin-export==${{ steps.versions.outputs.poetry_plugin_export_version }} || pip install poetry==${{ steps.versions.outputs.poetry_version }} poetry-plugin-export==${{ steps.versions.outputs.poetry_plugin_export_version }}
 
     - name: Install Helm
-      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+      uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
       with:
         version: ${{ steps.versions.outputs.helm_version }}
 
@@ -109,22 +129,51 @@ runs:
           --verify=false
 
     - name: Set up Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
       with:
         go-version: ${{ steps.versions.outputs.go_version }}
-        cache: true
-        cache-dependency-path: |
-          **/go.sum
-          **/go.mod
+        cache: false
+
+    # The Go cache is about 1.7 GB for each architecture. When every branch saves its own copy, the
+    # repository Actions cache is full, and other caches are removed. So only main saves the Go cache,
+    # and other branches restore the cache of main.
+    - name: Find the Go cache paths
+      id: go-cache
+      shell: bash
+      run: |
+        echo "modcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "buildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Go modules and build output
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
+
+    - name: Restore cached Go modules and build output
+      if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.go-cache.outputs.modcache }}
+          ${{ steps.go-cache.outputs.buildcache }}
+        key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.versions.outputs.go_version }}-
 
     - name: Install Go tools
       shell: bash
       run: |
-        go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
-        go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
+        ./scripts/retry.sh go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
+        ./scripts/retry.sh go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
         # Install golangci-lint from source to ensure it's built with the current Go version
         # Note: v2+ requires /v2 in the module path per Go modules versioning
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ steps.versions.outputs.golangci_lint_version }}
+        ./scripts/retry.sh go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ steps.versions.outputs.golangci_lint_version }}
 
     - name: Cache Protocol Buffers
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -154,9 +203,9 @@ runs:
           sudo cp -r protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}/include/google /usr/local/include/
           rm -rf protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}*
         fi
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ steps.versions.outputs.protoc_gen_go_version }}
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ steps.versions.outputs.protoc_gen_go_grpc_version }}
-        pip install grpcio==${{ steps.versions.outputs.grpcio_tools_version }} grpcio-tools==${{ steps.versions.outputs.grpcio_tools_version }} black==${{ steps.versions.outputs.black_version }}
+        ./scripts/retry.sh go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ steps.versions.outputs.protoc_gen_go_version }}
+        ./scripts/retry.sh go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ steps.versions.outputs.protoc_gen_go_grpc_version }}
+        ./scripts/retry.sh pip install grpcio==${{ steps.versions.outputs.grpcio_tools_version }} grpcio-tools==${{ steps.versions.outputs.grpcio_tools_version }} black==${{ steps.versions.outputs.black_version }}
 
     - name: Cache shellcheck
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -183,14 +232,15 @@ runs:
     - name: Install additional Go tools
       shell: bash
       run: |
-        go install github.com/google/addlicense@${{ steps.versions.outputs.addlicense_version }}
+        ./scripts/retry.sh go install github.com/google/addlicense@${{ steps.versions.outputs.addlicense_version }}
         # Pin setup-envtest to avoid Go version compatibility issues
         # Using version from .versions.yaml
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
-        go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
-        go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
-        go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
-        go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
+        ./scripts/retry.sh go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
+        ./scripts/retry.sh go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
+        ./scripts/retry.sh go install golang.org/x/tools/cmd/deadcode@${{ steps.versions.outputs.deadcode_version }}
+        ./scripts/retry.sh go install github.com/google/go-licenses/v2@${{ steps.versions.outputs.go_licenses_version }}
+        ./scripts/retry.sh go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
+        ./scripts/retry.sh go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 
     - name: Set environment variables
       shell: bash

@@ -33,11 +33,11 @@ import (
 )
 
 type mockKubeletHTTPSClient struct {
-	pods []corev1.Pod
+	pods []KubeletPod
 	err  error
 }
 
-func (m *mockKubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
+func (m *mockKubeletHTTPSClient) ListPods() ([]KubeletPod, error) {
 	return m.pods, m.err
 }
 
@@ -86,7 +86,7 @@ var (
 
 func newTestDeviceMapper(testCase *kubeletResponses, testPods []*corev1.Pod) (*podDeviceMapper, error) {
 	mockHTTPSClient := &mockKubeletHTTPSClient{
-		pods: testCase.pods,
+		pods: kubeletPodsFrom(testCase.pods),
 		err:  testCase.httpClientErr,
 	}
 	mockGRPClient := &mockKubeletGRPClient{
@@ -107,6 +107,21 @@ func newTestDeviceMapper(testCase *kubeletResponses, testPods []*corev1.Pod) (*p
 		kubeletGRPCClient:  mockGRPClient,
 		kubernetesClient:   clientSet,
 	}, nil
+}
+
+// kubeletPodsFrom builds what ListPods returns for these pods, so the mapper sees the same
+// filtered annotations as it does in production.
+func kubeletPodsFrom(pods []corev1.Pod) []KubeletPod {
+	if pods == nil {
+		return nil
+	}
+
+	kubeletPods := make([]KubeletPod, 0, len(pods))
+	for _, pod := range pods {
+		kubeletPods = append(kubeletPods, newKubeletPod(pod.Name, pod.Namespace, pod.Annotations))
+	}
+
+	return kubeletPods
 }
 
 func TestUpdatePodDevicesAnnotationsWithListPodsError(t *testing.T) {
@@ -246,6 +261,33 @@ func TestUpdatePodDevicesAnnotationsWithAnnotationRemoved(t *testing.T) {
 		Get(context.TODO(), existingTestPod.GetName(), metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, "", pod.GetAnnotations()[model.PodDeviceAnnotationName])
+}
+
+// A present but empty annotation still exists, so it is removed. A pod with no annotation at
+// all must send no patch, since removing a missing key fails on the API server; that is
+// TestUpdatePodDevicesAnnotationsWithNoAnnotation.
+func TestUpdatePodDevicesAnnotationsWithEmptyAnnotationRemoved(t *testing.T) {
+	existingTestPod := testPodTemplate.DeepCopy()
+	existingTestPod.SetAnnotations(map[string]string{
+		model.PodDeviceAnnotationName: "",
+	})
+	testCase := &kubeletResponses{
+		pods:          []corev1.Pod{*existingTestPod},
+		httpClientErr: nil,
+		devicesPerPod: make(map[string]*model.DeviceAnnotation),
+		grpcClientErr: nil,
+	}
+	mapper, err := newTestDeviceMapper(testCase, []*corev1.Pod{existingTestPod})
+	assert.NoError(t, err)
+
+	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, numUpdates)
+	pod, err := mapper.kubernetesClient.CoreV1().Pods(existingTestPod.GetNamespace()).
+		Get(context.TODO(), existingTestPod.GetName(), metav1.GetOptions{})
+	assert.NoError(t, err)
+	_, exists := pod.GetAnnotations()[model.PodDeviceAnnotationName]
+	assert.False(t, exists)
 }
 
 func TestUpdatePodDevicesAnnotationsWithNoAnnotation(t *testing.T) {

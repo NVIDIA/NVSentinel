@@ -87,6 +87,8 @@ jobs:
               });
               if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
                 await github.rest.issues.createComment({
+                  // A retried POST can post the comment twice.
+                  request: { retries: 0 },
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
@@ -99,6 +101,8 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
+          # Retries GitHub API calls that fail with a server error, such as HTTP 503.
+          retries: 3
           script: |
             const prNumber = Number(process.env.GITHUB_REF_NAME.replace('pull-request/', ''));
             const { data: pr } = await github.rest.pulls.get({
@@ -135,6 +139,8 @@ jobs:
               });
               if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
                 await github.rest.issues.createComment({
+                  // A retried POST can post the comment twice.
+                  request: { retries: 0 },
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: prNumber,

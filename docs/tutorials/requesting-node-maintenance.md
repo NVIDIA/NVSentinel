@@ -1,8 +1,8 @@
 # Tutorial: Requesting Node Maintenance
 
-This tutorial walks you through creating a **MaintenanceRequest**, which tells NVSentinel that a node needs planned maintenance. NVSentinel then cordons the node and drains its workloads before the maintenance starts.
+This tutorial shows how to create a **MaintenanceRequest**. A MaintenanceRequest tells NVSentinel that a node needs planned maintenance. NVSentinel then cordons the node and drains its workloads before the maintenance starts.
 
-By the end you will have:
+When you complete this tutorial, you have:
 
 - The MaintenanceRequest controller enabled on your cluster.
 - The RBAC permissions to create a MaintenanceRequest.
@@ -10,7 +10,7 @@ By the end you will have:
 
 > **Who is this for?** Teams that **already run NVSentinel** and must tell it about maintenance that it cannot detect. For example, a cloud provider sends a maintenance notice, or an operator plans a hardware replacement.
 
-> **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
+> **Do you want an AI agent to do it?** Go to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
 > **Safety:** Use a test node that has no important workloads. NVSentinel cordons and drains the node that the MaintenanceRequest names. If you do not delete the MaintenanceRequest, the node stays cordoned.
 
@@ -18,13 +18,12 @@ By the end you will have:
 
 ## Prerequisites
 
-- NVSentinel v1.25.0 or later.
-- NVSentinel with fault-quarantine and node-drainer enabled. These components are disabled by default.
+- NVSentinel with fault-quarantine and node-drainer enabled. The default Helm values disable these components.
 - Helm 3.14 or later and `kubectl`.
 - Cluster-admin access to upgrade the NVSentinel Helm release and to create a ClusterRole.
 - A test node that NVSentinel can cordon and drain.
 
-See the [NVSentinel Helm chart guide](../../distros/kubernetes/README.md) for the complete NVSentinel prerequisites.
+See the NVSentinel Helm chart guide (`distros/kubernetes/README.md` in the NVSentinel repository) for the complete NVSentinel prerequisites.
 
 ---
 
@@ -47,13 +46,11 @@ The MaintenanceRequest stays in the cluster until you delete it. While it exists
 
 > **Note:** NVSentinel acts when you create the MaintenanceRequest. It does not wait for `startTime`. The `startTime` field is for information only. NVSentinel shows the value in the `kubectl get` output but does not use it to schedule work.
 
-For the design rationale and limitations, see [ADR-051](../designs/051-maintenance-request.md).
-
 ---
 
 ## 2. Enable the MaintenanceRequest controller
 
-The lifecycle-manager component and its MaintenanceRequest controller are disabled by default. Create a values file that enables both:
+The default Helm values disable the lifecycle-manager component and its MaintenanceRequest controller. Create a values file that enables both:
 
 ```yaml
 # values-maintenance-request.yaml
@@ -81,14 +78,15 @@ kubectl get crd maintenancerequests.nvsentinel.dgxc.nvidia.com validationrequest
 # validationrequests.nvsentinel.nvidia.com         <timestamp>
 ```
 
-If the command returns `NotFound`, apply the CRDs from the chart:
+Apply the CRDs from the chart, whatever the result of the check. An existing CRD can have an older schema, because Helm installs the CRDs of a subchart only one time, at install, and never upgrades them.
 
 ```bash
-NVSENTINEL_VERSION="<v1.25.0 or later>"
+NVSENTINEL_VERSION="<the version you are deploying>"
+PULL_DIR="$(mktemp -d)"
 
-helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar
-kubectl apply -f nvsentinel/charts/lifecycle-manager/crds/
-# Expected:
+helm pull oci://ghcr.io/nvidia/nvsentinel --version "$NVSENTINEL_VERSION" --untar --untardir "$PULL_DIR"
+kubectl apply -f "$PULL_DIR/nvsentinel/charts/lifecycle-manager/crds/"
+# Expected (created on first apply, configured when the CRD already exists):
 # customresourcedefinition.apiextensions.k8s.io/maintenancerequests.nvsentinel.dgxc.nvidia.com created
 # customresourcedefinition.apiextensions.k8s.io/validationrequests.nvsentinel.nvidia.com created
 ```
@@ -96,7 +94,7 @@ kubectl apply -f nvsentinel/charts/lifecycle-manager/crds/
 Apply the values file. The `--reset-then-reuse-values` flag applies the new chart defaults, then keeps your current values.
 
 ```bash
-NVSENTINEL_VERSION="<v1.25.0 or later>"
+NVSENTINEL_VERSION="<the version you are deploying>"
 
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -106,7 +104,7 @@ helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --wait
 ```
 
-Make sure that lifecycle-manager is running:
+Make sure that the rollout of lifecycle-manager is complete:
 
 ```bash
 kubectl rollout status deployment/lifecycle-manager \
@@ -180,7 +178,7 @@ kubectl auth can-i create maintenancerequests.nvsentinel.dgxc.nvidia.com \
 
 ## 4. Create a MaintenanceRequest
 
-Create the MaintenanceRequest at the time you want NVSentinel to drain the node.
+When you want NVSentinel to drain the node, create the MaintenanceRequest.
 
 Set the name of your test node:
 
@@ -243,7 +241,7 @@ fault-remediation selects the work after the drain. Its configuration maps each 
 
 ## 5. Validate the MaintenanceRequest
 
-Run the commands in this section while the MaintenanceRequest exists. You delete the MaintenanceRequest in section 6.
+While the MaintenanceRequest exists, run the commands in this section. You delete the MaintenanceRequest in section 6.
 
 Wait for lifecycle-manager to publish the health event:
 
@@ -271,7 +269,7 @@ kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
 | `quarantined` | fault-quarantine cordoned the node. The drain did not start yet. |
 | `draining` | The drain started. node-drainer evicts the pods from the node. |
 | `drain-succeeded` | node-drainer evicted all pods. The node is ready for maintenance. |
-| `drain-failed` | node-drainer could not evict all pods from the node. |
+| `drain-failed` | node-drainer failed to evict all pods from the node. |
 
 If the value is `quarantined` or `draining`, run the command again after a few seconds.
 
@@ -300,9 +298,9 @@ kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
 # <node-name>   Ready    <roles>   <age>   <version>
 ```
 
-The status no longer shows `SchedulingDisabled`, and the `NVSENTINEL-STATE` column is empty. If the node still shows `SchedulingDisabled`, run the command again after a few seconds.
+The status does not show `SchedulingDisabled`, and the `NVSENTINEL-STATE` column is empty. If the node still shows `SchedulingDisabled`, run the command again after a few seconds.
 
-> **Note:** NVSentinel uncordons the node when you delete the MaintenanceRequest, even if the action from `recommendedAction` did not finish.
+> **Note:** When you delete the MaintenanceRequest, NVSentinel uncordons the node, even if the action from `recommendedAction` did not finish.
 
 ---
 
@@ -324,10 +322,10 @@ Error from server (Forbidden): error when creating "STDIN": admission webhook "v
 | `spec.healthEvent.version is required` | Set `version: 1`. |
 | `spec.healthEvent.isHealthy must be false for an opening event` | Set `isHealthy: false`. |
 | `spec.startTime must be in the future` | Set a time in the future, or remove `startTime`. |
-| `node "<node-name>" already has an open MaintenanceRequest "<name>"; delete it before creating another` | A node can have only one open MaintenanceRequest. Wait for the open MaintenanceRequest to finish and delete it, then create the new one. |
-| `spec.healthEvent is immutable after creation`, or `spec.healthEvent.<field> is immutable after creation` | Delete the MaintenanceRequest, then create a new one. |
+| `node "<node-name>" already has an open MaintenanceRequest "<name>"; delete it before creating another` | A node can have only one open MaintenanceRequest. Wait for the open MaintenanceRequest to finish. Then delete it. Then create the new one. |
+| `spec.healthEvent is immutable after creation`, or `spec.healthEvent.<field> is immutable after creation` | Delete the MaintenanceRequest. Then create a new one. |
 
-> **Note:** When you delete the MaintenanceRequest, NVSentinel uncordons the node. Pods can start on the node before you create the new MaintenanceRequest.
+> **Note:** When you delete the MaintenanceRequest, NVSentinel uncordons the node. Kubernetes can schedule pods on the node before you create the new MaintenanceRequest.
 
 ### The HealthEventEmitted condition is False
 
@@ -342,9 +340,9 @@ kubectl get maintenancerequest "maintenance-${NODE}" \
 
 | Reason | Meaning | Fix |
 | --- | --- | --- |
-| `Blocked` | A janitor operation, such as a reboot, holds the lock on the node. Or a MaintenanceRequest for the node is being deleted and has not yet released the node. lifecycle-manager tries again every 30 seconds. | Wait for the other operation to complete. |
-| `Rejected` | The node already has an open MaintenanceRequest. lifecycle-manager does not send the health event and does not try again. | Delete this MaintenanceRequest. Create it again after the open MaintenanceRequest is deleted. |
-| `EmitFailed` | lifecycle-manager could not publish the health event to platform-connector. lifecycle-manager tries again. | Make sure that platform-connector runs on the same node as lifecycle-manager. |
+| `Blocked` | A janitor operation, such as a reboot, holds the lock on the node. Or the deletion of a MaintenanceRequest for the node is in progress, and that MaintenanceRequest did not release the node yet. In both cases, lifecycle-manager tries again every 30 seconds. | Wait for the other operation to complete. |
+| `Rejected` | The node already has an open MaintenanceRequest. lifecycle-manager does not send the health event and does not try again. | Delete this MaintenanceRequest. When the open MaintenanceRequest is gone, create this MaintenanceRequest again. |
+| `EmitFailed` | lifecycle-manager failed to publish the health event to platform-connector. lifecycle-manager tries again. | Make sure that platform-connector runs on the same node as lifecycle-manager. |
 
 lifecycle-manager sends the health event through a socket on its own node. Compare the `NODE` column of the two pods:
 
@@ -357,7 +355,7 @@ kubectl get pods --namespace nvsentinel -o wide | grep -E "lifecycle-manager|pla
 
 If the `HealthEventEmitted` condition is `True` but the node does not show `SchedulingDisabled`, check these causes in order.
 
-1. **fault-quarantine is not enabled.** fault-quarantine is disabled by default.
+1. **fault-quarantine is not enabled.** The default Helm values disable fault-quarantine.
 
    ```bash
    kubectl rollout status deployment/fault-quarantine --namespace nvsentinel --timeout=1m
@@ -367,7 +365,7 @@ If the `HealthEventEmitted` condition is `True` but the node does not show `Sche
 
    If the deployment does not exist, set `global.faultQuarantine.enabled: true` in your NVSentinel Helm values.
 
-2. **The node is opted out of NVSentinel.** fault-quarantine does not cordon a node when one of these labels has the value `false`:
+2. **NVSentinel does not manage the node.** If one of these labels has the value `false`, fault-quarantine does not cordon the node:
 
    - `nvsentinel.dgxc.nvidia.com/managed`
    - `k8saas.nvidia.com/ManagedByNVSentinel`
@@ -381,9 +379,9 @@ If the `HealthEventEmitted` condition is `True` but the node does not show `Sche
    # <node-name>   Ready    <roles>   <age>   <version>
    ```
 
-   If the `MANAGED` column or the `MANAGEDBYNVSENTINEL` column shows `false`, the node is opted out.
+   If the `MANAGED` column or the `MANAGEDBYNVSENTINEL` column shows `false`, NVSentinel does not manage the node.
 
-3. **The circuit breaker tripped.** fault-quarantine stops all cordons when too many nodes are cordoned. First, make sure that the circuit breaker is enabled:
+3. **The circuit breaker tripped.** When the cluster has too many cordoned nodes, fault-quarantine stops all cordons. First, check whether the circuit breaker is enabled:
 
    ```bash
    kubectl get deployment fault-quarantine -n nvsentinel -o yaml | grep -o "circuit-breaker-enabled=[a-z]*"
@@ -391,7 +389,7 @@ If the `HealthEventEmitted` condition is `True` but the node does not show `Sche
    # circuit-breaker-enabled=true
    ```
 
-   If the value is `false`, the circuit breaker does not stop cordons, so go to the next cause. The `circuit-breaker` ConfigMap can keep an old `TRIPPED` value after the circuit breaker is disabled.
+   If the value is `false`, the circuit breaker does not stop cordons. Go to the next cause. The `circuit-breaker` ConfigMap can keep an old `TRIPPED` value after you disable the circuit breaker.
 
    If the value is `true`, check the circuit breaker state:
 
@@ -416,7 +414,7 @@ If the `HealthEventEmitted` condition is `True` but the node does not show `Sche
 
 ### The drain state is drain-failed
 
-node-drainer could not evict all pods from the node. The node stays cordoned. List the pods that are still on the node:
+node-drainer failed to evict all pods from the node. The node stays cordoned. List the pods that are still on the node:
 
 ```bash
 kubectl get pods --all-namespaces --field-selector spec.nodeName="$NODE"
@@ -428,7 +426,7 @@ A PodDisruptionBudget or the node-drainer eviction mode can stop an eviction. Fo
 
 lifecycle-manager removes the finalizer only after platform-connector accepts the clearing event. Until then, the `kubectl delete` command waits and does not show the `deleted` message. Ctrl+C stops only the wait. The API server already marked the MaintenanceRequest for deletion, so the deletion continues.
 
-Make sure that the deletion is waiting for the finalizer:
+Make sure that the deletion waits for the finalizer:
 
 ```bash
 kubectl get maintenancerequest "maintenance-${NODE}" -o jsonpath='{.metadata.deletionTimestamp}'
@@ -439,7 +437,7 @@ lifecycle-manager cannot publish the clearing event. Use the `EmitFailed` fix in
 
 If you cannot repair platform-connector, remove the finalizer yourself.
 
-> **Safety:** If you remove the finalizer, lifecycle-manager does not publish the clearing event. The node stays cordoned until you uncordon it. An uncordon also cancels every other active fault on the node, so check the other faults first.
+> **Safety:** If you remove the finalizer, lifecycle-manager does not publish the clearing event. The node then stays cordoned until you uncordon it. Before you uncordon the node, check the other faults on the node. An uncordon also cancels every other active fault on the node.
 
 ```bash
 kubectl patch maintenancerequest "maintenance-${NODE}" --type=merge -p '{"metadata":{"finalizers":null}}'
@@ -480,7 +478,7 @@ kubectl get node "$NODE" -o jsonpath='{.metadata.annotations.quarantineHealthEve
 
 ## Appendix: One-shot AI prompt
 
-Paste this prompt into an AI coding agent that has access to your cluster. Replace the bracketed values before you run it.
+Paste this prompt into an AI coding agent that has access to your cluster. Before you run it, replace the bracketed values.
 
 ```text
 Help me put a node into maintenance with an NVSentinel MaintenanceRequest in this cluster:
@@ -488,7 +486,7 @@ Help me put a node into maintenance with an NVSentinel MaintenanceRequest in thi
 - Kubernetes context: [context]
 - NVSentinel namespace: [namespace, default nvsentinel]
 - NVSentinel Helm release: [release, default nvsentinel]
-- NVSentinel version: [v1.25.0 or later]
+- NVSentinel version: [version]
 - Target node: [node]
 - ServiceAccount for automation: [namespace/name, or none if I create MaintenanceRequests by hand]
 

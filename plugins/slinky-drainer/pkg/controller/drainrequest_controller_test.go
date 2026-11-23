@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -204,7 +205,12 @@ func TestCache_PodsOutsideSlinkyNamespace_AreNotCached(t *testing.T) {
 func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	t.Helper()
 
-	scheme := clientgoscheme.Scheme
+	// Build a new scheme for each test env. Registering types writes to the
+	// scheme's maps, so adding to the shared clientgoscheme.Scheme here races
+	// with clients from an earlier test that still decode with it, such as a
+	// condition goroutine that assert.Never leaves running after it returns.
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, drainv1alpha1.AddToScheme(scheme))
 
 	te := &envtest.Environment{

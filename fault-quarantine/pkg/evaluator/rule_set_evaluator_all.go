@@ -36,7 +36,7 @@ func (allEval *AllRuleSetEvaluator) Evaluate(
 	var errs *multierror.Error
 
 	for _, evaluator := range allEval.evaluators {
-		ruleEvaluatedResult, err := evaluator.Evaluate(ctx, healthEvent)
+		ruleEvaluatedResult, err := evaluateRule(ctx, evaluator, healthEvent)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}

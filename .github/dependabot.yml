@@ -108,10 +108,10 @@ updates:
   # what refresh the digests when upstream rebuilds a tag — keep the interval at
   # weekly so base image CVE fixes are picked up promptly.
   # Exception: the DCGM images (gpu-health-monitor, dcgm-diag, tilt/dcgm-fake)
-  # and the PyTorch image in nccl-allreduce are selected by a build ARG that the
-  # Makefile overrides to produce image variants. They are digest-pinned inside
-  # the ARG value (tag@sha256), which Dependabot cannot update, so their tags and
-  # digests are updated by hand. Every other base image is pinned on its FROM line.
+  # are selected by a build ARG that the Makefile overrides to produce image
+  # variants. They are digest-pinned inside the ARG value (tag@sha256), which
+  # Dependabot cannot update, so their tags and digests are updated by hand.
+  # Every other base image is pinned on its FROM line.
   - package-ecosystem: "docker"
     directories:
       - "/demos/local-custom-remediation-demo/memory-pressure-monitor"
@@ -136,3 +136,4 @@ updates:
     groups:
       docker-dependencies:
         patterns: ["*"]
+

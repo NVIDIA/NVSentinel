@@ -191,7 +191,7 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify conditions are properly set
-			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(2))
+			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(3))
 
 			// Check SignalSent condition
 			signalSentCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent)
@@ -204,6 +204,11 @@ var _ = Describe("RebootNode Controller", func() {
 			nodeReadyCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
 			Expect(nodeReadyCondition).NotTo(BeNil())
 			Expect(nodeReadyCondition.Status).To(Equal(metav1.ConditionUnknown))
+
+			// Check RebootCompleted condition (should be Unknown initially)
+			rebootCompletedCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionRebootCompleted)
+			Expect(rebootCompletedCondition).NotTo(BeNil())
+			Expect(rebootCompletedCondition.Status).To(Equal(metav1.ConditionUnknown))
 
 			// Verify StartTime is set
 			Expect(updatedRebootNode.Status.StartTime).NotTo(BeNil())
@@ -547,6 +552,53 @@ var _ = Describe("RebootNode Controller", func() {
 
 			// NOW IsRebootInProgress should return TRUE
 			Expect(freshRebootNode.IsRebootInProgress()).To(BeTrue())
+		})
+	})
+
+	Context("when the node must be out of service", func() {
+		BeforeEach(func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+		})
+
+		reconcileOnce := func() *metav1.Condition {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{Name: testRebootNode.Name})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updated)).To(Succeed())
+
+			return findCondition(updated.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent)
+		}
+
+		It("should refuse to reboot a node that is neither cordoned nor quarantined", func() {
+			mockCSP.Server.SetRebootFailure(fmt.Errorf("the reboot signal must not be sent"))
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionFalse))
+			Expect(signalSent.Reason).To(Equal("NodeInService"))
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+		})
+
+		It("should reboot a cordoned node", func() {
+			testNode.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, testNode)).To(Succeed())
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should reboot a node that NVSentinel quarantined without a cordon", func() {
+			testNode.Annotations = map[string]string{"quarantineHealthEvent": `[{"nodeName":"n"}]`}
+			Expect(k8sClient.Update(ctx, testNode)).To(Succeed())
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 

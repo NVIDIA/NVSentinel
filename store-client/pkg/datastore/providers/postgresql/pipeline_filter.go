@@ -306,31 +306,57 @@ func (f *PipelineFilter) matchesMapValue(actualValue any, expectedMap map[string
 	return true
 }
 
-// matchesOperators processes MongoDB operator expressions
+// matchesOperators processes MongoDB operator expressions. Like MongoDB and the
+// SQL filter, a field matches only when every one of its operators matches.
 func (f *PipelineFilter) matchesOperators(actualValue any, operators map[string]any) bool {
 	for op, opValue := range operators {
-		switch op {
-		case opIn:
-			return f.matchesIn(actualValue, opValue)
-		case opNe:
-			return !f.matchesEqual(actualValue, opValue)
-		case opEq:
-			return f.matchesEqual(actualValue, opValue)
-		case opGt:
-			return f.matchesGreaterThan(actualValue, opValue)
-		case opGte:
-			return f.matchesGreaterThanOrEqual(actualValue, opValue)
-		case opLt:
-			return f.matchesLessThan(actualValue, opValue)
-		case opLte:
-			return f.matchesLessThanOrEqual(actualValue, opValue)
-		default:
+		matches, supported := f.matchesOperator(op, actualValue, opValue)
+		if !supported {
 			slog.Warn("Unsupported operator", "operator", op)
+			return false
+		}
+
+		if !matches {
 			return false
 		}
 	}
 
 	return true
+}
+
+// matchesOperator evaluates a single operator. supported is false for an operator
+// the filter does not implement.
+func (f *PipelineFilter) matchesOperator(op string, actualValue any, opValue any) (matches bool, supported bool) {
+	switch op {
+	case opIn:
+		return f.matchesIn(actualValue, opValue), true
+	case opNe:
+		return !f.matchesEqual(actualValue, opValue), true
+	case opEq:
+		return f.matchesEqual(actualValue, opValue), true
+	case opGt, opGte, opLt, opLte:
+		return f.matchesComparison(op, actualValue, opValue), true
+	case opExists:
+		return f.matchesExists(actualValue, opValue), true
+	default:
+		return false, false
+	}
+}
+
+// matchesComparison processes the numeric comparison operators $gt, $gte, $lt and $lte
+func (f *PipelineFilter) matchesComparison(op string, actualValue any, opValue any) bool {
+	switch op {
+	case opGt:
+		return f.matchesGreaterThan(actualValue, opValue)
+	case opGte:
+		return f.matchesGreaterThanOrEqual(actualValue, opValue)
+	case opLt:
+		return f.matchesLessThan(actualValue, opValue)
+	case opLte:
+		return f.matchesLessThanOrEqual(actualValue, opValue)
+	default:
+		return false
+	}
 }
 
 // matchesNestedFields checks if actualValue (as a map) contains expected fields
@@ -401,6 +427,19 @@ func (f *PipelineFilter) matchesIn(actualValue any, inArray any) bool {
 	}
 
 	return false
+}
+
+// matchesExists checks the $exists operator. getFieldValue returns nil for both a missing
+// field and a JSON null, so nil counts as missing. This matches the SQL filter, which
+// translates $exists to "IS NOT NULL" / "IS NULL" (see handleExistsOperator).
+func (f *PipelineFilter) matchesExists(actualValue any, opValue any) bool {
+	shouldExist, ok := opValue.(bool)
+	if !ok {
+		slog.Warn("$exists value must be boolean", "type", fmt.Sprintf("%T", opValue))
+		return false
+	}
+
+	return (actualValue != nil) == shouldExist
 }
 
 // matchesEqual checks if two values are equal

@@ -15,8 +15,7 @@ This document will summarize the changes made to Janitor to support GPU reset be
 
 ## Part 1: Janitor support for GPU reset
 
-The design for adding Janitor support for GPU resets was covered in [Janitor Support for GPU Reset](019-janitor-gpu-reset.md
-). The scope of Janitor GPU reset support is to implement a custom resource which can reset a subset of GPUs on a given node without disrupting existing workloads leveraging other healthy GPUs on the same node.
+The design for adding Janitor support for GPU resets was covered in [Janitor Support for GPU Reset](019-janitor-gpu-reset.md ). The scope of Janitor GPU reset support is to implement a custom resource which can reset a subset of GPUs on a given node without disrupting existing workloads leveraging other healthy GPUs on the same node.
 
 The implementation introduces a GPU Reset Controller, a GPUReset CRD, and a GPU Reset Job. An administrator or an automated monitoring system, such as NVSentinel, can create an instance of this CRD to initiate the reset of a specific GPU on a target node.
 

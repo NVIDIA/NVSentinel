@@ -52,6 +52,10 @@ const (
 	// LifecycleManagerLabelSelector matches the lifecycle-manager pod.
 	LifecycleManagerLabelSelector = "app.kubernetes.io/name=lifecycle-manager"
 
+	// LifecycleManagerLabelPrefix is config.schedulingGate.cordon.labelPrefix in the lifecycle-manager chart.
+	// lifecycle-manager adds it to the uncordon labels when it uncordons a node after validation.
+	LifecycleManagerLabelPrefix = "k8saas.nvidia.com/"
+
 	maintenanceRequestPollInterval = 1 * time.Second
 	maintenanceRequestCleanupWait  = 30 * time.Second
 )
@@ -266,7 +270,7 @@ func CleanupMaintenanceRequest(ctx context.Context, t *testing.T, c klient.Clien
 
 	t.Logf("MaintenanceRequest %s is still terminating; removing finalizers for test cleanup", crName)
 
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err = retry.RetryOnConflict(ConflictBackoff, func() error {
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(MaintenanceRequestGVK)
 

@@ -198,6 +198,40 @@ func TestPollPodDevices_ThresholdReached_RecordsTheFinalStreak(t *testing.T) {
 
 // Both names are in the issue and will be alerted on, so a rename should break a test rather
 // than silently break someone's alert.
+func TestRunPodMapperIfEnabled_Disabled_WaitsForTheContextWithoutRunning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := false
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runPodMapperIfEnabled(ctx, false, func(context.Context) error {
+			ran = true
+			return nil
+		})
+	}()
+
+	// Returning before the context ends would let the DaemonSet restart the container in a loop.
+	select {
+	case err := <-done:
+		t.Fatalf("returned before the context ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	require.NoError(t, <-done)
+	assert.False(t, ran)
+}
+
+func TestRunPodMapperIfEnabled_Enabled_ReturnsTheMapperResult(t *testing.T) {
+	mapperErr := errors.New("mapper failed")
+
+	err := runPodMapperIfEnabled(context.Background(), true, func(context.Context) error {
+		return mapperErr
+	})
+
+	require.ErrorIs(t, err, mapperErr)
+}
+
 func TestNewPodMapperMetrics_ExposesTheDocumentedNames(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := newPodMapperMetrics(reg)
@@ -287,4 +321,19 @@ current-context: test
 			require.ErrorContains(t, err, missing)
 		})
 	}
+}
+
+// Alerts on a stalled collection depend on this metric being scrapeable at 0 before collection
+// completes, so its name and starting value are part of the contract.
+func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	gauge := newCollectionCompletedGauge(reg)
+
+	count, err := testutil.GatherAndCount(reg, "metadata_collector_collection_completed_timestamp_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Zero(t, testutil.ToFloat64(gauge))
+
+	gauge.SetToCurrentTime()
+	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
 }
