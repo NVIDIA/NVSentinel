@@ -413,3 +413,179 @@ IPv6 section in docs/configuration/README.md.
 {{- end -}}
 {{- $addr -}}
 {{- end -}}
+
+{{/*
+DaemonSet for one DCGM version lane. Call it with a dict: root is the chart
+context and dcgmVersion is the lane label (3.x, 4.x or 48.x). The lane label
+sets the name suffix, the image tag suffix, the startup gate and the
+nodeSelector value.
+*/}}
+{{- define "gpu-health-monitor.daemonset" }}
+{{- $root := .root -}}
+{{- $dcgmVersion := .dcgmVersion -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" $root }}-dcgm-{{ $dcgmVersion }}
+  labels:
+    {{- include "gpu-health-monitor.labels" $root | nindent 4 }}
+spec:
+  updateStrategy:
+    type: {{ $root.Values.updateStrategy.type }}
+    {{- if eq $root.Values.updateStrategy.type "RollingUpdate" }}
+    rollingUpdate:
+      maxUnavailable: {{ $root.Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "gpu-health-monitor.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with $root.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+      labels:
+        {{- include "gpu-health-monitor.selectorLabels" $root | nindent 8 }}
+    spec:
+      {{- with $root.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if include "gpu-health-monitor.dcgmStartupGateEnabled" $root }}
+      initContainers:
+        {{- include "gpu-health-monitor.dcgmStartupGate" (dict "root" $root "dcgmVersion" $dcgmVersion) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $root.Chart.Name }}
+          command: ["gpu_health_monitor"]
+          args:
+            - --config-file
+            - "/etc/dcgmhealth/config.ini"
+            - --dcgm-error-mapping-config-file
+            - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
+            - --dcgm-addr
+            - {{ include "gpu-health-monitor.dcgmAddr" $root | quote }}
+            - --dcgm-mode
+            - {{ include "gpu-health-monitor.dcgmCliMode" $root | quote }}
+            - --port
+            - "{{ $root.Values.global.metricsPort }}"
+            - --metrics-addr
+            - {{ include "gpu-health-monitor.metricsAddress" $root | quote }}
+            - --verbose
+            - {{ $root.Values.verbose | quote }}
+            - --state-file
+            - "/var/run/statefile"
+            - --dcgm-k8s-service-enabled
+            - {{ include "gpu-health-monitor.dcgmEnabled" $root | quote }}
+            - --metadata-path
+            - {{ $root.Values.global.metadataPath | quote }}
+            - --processing-strategy
+            - {{ $root.Values.processingStrategy | quote }}
+            - --suppress-nvlink-down-unbridged-pcie
+            - {{ $root.Values.suppressNvlinkDownOnUnbridgedPcie | quote }}
+          securityContext:
+            runAsUser: 0
+            {{- if eq (include "gpu-health-monitor.dcgmMode" $root) "embedded-mode" }}
+            # Required for NVIDIA container toolkit GPU/driver injection when the
+            # toolkit ignores NVIDIA_VISIBLE_DEVICES for unprivileged containers.
+            privileged: true
+            {{- end }}
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default (($root.Values.global).image).tag | default $root.Chart.AppVersion }}-dcgm-{{ $dcgmVersion }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          resources:
+            {{- toYaml $root.Values.resources | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ $root.Values.global.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ $root.Values.global.metricsPort }}
+            {{- toYaml $root.Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ $root.Values.global.metricsPort }}
+            {{- toYaml $root.Values.readinessProbe | nindent 12 }}
+          volumeMounts:
+            {{- if $root.Values.additionalVolumeMounts }}
+            {{ toYaml $root.Values.additionalVolumeMounts | nindent 12 }}
+            {{- end }}
+            - name: config-vol
+              mountPath: /etc/dcgmhealth
+            - name: var-run-vol
+              mountPath: /var/run/
+            - name: gpu-metadata
+              mountPath: /var/lib/nvsentinel
+              readOnly: true
+            {{- if include "gpu-health-monitor.pcAuth.enabled" $root }}
+            {{- include "gpu-health-monitor.pcAuth.volumeMount" $root | nindent 12 }}
+            {{- end }}
+            {{- with include "gpu-health-monitor.publish.volumeMounts" $root }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            {{- if include "gpu-health-monitor.pcAuth.enabled" $root }}
+            {{- /* Projected token presented on health-event publishes. This monitor
+                 only names its own node, so it needs no cross-node allowlisting. */}}
+            - name: PLATFORM_CONNECTOR_TOKEN_PATH
+              value: {{ include "gpu-health-monitor.pcAuth.tokenPath" $root | quote }}
+            {{- end }}
+            {{- with include "gpu-health-monitor.publish.envVars" $root }}
+            {{- . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config-vol
+          configMap:
+            name: {{ include "gpu-health-monitor.fullname" $root }}
+            defaultMode: 0777
+        - name: var-run-vol
+          hostPath:
+            path: /var/run/nvsentinel
+            type: Directory
+        - name: gpu-metadata
+          hostPath:
+            path: /var/lib/nvsentinel
+            type: DirectoryOrCreate
+        {{- if include "gpu-health-monitor.pcAuth.enabled" $root }}
+        {{- include "gpu-health-monitor.pcAuth.volume" $root | nindent 8 }}
+        {{- end }}
+        {{- with include "gpu-health-monitor.publish.volumes" $root }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- if $root.Values.additionalHostVolumes }}
+        {{ toYaml $root.Values.additionalHostVolumes | nindent 8 }}
+        {{- end }}
+      {{- if eq (include "gpu-health-monitor.dcgmMode" $root) "embedded-mode" }}
+      runtimeClassName: {{ required "gpu-health-monitor.runtimeClassName is required in embedded-mode" $root.Values.runtimeClassName }}
+      {{- else if $root.Values.runtimeClassName }}
+      runtimeClassName: {{ $root.Values.runtimeClassName }}
+      {{- end }}
+      {{- if eq (include "gpu-health-monitor.useHostNetworking" $root) "true" }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      nodeSelector:
+        nvsentinel.dgxc.nvidia.com/dcgm.version: {{ $dcgmVersion | quote }}
+        {{- with ($root.Values.global.nodeSelector | default $root.Values.nodeSelector) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with include "gpu-health-monitor.affinity" $root }}
+      affinity:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with ($root.Values.global.tolerations | default $root.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($root.Values.global.priorityClassName | default $root.Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+{{- end }}
