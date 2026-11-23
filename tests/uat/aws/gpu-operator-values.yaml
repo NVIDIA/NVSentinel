@@ -14,7 +14,7 @@
 
 dcgm:
   enabled: true
-  # Run UAT against a DCGM 4.8.0 hostengine, the oldest version of the 48 lane.
+  # Run UAT against a DCGM 4.8.0 hostengine, the oldest version of the 48.x lane.
   version: 4.8.0-ubuntu24.04
   # Test-only: DCGM 4.8.0 and later reject dcgmi fault injection unless the
   # hostengine runs with this variable. UAT injects faults; never set it in

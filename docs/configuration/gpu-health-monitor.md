@@ -52,15 +52,13 @@ Use a GPU Health Monitor image whose DCGM client can connect to its hostengine. 
 |---|---|---|---|
 | `3.x` (deprecated) | 3.x | `-dcgm-3.x` | 3.3.x |
 | `4.x` | 4.x earlier than 4.8.0 | `-dcgm-4.x` | 4.7.0 |
-| `48` | 4.8.0 and later 4.x | `-dcgm-48` | 4.8.0 |
+| `48.x` | 4.8.0 and later 4.x | `-dcgm-48.x` | 4.8.0 |
 
-Before DCGM 4.8.0, a 4.x client works with any 4.x hostengine. Thus, the `4.x` lane uses the 4.7.0 client for all hostengines earlier than 4.8.0. From DCGM 4.8.0, a client works only with the same or a newer hostengine. A 4.8.0 client fails with `DCGM_ST_VER_MISMATCH` (`-12`) against a hostengine earlier than 4.8.0. Thus, hostengines 4.8.0 and later use the `48` lane.
+Before DCGM 4.8.0, a 4.x client works with any 4.x hostengine. Thus, the `4.x` lane uses the 4.7.0 client for all hostengines earlier than 4.8.0. From DCGM 4.8.0, a client works only with the same or a newer hostengine. A 4.8.0 client fails with `DCGM_ST_VER_MISMATCH` (`-12`) against a hostengine earlier than 4.8.0. Thus, hostengines 4.8.0 and later use the `48.x` lane.
 
 In `operator-service` mode, labeler sets this label from the version in the DCGM pod image. In `external-hostengine` and `embedded-mode`, you must supply the label.
 
-> **Note:** Labeler does not support the `48` lane yet. In `operator-service` mode, labeler sets `4.x` on nodes that run DCGM 4.8.0 or later. In `external-hostengine` and `embedded-mode`, labeler removes a `48` label. To use the `48` lane now, set `global.labeler.enabled: false` and label the nodes by hand. Labeler also sets `nvsentinel.dgxc.nvidia.com/driver.installed` and `nvsentinel.dgxc.nvidia.com/kata.enabled`, and other monitors select nodes on these labels. When labeler is disabled, set these labels by hand too. Refer to [Labeler](../labeler.md).
-
-> **Note:** From DCGM 4.8.0, the hostengine rejects fault injection (`dcgmi test --inject`) with `Feature not supported` unless the hostengine runs with `DCGM_ENABLE_INJECTION_APIS=1`. Set the variable on the hostengine, not on the monitor. With the GPU Operator, set it in the `dcgm.env` Helm value or in the ClusterPolicy `spec.dcgm.env`. Set it only on test clusters, never in production. GPU Health Monitor does not use injection, so all DCGM modes work without it. A change to the hostengine environment restarts DCGM, and the restart can publish a short `GpuDcgmConnectivityFailure`.
+> **Note:** Labeler does not support the `48.x` lane yet. In `operator-service` mode, labeler sets `4.x` on nodes that run DCGM 4.8.0 or later. In `external-hostengine` and `embedded-mode`, labeler removes a `48.x` label. To use the `48.x` lane now, set `global.labeler.enabled: false` and label the nodes by hand. Labeler also sets `nvsentinel.dgxc.nvidia.com/driver.installed` and `nvsentinel.dgxc.nvidia.com/kata.enabled`, and other monitors select nodes on these labels. When labeler is disabled, set these labels by hand too. Refer to [Labeler](../labeler.md).
 
 ## Configuration Reference
 
@@ -192,7 +190,7 @@ One case still removes the label. NVSentinel does not manage a node that has the
 
 An unlabeled node runs no GPU Health Monitor pod, and nothing reports an error. The DaemonSet stays healthy, because Kubernetes never schedules a pod that it can reject. GPU health monitoring is silently absent on that node.
 
-Label every GPU node with the lane of its DCGM version. The GPU Health Monitor DaemonSets accept `3.x`, `4.x` and `48`. Labeler keeps only `3.x` and `4.x` and removes any other value. Thus, the `48` lane needs labeler disabled for now. Refer to the note in [DCGM Version Selection](#dcgm-version-selection).
+Label every GPU node with the lane of its DCGM version. The GPU Health Monitor DaemonSets accept `3.x`, `4.x` and `48.x`. Labeler keeps only `3.x` and `4.x` and removes any other value. Thus, the `48.x` lane needs labeler disabled for now. Refer to the note in [DCGM Version Selection](#dcgm-version-selection).
 
 ```bash
 # One node
@@ -200,12 +198,12 @@ kubectl label node <node-name> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
 
 # Many nodes at once. Label each DCGM version separately, using a selector that
 # matches only the nodes running that version.
-kubectl label node -l <your-48-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=48
+kubectl label node -l <your-48.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=48.x
 kubectl label node -l <your-4.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=4.x
 kubectl label node -l <your-3.x-selector> nvsentinel.dgxc.nvidia.com/dcgm.version=3.x
 ```
 
-Do not label every GPU node with one version. If a node runs DCGM 3.x and has the label `4.x`, it gets the 4.x image of the GPU Health Monitor. That image then fails against the hostengine that it finds. If a node runs DCGM earlier than 4.8.0 and has the label `48`, DCGM can reject its GPU Health Monitor with `DCGM_ST_VER_MISMATCH`. Refer to [DCGM API Version Mismatch](#dcgm-api-version-mismatch).
+Do not label every GPU node with one version. If a node runs DCGM 3.x and has the label `4.x`, it gets the 4.x image of the GPU Health Monitor. That image then fails against the hostengine that it finds. If a node runs DCGM earlier than 4.8.0 and has the label `48.x`, DCGM can reject its GPU Health Monitor with `DCGM_ST_VER_MISMATCH`. Refer to [DCGM API Version Mismatch](#dcgm-api-version-mismatch).
 
 If your fleet is truly uniform, `nvidia.com/gpu.present=true` is a usable selector. This label comes from Node Feature Discovery, which the GPU Operator installs. If you run neither Node Feature Discovery nor the GPU Operator, use your own selector. This is common in `embedded-mode`.
 

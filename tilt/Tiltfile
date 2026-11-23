@@ -574,7 +574,7 @@ k8s_resource(
     pod_readiness='ignore'
 )
 k8s_resource(
-    workload='gpu-health-monitor-dcgm-48',
+    workload='gpu-health-monitor-dcgm-48.x',
     pod_readiness='ignore'
 )
 k8s_resource(

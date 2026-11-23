@@ -140,7 +140,7 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o w
 kubectl get nodes -L nvsentinel.dgxc.nvidia.com/dcgm.version
 ```
 
-Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x`, `4.x` or `48`. Labeler sets and keeps only `3.x` and `4.x`, so a `48` label needs labeler disabled. Refer to [DCGM Version Selection](../configuration/gpu-health-monitor.md#dcgm-version-selection). The GPU Health Monitor DaemonSets select nodes by this label in all three source modes. Thus, an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there that can fail.
+Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x`, `4.x` or `48.x`. Labeler sets and keeps only `3.x` and `4.x`, so a `48.x` label needs labeler disabled. Refer to [DCGM Version Selection](../configuration/gpu-health-monitor.md#dcgm-version-selection). The GPU Health Monitor DaemonSets select nodes by this label in all three source modes. Thus, an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there that can fail.
 
 The mode that you run decides whether a missing label is a bug or an expected setup step:
 
@@ -224,7 +224,7 @@ The hostengine rejects the monitor's DCGM API version, and the monitor container
 - kube-state-metrics: `kube_pod_container_status_restarts_total` increases and `kube_pod_container_status_last_terminated_exitcode` is `1` for the GPU monitor container. The monitor's own `dcgm_api_failures_total{error_name="version_mismatch"}` counter is usually not scraped, because the container exits first.
 - No `GpuDcgmConnectivityFailure` condition, and no GPU health events from the node
 
-**Cause:** the node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects a monitor lane whose DCGM client is newer than the hostengine. Lane `4.x` is for hostengines earlier than 4.8.0, and lane `48` is for 4.8.0 and later. See [DCGM Version Selection](../configuration/gpu-health-monitor.md#dcgm-version-selection).
+**Cause:** the node `nvsentinel.dgxc.nvidia.com/dcgm.version` label selects a monitor lane whose DCGM client is newer than the hostengine. Lane `4.x` is for hostengines earlier than 4.8.0, and lane `48.x` is for 4.8.0 and later. See [DCGM Version Selection](../configuration/gpu-health-monitor.md#dcgm-version-selection).
 
 **Procedure:**
 
@@ -238,7 +238,7 @@ The hostengine rejects the monitor's DCGM API version, and the monitor container
    kubectl get pod -n gpu-operator {DCGM_POD} -o jsonpath='{.spec.containers[0].image}{"\n"}'
    ```
 
-2. If DCGM was just upgraded, wait for labeler to update the label. The pod for the new lane then replaces the old pod. Labeler never sets `48`; for that lane, labeler must be disabled and you set the label.
+2. If DCGM was just upgraded, wait for labeler to update the label. The pod for the new lane then replaces the old pod. Labeler never sets `48.x`; for that lane, labeler must be disabled and you set the label.
 3. In `external-hostengine` and `embedded-mode`, you own the label. Set it to the lane for the installed DCGM version.
 4. Confirm that the GPU monitor pod for the new lane is `Running` and does not restart.
 

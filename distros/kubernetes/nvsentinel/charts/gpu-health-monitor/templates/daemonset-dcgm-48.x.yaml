@@ -14,7 +14,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-48
+  name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-48.x
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
 spec:
@@ -43,7 +43,7 @@ spec:
       {{- end }}
       {{- if include "gpu-health-monitor.dcgmStartupGateEnabled" . }}
       initContainers:
-        {{- include "gpu-health-monitor.dcgmStartupGate" (dict "root" . "dcgmVersion" "48") | nindent 8 }}
+        {{- include "gpu-health-monitor.dcgmStartupGate" (dict "root" . "dcgmVersion" "48.x") | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -80,7 +80,7 @@ spec:
             # toolkit ignores NVIDIA_VISIBLE_DEVICES for unprivileged containers.
             privileged: true
             {{- end }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-48"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-48.x"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -161,7 +161,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       nodeSelector:
-        nvsentinel.dgxc.nvidia.com/dcgm.version: "48"
+        nvsentinel.dgxc.nvidia.com/dcgm.version: "48.x"
         {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

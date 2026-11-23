@@ -462,7 +462,7 @@ make docker-all
 # ghcr.io/your-github-username/syslog-health-monitor:main
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.x
-# ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-48
+# ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-48.x
 ```
 
 **Testing Specific Module:**

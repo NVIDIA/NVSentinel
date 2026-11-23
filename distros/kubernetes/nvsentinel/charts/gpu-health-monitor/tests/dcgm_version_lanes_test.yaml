@@ -19,7 +19,7 @@ suite: DCGM version lanes
 templates:
   - templates/daemonset-dcgm-3.x.yaml
   - templates/daemonset-dcgm-4.x.yaml
-  - templates/daemonset-dcgm-48.yaml
+  - templates/daemonset-dcgm-48.x.yaml
   - templates/configmap.yaml
 set:
   global.platformConnectorAuth.enabled: false
@@ -51,15 +51,15 @@ tests:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
 
-  - it: renders the 48 lane for DCGM 4.8.0 and newer
-    template: templates/daemonset-dcgm-48.yaml
+  - it: renders the 48.x lane for DCGM 4.8.0 and newer
+    template: templates/daemonset-dcgm-48.x.yaml
     asserts:
       - equal:
           path: metadata.name
-          value: gpu-health-monitor-dcgm-48
+          value: gpu-health-monitor-dcgm-48.x
       - equal:
           path: spec.template.spec.nodeSelector["nvsentinel.dgxc.nvidia.com/dcgm.version"]
-          value: "48"
+          value: "48.x"
       - equal:
           path: spec.template.spec.containers[0].image
-          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-48
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-48.x

@@ -161,7 +161,7 @@ docker-build-dcgm48: setup-buildx
 		$(CACHE_TO_ARG_DCGM48) \
 		$(DOCKER_EXTRA_ARGS) \
 		$(DOCKER_LOAD_ARG) \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-48 \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-48.x \
 		--build-arg DCGM_VERSION=4.8.0-ubuntu24.04@sha256:1bc401768b79d7e70a8c42bd5d33bd74031b35b4b00ccc9d200545cfca9dd71d \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
@@ -213,7 +213,7 @@ docker-publish-dcgm48: setup-buildx
 		$(DOCKER_EXTRA_ARGS) \
 		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-48 \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-48.x \
 		--build-arg DCGM_VERSION=4.8.0-ubuntu24.04@sha256:1bc401768b79d7e70a8c42bd5d33bd74031b35b4b00ccc9d200545cfca9dd71d \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
