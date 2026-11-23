@@ -26,9 +26,7 @@ When a health monitor wants observability-only behavior, it publishes health eve
 
 `STORE_ONLY` events WILL be:
 - Stored in database (for analysis)
-- Exported as metrics to monitor which rule/policy is running in observability-only mode (STORE_ONLY):
-	 **kubernetes-object-monitor**: Export `k8s_object_monitor_health_events_processing_strategy_overrides_total` (labels: `policy_name`, `strategy`) to track policies overridden to `STORE_ONLY`.
-	**health-events-analyzer**: Export `health_event_analyzer_processing_strategy_overrides_total` (labels: `rule_name`, `strategy`) to track rules overridden to `STORE_ONLY`.
+- Exported as metrics to monitor which rule/policy is running in observability-only mode (STORE_ONLY): **kubernetes-object-monitor**: Export `k8s_object_monitor_health_events_processing_strategy_overrides_total` (labels: `policy_name`, `strategy`) to track policies overridden to `STORE_ONLY`. **health-events-analyzer**: Export `health_event_analyzer_processing_strategy_overrides_total` (labels: `rule_name`, `strategy`) to track rules overridden to `STORE_ONLY`.
 - Exported by event exporter (for external monitoring)
 
 `STORE_ONLY` events will NOT trigger:
@@ -271,8 +269,7 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 }
 ```
 
-**CSP Health Monitor**
-File: `health-monitors/csp-health-monitor/pkg/triggerengine/trigger.go`
+**CSP Health Monitor** File: `health-monitors/csp-health-monitor/pkg/triggerengine/trigger.go`
 
 ```go
 type Engine struct {
@@ -582,8 +579,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 Health Events Analyzer has two distinct processingStrategy concerns:
 
 1. **Incoming/historic events**: the analyzer uses incoming (or historical) `EXECUTE_REMEDIATION` and `STORE_AND_ANALYSE` events for pattern detection; `STORE_ONLY` events are excluded from analyzer input since that strategy is meant to be fully observability-only. The analyzer is over stored observations; it does not directly mutate cluster state from the source event.
-2. **Analyzer’s own output strategy**: if the analyzer itself is configured to publish with `STORE_ONLY`, then any aggregated health events
-   it publishes must have `processingStrategy=STORE_ONLY`.
+2. **Analyzer’s own output strategy**: if the analyzer itself is configured to publish with `STORE_ONLY`, then any aggregated health events it publishes must have `processingStrategy=STORE_ONLY`.
 3. **Rule-based output strategy**: a single rule can also be configured to publish with `STORE_ONLY`; any new event it publishes should also use `STORE_ONLY`.
 
 **Analyze non-fatal unhealthy events, including STORE_AND_ANALYSE source events**
@@ -717,8 +713,6 @@ We considered extending the existing health event override feature in platform-c
 ### Using Health Event Overrides (override processingStrategy=STORE_ONLY)
 We considered extending the existing health event override feature in platform-connector to support setting `processingStrategy=STORE_ONLY` via CEL rules, instead of setting it at the health monitor level.
 
-**Why this was rejected:**
-When we add a new health monitor or health check, we don't want to tell operators to both enable the monitor and also to configure overrides to force `processingStrategy=STORE_ONLY` (observability-only).
-The decided approach is similar to how feature flags work, where the feature flags are set to the default recommended value and the operators can change it if required.
+**Why this was rejected:** When we add a new health monitor or health check, we don't want to tell operators to both enable the monitor and also to configure overrides to force `processingStrategy=STORE_ONLY` (observability-only). The decided approach is similar to how feature flags work, where the feature flags are set to the default recommended value and the operators can change it if required.
 
 ---

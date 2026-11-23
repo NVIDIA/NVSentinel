@@ -14,6 +14,11 @@ navigation:
       - page: Integrations
         path: INTEGRATIONS.md
 
+  - section: Requirements
+    contents:
+      - page: Scale Test
+        path: requirements/scale-test-report.md
+
   - section: User Guides
     contents:
       - page: Deploying on SUSE Linux Enterprise and RKE2
@@ -21,6 +26,8 @@ navigation:
 
   - section: Tutorials
     contents:
+      - page: Integrating an External Health Detector
+        path: tutorials/integrating-external-health-detectors.md
       - page: Integrating Node Problem Detector
         path: tutorials/integrating-node-problem-detector.md
       - page: Writing a Health Monitor
@@ -79,8 +86,12 @@ navigation:
         path: fault-remediation.md
       - page: Health Events Analyzer
         path: health-events-analyzer.md
+      - page: Health Events Analyzer Recovery
+        path: health-events-analyzer-recovery.md
       - page: Janitor
         path: janitor.md
+      - page: Validation
+        path: validation.md
       - page: Circuit Breaker
         path: circuit-breaker.md
       - page: Cancelling Breakfix
@@ -123,6 +134,8 @@ navigation:
         path: configuration/fault-quarantine.md
       - page: Lifecycle Manager
         path: configuration/lifecycle-manager.md
+      - page: Validation
+        path: configuration/validation.md
       - page: Node Drainer
         path: configuration/node-drainer.md
       - page: Fault Remediation
@@ -143,6 +156,8 @@ navigation:
         path: configuration/labeler.md
       - page: Platform Connectors
         path: configuration/platform-connectors.md
+      - page: Platform Connector Authentication
+        path: configuration/authentication.md
       - page: Preflight
         path: configuration/preflight.md
       - page: Slurm Drain Monitor
