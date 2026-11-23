@@ -101,7 +101,15 @@ func (s *janitorProviderServer) SendRebootSignal(
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
-	requestID, err := s.cspClient.SendRebootSignal(ctx, *node, req.CrName)
+	var requestID model.ResetSignalRequestRef
+
+	if deadlineClient, ok := s.cspClient.(model.DeadlineRebootClient); ok && req.GetExecutionDeadlineUnixSeconds() != 0 {
+		deadline := time.Unix(req.GetExecutionDeadlineUnixSeconds(), 0)
+		requestID, err = deadlineClient.SendRebootSignalWithDeadline(ctx, *node, req.CrName, deadline)
+	} else {
+		requestID, err = s.cspClient.SendRebootSignal(ctx, *node, req.CrName)
+	}
+
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor_provider.error.type", "csp_api_error"),

@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,12 +83,15 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	assert.Equal(t, "true", job.Labels[jobLabelKey])
 	assert.Equal(t, "worker-1", job.Labels[jobNodeLabelKey])
 	assert.Equal(t, corev1.RestartPolicyNever, job.Spec.Template.Spec.RestartPolicy)
+	require.NotNil(t, job.Spec.ActiveDeadlineSeconds)
+	assert.Positive(t, *job.Spec.ActiveDeadlineSeconds)
+	assert.LessOrEqual(t, *job.Spec.ActiveDeadlineSeconds, int64(defaultRebootWindow/time.Second))
 
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "busybox:1.37", container.Image)
 	assert.Equal(t, guardedCommand("chroot /host reboot"), container.Command)
-	assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"}}, container.Env)
+	assert.Contains(t, container.Env, corev1.EnvVar{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"})
 	require.NotNil(t, container.SecurityContext)
 	assert.True(t, *container.SecurityContext.Privileged)
 
@@ -99,6 +103,41 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 
 	assert.Equal(t, int32(0), *job.Spec.BackoffLimit)
 	assert.Equal(t, int32(3600), *job.Spec.TTLSecondsAfterFinished)
+}
+
+func TestSendRebootSignalWithDeadline_UsesRequestedWindow(t *testing.T) {
+	client := newTestClient()
+	node := newNode("worker-1", "boot-id-abc", true)
+	deadline := time.Now().Add(time.Minute).Truncate(time.Second)
+
+	_, err := client.SendRebootSignalWithDeadline(t.Context(), node, "rb-1", deadline)
+	require.NoError(t, err)
+	jobs, err := client.k8sClient.BatchV1().Jobs("test-ns").List(t.Context(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, jobs.Items, 1)
+
+	job := jobs.Items[0]
+	require.NotNil(t, job.Spec.ActiveDeadlineSeconds)
+	assert.Positive(t, *job.Spec.ActiveDeadlineSeconds)
+	assert.LessOrEqual(t, *job.Spec.ActiveDeadlineSeconds, int64(time.Minute/time.Second))
+	assert.Equal(t, []corev1.EnvVar{
+		{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"},
+		{Name: rebootDeadlineEnvVar, Value: strconv.FormatInt(deadline.Unix(), 10)},
+	}, job.Spec.Template.Spec.Containers[0].Env)
+}
+
+func TestSendRebootSignalWithDeadline_ExpiredLeavesEarlierJob(t *testing.T) {
+	node := newNode("worker-1", "boot-id-abc", true)
+	earlier := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "earlier", Namespace: "test-ns",
+		Labels: map[string]string{jobLabelKey: "true", jobNodeLabelKey: node.Name},
+	}}
+	kube := fake.NewSimpleClientset(earlier)
+	client := NewClientWithK8s(kube, Config{RebootJobNamespace: "test-ns"})
+
+	_, err := client.SendRebootSignalWithDeadline(t.Context(), node, "rb-2", time.Now().Add(-time.Second))
+	require.ErrorContains(t, err, "deadline has expired")
+	assert.Empty(t, kube.Actions())
 }
 
 func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
@@ -123,7 +162,7 @@ func TestSendRebootSignal_CreatesJob_WithSyslog(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand(
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; "+rebootDeadlineGuard()+"chroot /host reboot",
 	), container.Command)
 }
 
@@ -149,7 +188,7 @@ func TestSendRebootSignal_CreatesJob_WithSyslogAndCRName(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand(
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; chroot /host reboot",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; "+rebootDeadlineGuard()+"chroot /host reboot",
 	), container.Command)
 }
 
@@ -176,7 +215,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslog(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand(
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; sync || true; echo b > /host-proc/sysrq-trigger",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; sync || true; "+rebootDeadlineGuard()+"echo b > /host-proc/sysrq-trigger",
 	), container.Command)
 
 	require.Len(t, container.VolumeMounts, 2)
@@ -227,7 +266,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithSyslogAndCRName(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand(
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; sync || true; echo b > /host-proc/sysrq-trigger",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1 cr=rebootnode-worker-1-xyz\" || true; sync || true; "+rebootDeadlineGuard()+"echo b > /host-proc/sysrq-trigger",
 	), container.Command)
 }
 
@@ -272,7 +311,7 @@ func TestSendRebootSignal_CreatesSysrqJob_WithoutSyslog(t *testing.T) {
 func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {
 	client := newTestClient()
 
-	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc", time.Now().Add(time.Minute))
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand("chroot /host reboot"), container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
@@ -287,17 +326,17 @@ func TestBuildRebootJob_UsesSyslogWhenEnabled(t *testing.T) {
 		WriteSyslog:        true,
 	})
 
-	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc", time.Now().Add(time.Minute))
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, guardedCommand(
-		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; chroot /host reboot",
+		"chroot /host logger -t nvsentinel-reboot -p daemon.notice \"NVSentinel reboot: node=worker-1\" || true; "+rebootDeadlineGuard()+"chroot /host reboot",
 	), container.Command)
 	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
 	assert.Equal(t, "host-root", job.Spec.Template.Spec.Volumes[0].Name)
 }
 
 func TestBuildRebootJob_NoPriorityClassByDefault(t *testing.T) {
-	job := newTestClient().buildRebootJob("worker-1", "", "boot-id-abc")
+	job := newTestClient().buildRebootJob("worker-1", "", "boot-id-abc", time.Now().Add(time.Minute))
 
 	assert.Empty(t, job.Spec.Template.Spec.PriorityClassName)
 }
@@ -310,7 +349,7 @@ func TestBuildRebootJob_UsesConfiguredPriorityClass(t *testing.T) {
 		RebootJobPriorityClassName: "system-node-critical",
 	})
 
-	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc", time.Now().Add(time.Minute))
 
 	assert.Equal(t, "system-node-critical", job.Spec.Template.Spec.PriorityClassName)
 }
@@ -766,7 +805,7 @@ func TestSendRebootSignal_JobCreationFailure(t *testing.T) {
 
 func TestBuildRebootJob_UsesGenerateName(t *testing.T) {
 	client := newTestClient()
-	job := client.buildRebootJob("worker-1", "", "boot-id-abc")
+	job := client.buildRebootJob("worker-1", "", "boot-id-abc", time.Now().Add(time.Minute))
 
 	assert.Empty(t, job.Name)
 	assert.Equal(t, "reboot-worker-1-", job.GenerateName)
@@ -840,10 +879,10 @@ func TestBuildRebootJob_AllVariants_SetsPreRebootBootIDEnv(t *testing.T) {
 		t.Run(v.name, func(t *testing.T) {
 			client := newVariantClient(v.useSysrqReboot, v.writeSyslog)
 
-			job := client.buildRebootJob("worker-1", "rb-1", "boot-id-abc")
+			job := client.buildRebootJob("worker-1", "rb-1", "boot-id-abc", time.Now().Add(time.Minute))
 
 			container := job.Spec.Template.Spec.Containers[0]
-			assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"}}, container.Env)
+			assert.Contains(t, container.Env, corev1.EnvVar{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"})
 		})
 	}
 }
@@ -861,9 +900,9 @@ func TestSendRebootSignal_NodeBootID_PassedToJobEnv(t *testing.T) {
 	require.Len(t, jobs.Items, 1)
 
 	container := jobs.Items[0].Spec.Template.Spec.Containers[0]
-	assert.Equal(t, []corev1.EnvVar{
-		{Name: preRebootBootIDEnvVar, Value: "8f6c1f3e-0f7a-4d3b-9c55-2b1e7a9d4c10"},
-	}, container.Env)
+	assert.Contains(t, container.Env, corev1.EnvVar{
+		Name: preRebootBootIDEnvVar, Value: "8f6c1f3e-0f7a-4d3b-9c55-2b1e7a9d4c10",
+	})
 }
 
 func TestRebootCommand_AllVariants_GuardPrecedesSideEffects(t *testing.T) {
@@ -887,11 +926,11 @@ func TestRebootCommand_ShellMetacharBootID_NotInterpolated(t *testing.T) {
 
 	for _, v := range rebootVariants {
 		t.Run(v.name, func(t *testing.T) {
-			job := newVariantClient(v.useSysrqReboot, v.writeSyslog).buildRebootJob("worker-1", "rb-1", hostileBootID)
+			job := newVariantClient(v.useSysrqReboot, v.writeSyslog).buildRebootJob("worker-1", "rb-1", hostileBootID, time.Now().Add(time.Minute))
 
 			container := job.Spec.Template.Spec.Containers[0]
 			assert.NotContains(t, container.Command[2], hostileBootID)
-			assert.Equal(t, []corev1.EnvVar{{Name: preRebootBootIDEnvVar, Value: hostileBootID}}, container.Env)
+			assert.Contains(t, container.Env, corev1.EnvVar{Name: preRebootBootIDEnvVar, Value: hostileBootID})
 		})
 	}
 }
@@ -911,12 +950,30 @@ func TestRebootScript_BootIDMatches_RunsRebootAction(t *testing.T) {
 	}
 }
 
+func TestRebootScript_ExpiredOrInvalidDeadline_BlocksSideEffects(t *testing.T) {
+	for _, v := range rebootVariants {
+		t.Run(v.name, func(t *testing.T) {
+			for _, deadline := range []string{"", "invalid", "1"} {
+				run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
+					hostBootID: "boot-id-abc", preRebootBootID: "boot-id-abc", executionDeadline: &deadline,
+				})
+
+				assert.NotZero(t, run.exitCode, run.output)
+				assert.False(t, run.rebootAttempted, run.output)
+				assert.False(t, run.loggedToSyslog, run.output)
+				assert.Contains(t, run.output, "execution deadline expired or invalid")
+			}
+		})
+	}
+}
+
 func TestRebootScript_BootIDChanged_DoesNotRebootAndExitsZero(t *testing.T) {
 	for _, v := range rebootVariants {
 		t.Run(v.name, func(t *testing.T) {
 			run := runRebootScript(t, v.useSysrqReboot, v.writeSyslog, scriptEnv{
-				hostBootID:      "boot-id-new",
-				preRebootBootID: "boot-id-abc",
+				hostBootID:        "boot-id-new",
+				preRebootBootID:   "boot-id-abc",
+				executionDeadline: new("1"),
 			})
 
 			assert.Equal(t, 0, run.exitCode, run.output)
@@ -987,6 +1044,23 @@ func TestRebootScript_RebootFails_ExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestRebootScript_DeadlineExpiresDuringPreparation(t *testing.T) {
+	for _, useSysrq := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sysrq=%t", useSysrq), func(t *testing.T) {
+			run := runRebootScript(t, useSysrq, true, scriptEnv{
+				hostBootID:          "boot-id-old",
+				preRebootBootID:     "boot-id-old",
+				expiresDuringSyslog: true,
+			})
+
+			assert.NotEqual(t, 0, run.exitCode, run.output)
+			assert.True(t, run.loggedToSyslog, run.output)
+			assert.False(t, run.rebootAttempted, run.output)
+			assert.Contains(t, run.output, "execution deadline expired or invalid")
+		})
+	}
+}
+
 func TestRebootScript_ShellMetacharBootID_NotExecuted(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "pwned")
 	hostileBootID := fmt.Sprintf(`$(touch %s)`, marker)
@@ -1038,7 +1112,7 @@ func TestIsNodeReady_GuardedPodSucceededAndBootIDChanged_ReturnsTrue(t *testing.
 }
 
 func guardedCommand(action string) []string {
-	return []string{"sh", "-c", bootIDGuard() + action}
+	return []string{"sh", "-c", bootIDGuard() + rebootDeadlineGuard() + action}
 }
 
 func newVariantClient(useSysrqReboot, writeSyslog bool) *Client {
@@ -1052,10 +1126,12 @@ func newVariantClient(useSysrqReboot, writeSyslog bool) *Client {
 }
 
 type scriptEnv struct {
-	hostBootID        string
-	missingBootIDFile bool
-	preRebootBootID   string
-	rebootFails       bool
+	hostBootID          string
+	executionDeadline   *string
+	expiresDuringSyslog bool
+	missingBootIDFile   bool
+	preRebootBootID     string
+	rebootFails         bool
 }
 
 type scriptRun struct {
@@ -1081,6 +1157,17 @@ func runRebootScript(t *testing.T, useSysrqReboot, writeSyslog bool, env scriptE
 		`if [ "$2" = reboot ] && [ -n "$REBOOT_FAILS" ]; then exit 1; fi` + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "chroot"), []byte(stub), 0o755))
 
+	if env.expiresDuringSyslog {
+		dateStub := `#!/bin/sh
+if [ -f "$CHROOT_CALLS" ]; then
+    printf '%s\n' "$REBOOT_DEADLINE_UNIX_SECONDS"
+else
+    printf '1\n'
+fi
+`
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "date"), []byte(dateStub), 0o755))
+	}
+
 	bootIDFile := filepath.Join(dir, "boot_id")
 	if !env.missingBootIDFile {
 		require.NoError(t, os.WriteFile(bootIDFile, []byte(env.hostBootID+"\n"), 0o644))
@@ -1091,7 +1178,7 @@ func runRebootScript(t *testing.T, useSysrqReboot, writeSyslog bool, env scriptE
 		sysrqFile = filepath.Join(dir, "missing-dir", "sysrq-trigger")
 	}
 
-	job := newVariantClient(useSysrqReboot, writeSyslog).buildRebootJob("worker-1", "rb-1", env.preRebootBootID)
+	job := newVariantClient(useSysrqReboot, writeSyslog).buildRebootJob("worker-1", "rb-1", env.preRebootBootID, time.Now().Add(time.Minute))
 	container := job.Spec.Template.Spec.Containers[0]
 	require.Equal(t, []string{"sh", "-c"}, container.Command[:2])
 
@@ -1107,6 +1194,9 @@ func runRebootScript(t *testing.T, useSysrqReboot, writeSyslog bool, env scriptE
 	}
 
 	for _, e := range container.Env {
+		if e.Name == rebootDeadlineEnvVar && env.executionDeadline != nil {
+			e.Value = *env.executionDeadline
+		}
 		cmd.Env = append(cmd.Env, e.Name+"="+e.Value)
 	}
 

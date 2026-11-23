@@ -508,8 +508,9 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 	slog.InfoContext(ctx, "Sending reboot signal to node", "node", node.Name)
 
 	rsp, rebootErr := cspClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
-		NodeName: node.Name,
-		CrName:   rebootNode.Name,
+		NodeName:                     node.Name,
+		CrName:                       rebootNode.Name,
+		ExecutionDeadlineUnixSeconds: rebootNode.Status.StartTime.Add(r.getRebootTimeout()).Unix(),
 	})
 	if rebootErr == nil {
 		rebootNode.SetCondition(metav1.Condition{

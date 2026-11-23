@@ -26,6 +26,8 @@ service CSPProviderService {
 message SendRebootSignalRequest {
   string node_name = 1;
   string cr_name = 2;
+  // Latest time the generic provider may start the reboot. Zero means unspecified.
+  int64 execution_deadline_unix_seconds = 3;
 }
 
 message SendRebootSignalResponse {

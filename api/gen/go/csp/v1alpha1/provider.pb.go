@@ -36,11 +36,13 @@ const (
 )
 
 type SendRebootSignalRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
-	CrName        string                 `protobuf:"bytes,2,opt,name=cr_name,json=crName,proto3" json:"cr_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	NodeName string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	CrName   string                 `protobuf:"bytes,2,opt,name=cr_name,json=crName,proto3" json:"cr_name,omitempty"`
+	// Latest time the generic provider may start the reboot. Zero means unspecified.
+	ExecutionDeadlineUnixSeconds int64 `protobuf:"varint,3,opt,name=execution_deadline_unix_seconds,json=executionDeadlineUnixSeconds,proto3" json:"execution_deadline_unix_seconds,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *SendRebootSignalRequest) Reset() {
@@ -85,6 +87,13 @@ func (x *SendRebootSignalRequest) GetCrName() string {
 		return x.CrName
 	}
 	return ""
+}
+
+func (x *SendRebootSignalRequest) GetExecutionDeadlineUnixSeconds() int64 {
+	if x != nil {
+		return x.ExecutionDeadlineUnixSeconds
+	}
+	return 0
 }
 
 type SendRebootSignalResponse struct {
@@ -319,10 +328,11 @@ var File_csp_v1alpha1_provider_proto protoreflect.FileDescriptor
 
 const file_csp_v1alpha1_provider_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\"O\n" +
+	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\"\x96\x01\n" +
 	"\x17SendRebootSignalRequest\x12\x1b\n" +
 	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x17\n" +
-	"\acr_name\x18\x02 \x01(\tR\x06crName\"9\n" +
+	"\acr_name\x18\x02 \x01(\tR\x06crName\x12E\n" +
+	"\x1fexecution_deadline_unix_seconds\x18\x03 \x01(\x03R\x1cexecutionDeadlineUnixSeconds\"9\n" +
 	"\x18SendRebootSignalResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"P\n" +

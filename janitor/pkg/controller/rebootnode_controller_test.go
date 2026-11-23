@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -34,9 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 )
 
 func TestRebootNodeReconciler_getRebootTimeout(t *testing.T) {
@@ -104,6 +105,34 @@ func Test_isTransientGRPCError(t *testing.T) {
 			}
 		})
 	}
+}
+
+type rebootRequestRecorder struct {
+	cspv1alpha1.CSPProviderServiceClient
+	request *cspv1alpha1.SendRebootSignalRequest
+}
+
+func (c *rebootRequestRecorder) SendRebootSignal(
+	_ context.Context, request *cspv1alpha1.SendRebootSignalRequest, _ ...grpc.CallOption,
+) (*cspv1alpha1.SendRebootSignalResponse, error) {
+	c.request = request
+	return &cspv1alpha1.SendRebootSignalResponse{RequestId: "fixture-boot-id"}, nil
+}
+
+func TestSendRebootSignal_UsesAttemptStartForDeadline(t *testing.T) {
+	const timeout = 8 * time.Minute
+	start := metav1.NewTime(time.Now().Add(-time.Minute))
+	reconciler := &RebootNodeReconciler{Config: &config.RebootNodeControllerConfig{Timeout: timeout}}
+	csp := &rebootRequestRecorder{}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}
+	reboot := &janitordgxcnvidiacomv1alpha1.RebootNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "reboot-1"},
+		Status:     janitordgxcnvidiacomv1alpha1.RebootNodeStatus{StartTime: &start},
+	}
+
+	reconciler.sendRebootSignalAndSetCondition(t.Context(), csp, reboot, node)
+	require.NotNil(t, csp.request)
+	assert.Equal(t, start.Add(timeout).Unix(), csp.request.GetExecutionDeadlineUnixSeconds())
 }
 
 var _ = Describe("RebootNode Controller", func() {
