@@ -236,8 +236,7 @@ Watch for `nvidia-device-plugin-daemonset` pods (GPU Operator) or `nvidia-gpu-de
 
 #### GPU Feature Discovery (GFD) Label Detection
 
-Check for `nvidia.com/gpu.present=true` node label set by GPU Feature Discovery as an indicator of driver installation.
-GFD detects GPU hardware and sets node labels, providing a simple check without pod watching complexity.
+Check for `nvidia.com/gpu.present=true` node label set by GPU Feature Discovery as an indicator of driver installation. GFD detects GPU hardware and sets node labels, providing a simple check without pod watching complexity.
 
 **Rejected Because**:
 - **Optional Component**: GFD can be disabled via `gfd.enabled=false` if custom node labeling is preferred
