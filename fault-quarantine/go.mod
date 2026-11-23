@@ -17,11 +17,11 @@ require (
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
-	sigs.k8s.io/controller-runtime v0.25.2
+	sigs.k8s.io/controller-runtime v0.25.3
 )
 
 require (
-	cel.dev/cel-go v0.33.2 // indirect
+	cel.dev/cel-go v0.33.4 // indirect
 	cel.dev/expr v0.25.3 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/XSAM/otelsql v0.44.0 // indirect
