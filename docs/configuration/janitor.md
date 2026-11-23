@@ -125,6 +125,8 @@ janitor:
 
 When `true`, the RebootNode and TerminateNode controllers do not call the Janitor Provider. Thus, the Janitor does not trigger real node reboots or terminations. Manual mode does not apply to GPUReset CRs: the Janitor still runs each GPU reset. Use this setting to test the creation of janitor CRs by fault-remediation, without real node reboots or terminations.
 
+A GPUReset waits before it stops any service, with a `ManualMode` condition whose reason is `OutsideActorRequired`. It changes no node label and creates no reset Job. When manual mode is turned off and janitor restarts, the GPUReset continues with a new start time, so the time it waited does not count against the timeout. A GPUReset that had already started stopping services when manual mode was turned on finishes normally.
+
 ## HTTP Port
 
 ```yaml
