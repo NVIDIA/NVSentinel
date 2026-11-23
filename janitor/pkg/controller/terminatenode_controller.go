@@ -364,7 +364,8 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
-			if *r.Config.ManualMode {
+			switch {
+			case *r.Config.ManualMode:
 				isManualModeConditionSet := false
 
 				for _, condition := range terminateNode.Status.Conditions {
@@ -389,7 +390,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 				slog.InfoContext(ctx, "Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
-			} else if refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+			case refuseNodeInService(r.Config.RequireNodeOutOfService, node):
 				slog.WarnContext(ctx, "Node is neither cordoned nor quarantined, janitor will not terminate it",
 					"node", node.Name)
 				terminateNode.SetCompletionTime()
@@ -402,7 +403,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 				})
 
 				result = ctrl.Result{}
-			} else {
+			default:
 				slog.InfoContext(ctx, "Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				_, terminateErr := cspClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{

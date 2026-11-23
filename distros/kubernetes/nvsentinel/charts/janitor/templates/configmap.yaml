@@ -30,7 +30,9 @@ data:
     global:
       timeout: {{ .Values.config.timeout | default "25m" }}
       manualMode: {{ .Values.config.manualMode | default false }}
-      requireNodeOutOfService: {{ if hasKey .Values.config "requireNodeOutOfService" }}{{ .Values.config.requireNodeOutOfService }}{{ else }}true{{ end }}
+      {{- if hasKey .Values.config "requireNodeOutOfService" }}
+      requireNodeOutOfService: {{ .Values.config.requireNodeOutOfService }}
+      {{- end }}
       {{- if .Values.config.nodes.exclusions }}
       nodes:
         exclusions:

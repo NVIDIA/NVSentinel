@@ -809,6 +809,44 @@ var _ = Describe("GPUReset Controller", func() {
 			}
 		})
 
+		It("should refuse the reset on a node that is neither cordoned nor quarantined", func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+			Expect(k8sClient.Create(ctx, &v1alpha1.GPUReset{
+				Name: resetName,
+				Spec: v1alpha1.GPUResetSpec{NodeName: nodeName},
+			})).To(Succeed())
+			// The refused GPUReset keeps its finalizer. Remove it so that the next spec can reuse the name.
+			DeferCleanup(func() {
+				Eventually(func(g Gomega) {
+					var reset v1alpha1.GPUReset
+					err := k8sClient.Get(ctx, typeNamespacedName, &reset)
+					if apierrors.IsNotFound(err) {
+						return
+					}
+					g.Expect(err).NotTo(HaveOccurred())
+
+					if controllerutil.ContainsFinalizer(&reset, gpuResetFinalizer) {
+						controllerutil.RemoveFinalizer(&reset, gpuResetFinalizer)
+						g.Expect(k8sClient.Update(ctx, &reset)).To(Succeed())
+					}
+					g.Expect(k8sClient.Delete(ctx, &reset)).To(Or(Succeed(), MatchError(ContainSubstring("not found"))))
+				}, "10s", "100ms").Should(Succeed())
+			})
+
+			var updatedReset v1alpha1.GPUReset
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
+			Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&updatedReset, metav1.ConditionFalse, v1alpha1.ReasonNodeInService)
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(updatedReset.Status.JobRef).To(BeNil())
+		})
+
 		It("should skip service handling and complete when no manager is specified", func() {
 			By("Creating a new GPUReset without a services manager")
 			reset := &v1alpha1.GPUReset{
