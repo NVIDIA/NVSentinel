@@ -735,7 +735,8 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			numReconciles:     1,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "failed to filter pods using entity: pod running-pod-1 is requesting devices but is missing device annotation")
+				assert.Contains(t, err.Error(), "failed to filter pods using entity: failed to scope the partial drain to GPU_UUID GPU-123: "+
+					"pod running-pod-1 is requesting devices but is missing device annotation")
 			},
 		},
 		{
