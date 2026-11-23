@@ -639,7 +639,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			}
 
 			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
-				devicecounts.Config{}, false)
+				devicecounts.Config{}, false, testDCGMVersionLanes)
 			require.NoError(t, err)
 			go func() {
 				require.NoError(t, labeler.Run(ctx), "failed to run labeler")
@@ -832,7 +832,7 @@ func TestDCGMBootstrapCompleted(t *testing.T) {
 
 			labeler, err := NewLabeler(kubeClient, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset",
 				"nvidia-driver-installer", "", false, false,
-				devicecounts.Config{}, false)
+				devicecounts.Config{}, false, testDCGMVersionLanes)
 			require.NoError(t, err, "failed to create labeler")
 			labeler.requireDCGMReadyForBootstrap = tt.requireDCGMReadyForBootstrap
 
@@ -953,6 +953,7 @@ func TestAssumeDCGMAvailableWhenPodSourceMissing(t *testing.T) {
 				false,
 				devicecounts.Config{},
 				tt.preserve,
+				testDCGMVersionLanes,
 			)
 			require.NoError(t, err)
 
@@ -1018,6 +1019,7 @@ func TestKataLabelOverride(t *testing.T) {
 				false,
 				devicecounts.Config{},
 				false,
+				testDCGMVersionLanes,
 			)
 
 			if err != nil {
@@ -1038,14 +1040,14 @@ func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 
 	t.Run("invalid pod label selector", func(t *testing.T) {
 		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false, false,
-			devicecounts.Config{}, false)
+			devicecounts.Config{}, false, testDCGMVersionLanes)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create pod informer")
 	})
 
 	t.Run("invalid GKE installer label selector", func(t *testing.T) {
 		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false, false,
-			devicecounts.Config{}, false)
+			devicecounts.Config{}, false, testDCGMVersionLanes)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create GKE installer informer")
 	})
@@ -1148,7 +1150,7 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 
 		dcgmVersion, err := labeler.resolveDCGMVersionLabelValue(node, nil)
 		require.NoError(t, err)
-		assert.Equal(t, dcgmVersion4, dcgmVersion)
+		assert.Equal(t, "4.x", dcgmVersion)
 
 		cachedNode, err := labeler.getNodeFromCache(node.Name)
 		require.NoError(t, err)
@@ -1259,6 +1261,7 @@ func startTransformTestLabeler(
 		false,
 		deviceCountConfig,
 		false,
+		testDCGMVersionLanes,
 	)
 	require.NoError(t, err)
 
@@ -1304,6 +1307,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			false,
 			devicecounts.Config{},
 			false,
+			testDCGMVersionLanes,
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
@@ -1322,6 +1326,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			false,
 			testDeviceCountConfig(),
 			false,
+			testDCGMVersionLanes,
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
@@ -1340,6 +1345,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 			false,
 			testResourceSliceDeviceCountConfig(),
 			false,
+			testDCGMVersionLanes,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
@@ -1364,6 +1370,7 @@ func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
 		false,
 		testDeviceCountConfig(),
 		false,
+		testDCGMVersionLanes,
 	)
 	require.NoError(t, err)
 
@@ -1405,6 +1412,7 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 			false,
 			testAllocatableDeviceCountConfig(),
 			false,
+			testDCGMVersionLanes,
 		)
 		require.NoError(t, err)
 
@@ -1438,6 +1446,7 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 			false,
 			testDeviceCountConfig(),
 			false,
+			testDCGMVersionLanes,
 		)
 		require.NoError(t, err)
 
@@ -1536,6 +1545,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		false,
 		devicecounts.Config{},
 		false,
+		testDCGMVersionLanes,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(first) error = %v", err)
@@ -1553,6 +1563,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		false,
 		devicecounts.Config{},
 		false,
+		testDCGMVersionLanes,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(second) error = %v", err)
@@ -1570,6 +1581,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		false,
 		devicecounts.Config{},
 		false,
+		testDCGMVersionLanes,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(empty) error = %v", err)
@@ -1684,7 +1696,7 @@ func TestKataLabelDetection(t *testing.T) {
 
 			// Create labeler with kata override if specified
 			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false, false,
-				devicecounts.Config{}, false)
+				devicecounts.Config{}, false, testDCGMVersionLanes)
 			require.NoError(t, err, "failed to create labeler")
 
 			// Start labeler
@@ -1841,7 +1853,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 			}
 
 			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
-				devicecounts.Config{}, false)
+				devicecounts.Config{}, false, testDCGMVersionLanes)
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1995,7 +2007,7 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			require.NoError(t, err, "failed to create node")
 
 			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled, false,
-				devicecounts.Config{}, false)
+				devicecounts.Config{}, false, testDCGMVersionLanes)
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -2060,7 +2072,7 @@ func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
 	createNodes(t, ctx, cli, nodeCount)
 
 	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, false,
-		devicecounts.Config{}, false)
+		devicecounts.Config{}, false, testDCGMVersionLanes)
 	require.NoError(t, err)
 
 	labelerCtx, labelerCancel := context.WithCancel(ctx)

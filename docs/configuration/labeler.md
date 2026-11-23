@@ -10,7 +10,7 @@ The labeler automatically manages these node labels:
 
 | Label | Values | Purpose |
 |-------|--------|---------|
-| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x` | DCGM major version detected from DCGM pods |
+| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x`, `48` | DCGM version lane detected from DCGM pods; see [DCGM Version Lanes](#dcgm-version-lanes) |
 | `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node |
 | `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | Kata Containers runtime presence |
 | `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | Current GPU count from the configured class expression |
@@ -89,6 +89,39 @@ This value is a comma-separated list of values of the `app` pod label. The label
 labeler:
   dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
 ```
+
+## DCGM Version Lanes
+
+Maps the DCGM version in the DCGM pod image tag to the `nvsentinel.dgxc.nvidia.com/dcgm.version` label. A node gets the label of the lane with the highest `minVersion` at or below its DCGM version. The order of the list does not matter.
+
+```yaml
+labeler:
+  dcgmVersionLanes:
+    - minVersion: "3.0.0"
+      label: "3.x"
+    - minVersion: "4.0.0"
+      label: "4.x"
+    - minVersion: "4.8.0"
+      label: "48"
+```
+
+With the default lanes:
+
+| DCGM version on the node | Label |
+|---|---|
+| Earlier than 3.0.0 | none |
+| 3.x | `3.x` |
+| 4.0.0 to earlier than 4.8.0 | `4.x` |
+| 4.8.0 and later, including 5.x | `48` |
+
+Rules:
+
+- Each `label` must match the `nodeSelector` of a GPU Health Monitor DaemonSet. If no DaemonSet matches, the node gets no GPU Health Monitor pod, and nothing reports an error.
+- `minVersion` must have the form `X.Y.Z`. Each `minVersion` must be unique.
+- `label` must be a valid Kubernetes label value. Quote it in YAML: an unquoted `48` is a number, and the labeler rejects it.
+- An image tag without a full `X.Y.Z` version, for example `dcgm:4.8-ubuntu24.04`, counts as `<major>.0.0`. The labeler logs a warning.
+- The labeler checks the lanes at startup. A missing or invalid configuration stops the labeler with an `invalid --dcgm-version-lanes` error.
+- In `external-hostengine` and `embedded-mode`, the labeler keeps an existing `dcgm.version` label only if its value is one of the configured labels.
 
 ## Driver Pod Discovery
 

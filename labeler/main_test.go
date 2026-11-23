@@ -21,12 +21,13 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
+	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
 
 func TestCLIOptionsInitializationParams_ConfiguredRateLimits_ForwardsValues(t *testing.T) {
 	rateLimits := kubeclient.RateLimitConfig{QPS: 40, Burst: 80}
 
-	params := (cliOptions{kubernetesClientRateLimits: rateLimits}).initializationParams(devicecounts.Config{})
+	params := (cliOptions{kubernetesClientRateLimits: rateLimits}).initializationParams(devicecounts.Config{}, labeler.DCGMVersionLanes{})
 
 	assert.Equal(t, rateLimits, params.KubernetesClientRateLimits)
 }

@@ -81,13 +81,18 @@ func run() error {
 		return fmt.Errorf("load expected device counts config: %w", err)
 	}
 
+	dcgmVersionLanes, err := labeler.ParseDCGMVersionLanes(options.dcgmVersionLanes)
+	if err != nil {
+		return fmt.Errorf("invalid --dcgm-version-lanes: %w", err)
+	}
+
 	srv := server.NewServer(
 		server.WithPort(portInt),
 		server.WithPrometheusMetrics(),
 		server.WithSimpleHealth(),
 	)
 
-	params := options.initializationParams(expectedDeviceCounts)
+	params := options.initializationParams(expectedDeviceCounts, dcgmVersionLanes)
 
 	components, err := initializer.InitializeAll(params)
 	if err != nil {
@@ -117,6 +122,7 @@ type cliOptions struct {
 	kubeconfig                     string
 	metricsPort                    string
 	dcgmAppLabel                   string
+	dcgmVersionLanes               string
 	driverAppLabel                 string
 	gkeInstallerAppLabel           string
 	kataLabel                      string
@@ -127,7 +133,8 @@ type cliOptions struct {
 	kubernetesClientRateLimits     kubeclient.RateLimitConfig
 }
 
-func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Config) initializer.InitializationParams {
+func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Config,
+	dcgmVersionLanes labeler.DCGMVersionLanes) initializer.InitializationParams {
 	return initializer.InitializationParams{
 		KubeconfigPath:               o.kubeconfig,
 		DCGMAppLabel:                 o.dcgmAppLabel,
@@ -138,6 +145,7 @@ func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Confi
 		AssumeDriverInstalled:        o.assumeDriverInstalled,
 		RequireDCGMReadyForBootstrap: o.requireDCGMReadyForBootstrap,
 		ExpectedDeviceCounts:         expectedDeviceCounts,
+		DCGMVersionLanes:             dcgmVersionLanes,
 		KubernetesClientRateLimits:   o.kubernetesClientRateLimits,
 	}
 }
@@ -147,6 +155,9 @@ func parseFlags() cliOptions {
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm,nvidia-dcgm-dra",
 		"Comma-separated app label values for DCGM pods")
+	dcgmVersionLanes := flag.String("dcgm-version-lanes", "",
+		`Required. JSON list of DCGM version lanes, each {"minVersion": "X.Y.Z", "label": "<value>"}. `+
+			"A node gets the label of the lane with the highest minVersion at or below its DCGM version.")
 	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
 		"nvidia-driver-installer", "App label value for GKE driver installer pods")
@@ -171,6 +182,7 @@ func parseFlags() cliOptions {
 		kubeconfig:                     *kubeconfig,
 		metricsPort:                    *metricsPort,
 		dcgmAppLabel:                   *dcgmAppLabel,
+		dcgmVersionLanes:               *dcgmVersionLanes,
 		driverAppLabel:                 *driverAppLabel,
 		gkeInstallerAppLabel:           *gkeInstallerAppLabel,
 		kataLabel:                      *kataLabel,

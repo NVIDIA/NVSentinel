@@ -74,6 +74,7 @@ spec:
             {{- if .Values.dcgmAppLabel }}
             - "--dcgm-app-label={{ .Values.dcgmAppLabel }}"
             {{- end }}
+            - {{ printf "--dcgm-version-lanes=%s" (toJson .Values.dcgmVersionLanes) | quote }}
             {{- if .Values.driverAppLabel }}
             - "--driver-app-label={{ .Values.driverAppLabel }}"
             {{- end }}

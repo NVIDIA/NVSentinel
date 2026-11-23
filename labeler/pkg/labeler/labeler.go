@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"hash/maphash"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -55,9 +54,6 @@ const (
 	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
 	driverComponentLabel        = "app.kubernetes.io/component"
 	driverComponentValue        = "nvidia-driver"
-	// DCGM major versions used for the dcgm.version label.
-	dcgmVersion3 = "3.x"
-	dcgmVersion4 = "4.x"
 
 	// Label values
 	LabelValueTrue  = "true"
@@ -65,8 +61,6 @@ const (
 )
 
 var (
-	dcgm4Regex       = regexp.MustCompile(`.*dcgm:4\..*`)
-	dcgm3Regex       = regexp.MustCompile(`.*dcgm:3\..*`)
 	nodeLockHashSeed = maphash.MakeSeed()
 )
 
@@ -86,6 +80,7 @@ type Labeler struct {
 	requireDCGMReadyForBootstrap bool
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
+	dcgmVersionLanes             DCGMVersionLanes
 	nodeLocks                    [256]sync.Mutex
 	nodePatcher                  kubeclient.NodePatcher
 }
@@ -104,7 +99,7 @@ func (l *Labeler) allInformersSynced() bool {
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
 	requireDCGMReadyForBootstrap bool, expectedDeviceCounts devicecounts.Config,
-	assumeDCGMAvailable bool) (*Labeler, error) {
+	assumeDCGMAvailable bool, dcgmVersionLanes DCGMVersionLanes) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -162,6 +157,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		requireDCGMReadyForBootstrap: requireDCGMReadyForBootstrap,
 		deviceCounts:                 deviceCounts,
 		assumeDCGMAvailable:          assumeDCGMAvailable,
+		dcgmVersionLanes:             dcgmVersionLanes,
 	}
 
 	if err := l.registerEventHandlers(); err != nil {
@@ -625,27 +621,13 @@ func (l *Labeler) resolveDCGMVersionLabelValue(node *v1.Node, excludePod *v1.Pod
 		}
 
 		for _, container := range pod.Spec.Containers {
-			if dcgm4Regex.MatchString(container.Image) {
-				return dcgmVersion4, nil
-			} else if dcgm3Regex.MatchString(container.Image) {
-				return dcgmVersion3, nil
+			if version := l.dcgmVersionLanes.labelForImage(container.Image); version != "" {
+				return version, nil
 			}
 		}
 	}
 
 	return "", nil
-}
-
-// normalizeDCGMVersion validates the dcgm.version label. Anything else is rejected.
-func normalizeDCGMVersion(version string) string {
-	switch strings.TrimSpace(version) {
-	case dcgmVersion3:
-		return dcgmVersion3
-	case dcgmVersion4:
-		return dcgmVersion4
-	default:
-		return ""
-	}
 }
 
 // hasReadyDriverPod checks if any pod in the list is ready, optionally excluding a specific pod
@@ -1068,7 +1050,7 @@ func (l *Labeler) setDCGMVersionLabelValue(node *v1.Node, value string) bool {
 		return false
 	}
 
-	if value == "" && l.assumeDCGMAvailable && normalizeDCGMVersion(node.Labels[DCGMVersionLabel]) != "" {
+	if value == "" && l.assumeDCGMAvailable && l.dcgmVersionLanes.isLabel(node.Labels[DCGMVersionLabel]) {
 		slog.Debug("Preserving existing DCGM version label", "node", node.Name, "version", node.Labels[DCGMVersionLabel])
 		return false
 	}

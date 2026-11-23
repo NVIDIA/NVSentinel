@@ -48,6 +48,20 @@ assumeDriverInstalled: false
 # GPUCluster/DRA-mode one (nvidia-dcgm-dra).
 dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
 
+# DCGM version lanes
+# Map the DCGM version of the DCGM pod image to the nvsentinel.dgxc.nvidia.com/dcgm.version label.
+# A node gets the label of the lane with the highest minVersion at or below its DCGM version.
+# A node with a DCGM version below the lowest lane gets no label.
+# Each label must match the nodeSelector of a gpu-health-monitor DaemonSet.
+# Quote all values so that YAML keeps them as strings (for example "48").
+dcgmVersionLanes:
+  - minVersion: "3.0.0"
+    label: "3.x"
+  - minVersion: "4.0.0"
+    label: "4.x"
+  - minVersion: "4.8.0"
+    label: "48"
+
 # Driver pod discovery
 # Value of the `app` pod label used to find the GPU Operator driver pod on each node.
 driverAppLabel: "nvidia-driver-daemonset"

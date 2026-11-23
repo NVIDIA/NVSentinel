@@ -39,6 +39,7 @@ type InitializationParams struct {
 	AssumeDriverInstalled        bool
 	RequireDCGMReadyForBootstrap bool
 	ExpectedDeviceCounts         devicecounts.Config
+	DCGMVersionLanes             labeler.DCGMVersionLanes
 	KubernetesClientRateLimits   kubeclient.RateLimitConfig
 }
 
@@ -67,6 +68,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.RequireDCGMReadyForBootstrap,
 		params.ExpectedDeviceCounts,
 		params.AssumeDCGMAvailable,
+		params.DCGMVersionLanes,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)
