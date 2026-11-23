@@ -368,12 +368,15 @@ func TestChangelogCleaner_Owners_StartAndStopBeforePoolClose(t *testing.T) {
 					}
 					return err
 				})
-				db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
+				db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher), sqlmock.MonitorPingsOption(true))
 				require.NoError(t, err)
 				defer db.Close()
 				if enabled {
 					expectCleanupLock(mock, false)
 					expectCleanupUnlock(mock)
+				}
+				if owner == "store" && !enabled {
+					mock.ExpectPing()
 				}
 				mock.ExpectClose()
 				var cleaner *changelogCleaner
@@ -387,6 +390,9 @@ func TestChangelogCleaner_Owners_StartAndStopBeforePoolClose(t *testing.T) {
 					cleaner = c.cleaner
 					closeOwner = c.Close
 					require.NoError(t, c.GetDatabaseClient().Close(t.Context()))
+					if !enabled {
+						require.NoError(t, db.PingContext(t.Context()))
+					}
 				}
 				if enabled {
 					require.NotNil(t, cleaner)
@@ -398,6 +404,7 @@ func TestChangelogCleaner_Owners_StartAndStopBeforePoolClose(t *testing.T) {
 				} else {
 					require.Nil(t, cleaner)
 				}
+				require.NoError(t, closeOwner(t.Context()))
 				require.NoError(t, closeOwner(t.Context()))
 				if enabled {
 					select {
@@ -412,16 +419,33 @@ func TestChangelogCleaner_Owners_StartAndStopBeforePoolClose(t *testing.T) {
 	}
 }
 
-func TestChangelogCleaner_OwnerCloseCancelled_PreservesPoolUntilStopped(t *testing.T) {
-	c, mock := newCleanupTest(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	cleaner := &changelogCleaner{cancel: func() {}, done: make(chan struct{})}
-	store := &PostgreSQLDataStore{db: c.db, cleaner: cleaner}
-	require.ErrorIs(t, store.Close(ctx), context.Canceled)
-	close(cleaner.done)
-	mock.ExpectClose()
-	require.NoError(t, store.Close(t.Context()))
+func TestChangelogCleaner_OwnerCloseTimeout_EventuallyClosesPool(t *testing.T) {
+	for _, owner := range []string{"store", "factory"} {
+		t.Run(owner, func(t *testing.T) {
+			db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+			require.NoError(t, err)
+			defer db.Close()
+			cleaner := &changelogCleaner{cancel: func() {}, done: make(chan struct{})}
+			var closeOwner func(context.Context) error
+			if owner == "store" {
+				closeOwner = (&PostgreSQLDataStore{db: db, cleaner: cleaner}).Close
+			} else {
+				closeOwner = (&PostgreSQLDatabaseClient{db: db, cleaner: cleaner}).Close
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
+			defer cancel()
+			require.ErrorIs(t, closeOwner(ctx), context.DeadlineExceeded)
+			require.ErrorIs(t, closeOwner(ctx), context.DeadlineExceeded)
+			mock.ExpectPing()
+			require.NoError(t, db.PingContext(t.Context()))
+			mock.ExpectClose()
+			close(cleaner.done)
+			// No retry of Close is needed to release the pool.
+			require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, 5*time.Second, time.Millisecond)
+			require.NoError(t, closeOwner(t.Context()))
+			require.ErrorContains(t, db.PingContext(t.Context()), "database is closed")
+		})
+	}
 }
 
 func TestChangelogCleaner_NoEligibleRows_NoDelete(t *testing.T) {
@@ -614,6 +638,7 @@ func TestChangelogCleaner_ConstructorCancelled_OwnerKeepsRunning(t *testing.T) {
 				defer timer.Stop()
 				<-timer.C
 				synctest.Wait()
+				require.NoError(t, closeOwner(t.Context()))
 				require.NoError(t, closeOwner(t.Context()))
 				synctest.Wait()
 				select {

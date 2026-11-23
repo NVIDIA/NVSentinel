@@ -28,7 +28,9 @@ The pool owner starts the cleaner. Constructor context cancellation does not sto
 
 ## Run the integration tests
 
-Use a disposable PostgreSQL 16 database. Set `NVSENTINEL_TEST_POSTGRES_DSN` through the process environment. Keep passwords out of command histories, files, and logs.
+Use a separate disposable PostgreSQL 16 database for each concurrent invocation. The cleaner advisory lock applies to the entire database, including runs in different schemas. The database must have no NVSentinel tables in `public`: `changelog_cleanup_state`, `datastore_changelog`, or `resume_tokens`. The suite checks this requirement before schema creation. The fixture keeps `public` in its search path for extension functions used by production table setup.
+
+Set `NVSENTINEL_TEST_POSTGRES_DSN` through the process environment. Keep passwords out of command histories, files, and logs.
 
 ```bash
 cd store-client

@@ -30,6 +30,7 @@ import (
 )
 
 // NVSENTINEL_TEST_POSTGRES_DSN must point to a disposable PostgreSQL database.
+// Each concurrent invocation needs its own database because advisory locks are database-wide.
 // Each invocation owns a unique schema and never drops existing application tables.
 func TestChangelogCleaner_Integration_Safety(t *testing.T) {
 	dsn := os.Getenv("NVSENTINEL_TEST_POSTGRES_DSN")
@@ -44,6 +45,13 @@ func TestChangelogCleaner_Integration_Safety(t *testing.T) {
 	admin, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
 	defer admin.Close()
+	var publicTables bool
+	require.NoError(t, admin.QueryRowContext(t.Context(), `SELECT
+ to_regclass('public.changelog_cleanup_state') IS NOT NULL OR
+ to_regclass('public.datastore_changelog') IS NOT NULL OR
+ to_regclass('public.resume_tokens') IS NOT NULL`).Scan(&publicTables))
+	require.False(t, publicTables, "use a fresh disposable database: public contains NVSentinel tables (changelog_cleanup_state, datastore_changelog, or resume_tokens)")
+	// Keep public in search_path: createTables uses uuid-ossp functions that can live there.
 	schema := fmt.Sprintf("cleaner_%d", time.Now().UnixNano())
 	_, err = admin.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema))
 	require.NoError(t, err)
@@ -80,7 +88,15 @@ func TestChangelogCleaner_Integration_Safety(t *testing.T) {
 		t.Helper()
 		exec(t, `INSERT INTO resume_tokens(client_name,resume_token) VALUES ('consumer',$1) ON CONFLICT(client_name) DO UPDATE SET resume_token=excluded.resume_token`, raw)
 	}
-	seed := func(t *testing.T) { n, err := cleaner.run(ctx); require.NoError(t, err); require.Zero(t, n) }
+	seed := func(t *testing.T) {
+		t.Helper()
+		n, err := cleaner.run(ctx)
+		require.NoError(t, err)
+		require.Zero(t, n)
+		var seeded bool
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM changelog_cleanup_state WHERE singleton)`).Scan(&seeded))
+		require.True(t, seeded, "cleaner did not seed the guard; use a separate disposable database for each concurrent invocation")
+	}
 	mature := func(t *testing.T) {
 		exec(t, `UPDATE changelog_cleanup_state SET observed_at=clock_timestamp()-interval '2 hours'`)
 	}

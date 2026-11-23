@@ -15,7 +15,10 @@
 package factory
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,8 +44,12 @@ func TestClientFactory_CleanupOwnsPool_NoSetupDDL(t *testing.T) {
 		}
 		return err
 	})
-	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true), sqlmock.QueryMatcherOption(matcher))
+	const mockDSN = "factory-cleanup-no-ddl"
+	mockDB, mock, err := sqlmock.NewWithDSN(mockDSN, sqlmock.MonitorPingsOption(true), sqlmock.QueryMatcherOption(matcher))
 	require.NoError(t, err)
+	defer mockDB.Close()
+	var execAttempts atomic.Int64
+	db := sql.OpenDB(&cleanupTestConnector{base: mockDB.Driver(), dsn: mockDSN, execAttempts: &execAttempts})
 	defer db.Close()
 	mock.ExpectPing()
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
@@ -58,4 +65,42 @@ func TestClientFactory_CleanupOwnsPool_NoSetupDDL(t *testing.T) {
 	}
 	require.NoError(t, c.Close(t.Context()))
 	require.NoError(t, mock.ExpectationsWereMet())
+	require.Zero(t, execAttempts.Load(), "factory must not attempt setup DDL")
+}
+
+// Wrap the driver because sqlmock can reject an unexpected Exec that production logs and ignores.
+type cleanupTestConnector struct {
+	base         driver.Driver
+	dsn          string
+	execAttempts *atomic.Int64
+}
+
+func (c *cleanupTestConnector) Connect(_ context.Context) (driver.Conn, error) {
+	conn, err := c.base.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cleanupTestConn{
+		Conn:           conn,
+		ExecerContext:  conn.(driver.ExecerContext),
+		QueryerContext: conn.(driver.QueryerContext),
+		Pinger:         conn.(driver.Pinger),
+		execAttempts:   c.execAttempts,
+	}, nil
+}
+
+func (c *cleanupTestConnector) Driver() driver.Driver { return c.base }
+
+type cleanupTestConn struct {
+	driver.Conn
+	driver.ExecerContext
+	driver.QueryerContext
+	driver.Pinger
+	execAttempts *atomic.Int64
+}
+
+func (c *cleanupTestConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.execAttempts.Add(1)
+	return c.ExecerContext.ExecContext(ctx, query, args)
 }

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -82,10 +83,13 @@ const cleanupNextTableQuery = `SELECT table_name FROM (
 var errCleanupGuard = errors.New("cleanup horizon outside safe xid window")
 
 type changelogCleaner struct {
-	db     *sql.DB
-	config cleanupConfig
-	cancel context.CancelFunc
-	done   chan struct{}
+	db            *sql.DB
+	config        cleanupConfig
+	cancel        context.CancelFunc
+	done          chan struct{}
+	poolCloseOnce sync.Once
+	poolCloseDone chan struct{}
+	poolCloseErr  error
 }
 
 func startChangelogCleaner(ctx context.Context, db *sql.DB, options map[string]string) *changelogCleaner {
@@ -133,6 +137,34 @@ func (c *changelogCleaner) stop(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("waiting for changelog cleaner: %w", ctx.Err())
+	}
+}
+
+// closePool releases the owned pool after the cleaner exits, even if the caller stops waiting.
+func (c *changelogCleaner) closePool(ctx context.Context, db *sql.DB) error {
+	if c == nil {
+		return db.Close()
+	}
+
+	waitErr := c.stop(ctx)
+	c.poolCloseOnce.Do(func() {
+		c.poolCloseDone = make(chan struct{})
+		go func() {
+			<-c.done
+			c.poolCloseErr = db.Close()
+			close(c.poolCloseDone)
+		}()
+	})
+
+	if waitErr != nil {
+		return waitErr
+	}
+
+	select {
+	case <-c.poolCloseDone:
+		return c.poolCloseErr
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for PostgreSQL pool close: %w", ctx.Err())
 	}
 }
 

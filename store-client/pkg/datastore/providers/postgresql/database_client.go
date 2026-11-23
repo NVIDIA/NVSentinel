@@ -1060,11 +1060,7 @@ func (c *PostgreSQLDatabaseClient) Close(ctx context.Context) error {
 		return nil
 	}
 
-	if err := c.cleaner.stop(ctx); err != nil {
-		return err
-	}
-
-	return c.db.Close()
+	return c.cleaner.closePool(ctx, c.db)
 }
 
 // resetToHeadPositionQuery saves a start pair at the database clock with no margin. A new

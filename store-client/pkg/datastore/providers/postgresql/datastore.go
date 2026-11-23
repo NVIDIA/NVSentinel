@@ -163,11 +163,7 @@ func (p *PostgreSQLDataStore) Ping(ctx context.Context) error {
 
 // Close closes the database connection
 func (p *PostgreSQLDataStore) Close(ctx context.Context) error {
-	if err := p.cleaner.stop(ctx); err != nil {
-		return err
-	}
-
-	return p.db.Close()
+	return p.cleaner.closePool(ctx, p.db)
 }
 
 // Provider returns the provider type
