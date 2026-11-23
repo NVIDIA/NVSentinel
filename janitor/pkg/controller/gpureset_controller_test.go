@@ -3117,6 +3117,7 @@ var _ = Describe("GPUReset Controller", func() {
 			observed = append(observed, reconcileUntil(v1alpha1.Complete)...)
 
 			done := getReset()
+			Expect(getConditionReason(v1alpha1.ManualMode)).To(Equal(string(v1alpha1.ReasonManualModeDisabled)))
 			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonNodeInService)))
 			Expect(done.Status.Phase).To(Equal(v1alpha1.ResetFailed))
 			expectOutcome(&done, metav1.ConditionFalse, v1alpha1.ReasonNodeInService)

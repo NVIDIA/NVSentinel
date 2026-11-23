@@ -127,7 +127,7 @@ When `true`, the RebootNode and TerminateNode controllers do not call the Janito
 
 A GPUReset waits before it stops any service, with a `ManualMode` condition whose reason is `OutsideActorRequired`. It changes no node label and creates no reset Job. When manual mode is turned off and janitor restarts, the GPUReset continues with a new start time, so the time it waited does not count against the timeout. A GPUReset that had already started stopping services when manual mode was turned on finishes normally.
 
-A request that waits in manual mode is not deleted when its node is uncordoned. Delete the waiting `RebootNode`, `TerminateNode` and `GPUReset` resources before you turn manual mode off or disable a controller. The webhook rejects the delete while the controller of the kind is disabled, and with manual mode off the controller runs every request that is still waiting.
+A request that waits in manual mode is not deleted when its node is uncordoned. Delete the waiting `RebootNode`, `TerminateNode` and `GPUReset` resources before you turn manual mode off or disable a controller. The webhook rejects the delete while the controller of the kind is disabled, and with manual mode off the controller runs every request that is still waiting, unless the check in [Require Node Out of Service](#require-node-out-of-service) refuses it.
 
 ## Require Node Out of Service
 
