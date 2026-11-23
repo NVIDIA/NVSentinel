@@ -177,15 +177,32 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
+	// The published contract aligns each relationship list with metadata.GPUs, so
+	// NICTopology[nic][i] describes GPUs[i]. Project by label: a skipped GPU's
+	// column is left out and every other entry keeps its own GPU.
 	metadata.NICTopology = make(map[string][]string, len(matrix.NICs))
 	for _, name := range matrix.NICs {
-		metadata.NICTopology[name] = matrix.Relationships[name]
+		metadata.NICTopology[name] = projectRelationships(matrix.Relationships[name], metadata, columns)
 	}
 
 	slog.Info("Populated NIC topology matrix",
 		"gpus", len(matrix.GPUs),
 		"nics", len(matrix.NICs),
 	)
+}
+
+// projectRelationships returns one NIC's relationship levels in metadata.GPUs
+// order, taking each GPU's entry from its labeled matrix column.
+func projectRelationships(levels []string, metadata *model.GPUMetadata, columns map[int]int) []string {
+	projected := make([]string, len(metadata.GPUs))
+
+	for i, gpu := range metadata.GPUs {
+		if col, ok := columns[gpu.GPUID]; ok && col < len(levels) {
+			projected[i] = levels[col]
+		}
+	}
+
+	return projected
 }
 
 // populateGPUNUMANodes copies each GPU's NUMA Affinity value from the

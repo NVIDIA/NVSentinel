@@ -340,7 +340,7 @@ func TestCollect_GPUIdentityFailures_KeepsHealthyGPUs(t *testing.T) {
 				GPUs:          []string{"GPU0", "GPU1", "GPU2", "GPU3"},
 				GPUNUMANodes:  []int{0, 1, 2, 3},
 				NICs:          []string{"mlx5_0"},
-				Relationships: map[string][]string{"mlx5_0": {"PIX", "SYS", "SYS", "SYS"}},
+				Relationships: map[string][]string{"mlx5_0": {"PIX", "PXB", "NODE", "SYS"}},
 			}}
 
 			metadata, err := NewCollector(fake, topo, WithSkippedGPUCounter(counter)).Collect(t.Context())
@@ -371,7 +371,13 @@ func TestCollect_GPUIdentityFailures_KeepsHealthyGPUs(t *testing.T) {
 
 			// A skipped GPU keeps its matrix column, so the NIC relationships stay intact
 			// and each surviving GPU gets the NUMA value of its own labeled column.
-			assert.Equal(t, topo.matrix.Relationships, written.NICTopology)
+			// Each relationship list is aligned with written.GPUs, per the shared model.
+			levels := topo.matrix.Relationships["mlx5_0"]
+			want := make([]string, 0, len(tc.wantIDs))
+			for _, id := range tc.wantIDs {
+				want = append(want, levels[id])
+			}
+			assert.Equal(t, map[string][]string{"mlx5_0": want}, written.NICTopology)
 
 			for _, gpu := range written.GPUs {
 				assert.Equal(t, gpu.GPUID, gpu.NUMANode)
