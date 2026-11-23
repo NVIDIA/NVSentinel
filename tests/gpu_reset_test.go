@@ -172,7 +172,7 @@ func TestGPUReset(t *testing.T) {
 		if err != nil || !found {
 			assert.Fail(t, "failed to find status conditions field in CR", gpuReset.GetName(), err)
 		}
-		var foundCompleteCondition bool
+		var foundCompleteCondition, foundSucceededCondition bool
 		for _, c := range conditions {
 			condMap := c.(map[string]interface{})
 
@@ -181,8 +181,15 @@ func TestGPUReset(t *testing.T) {
 				assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
 				assert.Equal(t, "True", condMap["status"].(string))
 			}
+
+			if condMap["type"].(string) == "Succeeded" {
+				foundSucceededCondition = true
+				assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
+				assert.Equal(t, "True", condMap["status"].(string))
+			}
 		}
 		assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+		assert.True(t, foundSucceededCondition, "Did not find Succeeded condition on CR", gpuReset.GetName())
 
 		// We explicitly set writeSysLogEvent to false in values-tilt.yaml to test that the Helm chart values
 		// propagate to the WRITE_SYSLOG_EVENT environment variable. Note that if the value isn't set in the Janitor
@@ -365,7 +372,7 @@ func TestGPUResetScale(t *testing.T) {
 				if err != nil || !found {
 					assert.Fail(t, "failed to find status conditions field in CR", gpuReset.GetName(), err)
 				}
-				var foundCompleteCondition bool
+				var foundCompleteCondition, foundSucceededCondition bool
 				for _, c := range conditions {
 					condMap := c.(map[string]interface{})
 
@@ -374,8 +381,15 @@ func TestGPUResetScale(t *testing.T) {
 						assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
 						assert.Equal(t, "True", condMap["status"].(string))
 					}
+
+					if condMap["type"].(string) == "Succeeded" {
+						foundSucceededCondition = true
+						assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
+						assert.Equal(t, "True", condMap["status"].(string))
+					}
 				}
 				assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+				assert.True(t, foundSucceededCondition, "Did not find Succeeded condition on CR", gpuReset.GetName())
 
 				if skipControllerFinalizer {
 					err := retry.RetryOnConflict(helpers.ConflictBackoff, func() error {

@@ -53,20 +53,14 @@ mode = "Immediate"
 
 1. Quarantine module cordons node
 2. Node drainer receives fatal health event
-3. For each pod in matching namespaces:
-   a. Call Kubernetes eviction API
-   b. Wait up to evictionTimeoutInSeconds
-   c. If pod still exists, force delete
+3. For each pod in matching namespaces: a. Call Kubernetes eviction API b. Wait up to evictionTimeoutInSeconds c. If pod still exists, force delete
 4. Mark node drain as successful
 
 ### AllowCompletion Mode
 
 1. Quarantine module cordons node
 2. Node drainer receives fatal health event  
-3. For each pod in matching namespaces:
-   a. Monitor pod status
-   b. Wait for pod to reach Completed status
-   c. Delete completed pod
+3. For each pod in matching namespaces: a. Monitor pod status b. Wait for pod to reach Completed status c. Delete completed pod
 4. Wait indefinitely (no timeout)
 5. Mark node drain as successful when all pods removed
 

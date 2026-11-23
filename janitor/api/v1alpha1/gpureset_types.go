@@ -44,7 +44,14 @@ const (
 	ResetJobCompleted GPUResetConditionType = "ResetJobCompleted"
 	ServicesRestored  GPUResetConditionType = "ServicesRestored"
 	Terminating       GPUResetConditionType = "Terminating"
-	Complete          GPUResetConditionType = "Complete"
+	// Complete is True once the controller has finished with the GPUReset, whatever the outcome.
+	Complete GPUResetConditionType = "Complete"
+	// Succeeded is the outcome of a GPUReset that has finished: True when the reset was successful,
+	// False with the failure reason when the reset failed. It is absent while the reset is in progress.
+	// True does not mean that the services were restored: the controller skips the restoration when
+	// the node is gone or when it stopped no service. A remediation that has to know whether the reset
+	// worked reads this condition, not Complete.
+	Succeeded GPUResetConditionType = "Succeeded"
 	// ManualMode is true while the GPUReset waits because janitor runs in manual mode.
 	ManualMode GPUResetConditionType = "ManualMode"
 )

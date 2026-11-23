@@ -1,45 +1,35 @@
 # Tutorial: Writing a New Health Monitor
 
-This tutorial walks you through building a brand-new **health monitor**
-from an empty directory to a deployed, fault-reporting component — without
-needing any GPU hardware.
+This tutorial shows how to build a new **health monitor**. It starts with an empty directory and ends with a deployed component that reports faults. You do not need GPU hardware.
 
-By the end you will have:
+When you complete this tutorial, you have:
 
 - A working Go health monitor that detects a fault and reports it to NVSentinel.
-- A container image for it, deployed to a live cluster as a DaemonSet.
-- Verification that NVSentinel sees the fault (it surfaces as a Kubernetes node condition).
+- A container image for the monitor, which you deploy to a live cluster as a DaemonSet.
+- A verification that NVSentinel sees the fault. The fault shows as a Kubernetes node condition.
 
-> **Who is this for?** Teams **already running NVSentinel** who want to extend it with a new
-> fault detector.
+> **Who is this for?** Teams that **already run NVSentinel** and want to extend it with a new fault detector.
 
-> **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
+> **Do you want an AI agent to do it?** Go to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
 ## Prerequisites
 
 - **Tools:** `docker` and `kubectl`.
-- **A cluster with NVSentinel running.** Verification needs NVSentinel already running — at minimum
-  `platform-connectors` (it sets the node condition this tutorial verifies). See
-  [`DEVELOPMENT.md`](../../DEVELOPMENT.md) if you need to bring a cluster up locally, and confirm the
-  core pods are green with `kubectl get pods -n nvsentinel` *before* verifying — otherwise a failed
-  verification just means an unhealthy cluster, not a broken monitor.
+- **A cluster with NVSentinel running.** The verification needs a running NVSentinel. At minimum, `platform-connectors` must run, because it sets the node condition that this tutorial verifies. To create a local cluster, see `DEVELOPMENT.md` in the root of the NVSentinel repository. *Before* you verify the monitor, use `kubectl get pods -n nvsentinel` to make sure that the core pods are healthy. Otherwise, a failed verification can come from an unhealthy cluster, not from a broken monitor.
 
 ---
 
 ## 1. What is a health monitor
 
-NVSentinel detects faults on cluster nodes and remediates them (cordon → drain →
-break-fix). The thing that *detects* a fault is a **health monitor**.
+NVSentinel detects faults on cluster nodes and remediates them (cordon → drain → remediation). The component that *detects* a fault is a **health monitor**.
 
-A health monitor is just a standalone process that:
+A health monitor is a standalone process that:
 
-1. Observes something (GPU via DCGM, kernel logs, a cloud API, a file in `/proc`, …).
-2. Decides whether a node/component is healthy or not.
-3. Sends a **`HealthEvent`** to the **platform-connector** over a local **gRPC Unix
-   domain socket**.
+1. Observes a source, for example a GPU through DCGM, kernel logs, a cloud API or a file in `/proc`.
+2. Decides whether a node or a component is healthy.
+3. Sends a **`HealthEvent`** to the **platform-connector** over a local **gRPC Unix domain socket**.
 
-The platform-connector turns fatal events into Kubernetes **node conditions** — and that's
-where this tutorial ends. **Your monitor only has to detect and report.**
+The platform-connector changes fatal health events into Kubernetes **node conditions**. This tutorial ends at that point. **Your monitor needs only to detect and report.**
 
 ```mermaid
 graph LR
@@ -47,20 +37,19 @@ graph LR
     PC -->|"node condition<br/>(fatal events)"| K8S["Kubernetes"]
 ```
 
-Key consequences of this design:
+This design has these results:
 
-- Your monitor **never talks to the Kubernetes API** to cordon/drain. It only emits events.
-- The transport is a **Unix socket on the node**, shared via a `hostPath` volume.
-- The contract is a single gRPC method and a single message type. That's all you implement.
+- Your monitor **never talks to the Kubernetes API** to cordon or drain a node. It only sends health events.
+- The transport is a **Unix socket on the node**, which a `hostPath` volume shares with the monitor pod.
+- The contract is a single gRPC method and a single message type. That is all that you implement.
 
 ---
 
 ## 2. The contract (the only API you must speak)
 
-The contract lives in [`data-models/protobufs/health_event.proto`](../../data-models/protobufs/health_event.proto).
-Go types are generated into the package `github.com/nvidia/nvsentinel/data-models/pkg/protos`.
+The contract is in `data-models/protobufs/health_event.proto`. The [HealthEvent Data Model Reference](../health-event-data-model.md) describes each field. The generated Go types are in the package `github.com/nvidia/nvsentinel/data-models/pkg/protos`.
 
-There is exactly **one RPC**:
+The contract has exactly **one RPC**:
 
 ```protobuf
 service PlatformConnector {
@@ -73,29 +62,29 @@ message HealthEvents {
 }
 ```
 
-You send a batch (`HealthEvents`) containing one or more `HealthEvent`s.
+You send a batch (`HealthEvents`) that contains one or more `HealthEvent` messages.
 
 ### The `HealthEvent` message
 
 | Field | Type | Required? | Notes |
 |-------|------|-----------|-------|
 | `version` | uint32 | yes | Set to `1`. |
-| `agent` | string | yes | Your monitor's name, e.g. `"demo-health-monitor"`. Downstream consumers match on this. |
-| `componentClass` | string | yes | Logical component, e.g. `"GPU"`, `"NIC"`, `"Node"`. |
-| `checkName` | string | yes | The specific check, e.g. `"NetworkReachability"`. |
-| `isHealthy` | bool | yes | `true` = recovery/clear; `false` = a fault. |
-| `isFatal` | bool | yes | `true` = serious fault (surfaces as a node condition); `false` = informational (becomes a Kubernetes Event). |
-| `message` | string | recommended | The raw error/diagnostic message as reported by the source (e.g. the hardware, DCGM, syslog). |
-| `nodeName` | string | yes (node faults) | The affected node. Usually from the `NODE_NAME` env (downward API). |
+| `agent` | string | yes | The name of your monitor, for example `"demo-health-monitor"`. Downstream consumers match on this field. |
+| `componentClass` | string | yes | The logical component, for example `"GPU"`, `"NIC"` or `"Node"`. |
+| `checkName` | string | yes | The specific check, for example `"NetworkReachability"`. |
+| `isHealthy` | bool | yes | `true` means a recovery or a clear. `false` means a fault. |
+| `isFatal` | bool | yes | `true` means a serious fault, which shows as a node condition. `false` means an informational health event, which becomes a Kubernetes Event. |
+| `message` | string | recommended | The raw error or diagnostic message from the source, for example the hardware, DCGM or syslog. |
+| `nodeName` | string | yes (node faults) | The affected node. Usually from the `NODE_NAME` environment variable (downward API). |
 | `recommendedAction` | enum | recommended | See the `RecommendedAction` table below. Use `NONE` for healthy events. |
-| `customRecommendedAction` | string | optional | Used with `recommendedAction = CUSTOM` to name a custom remediation action. |
+| `customRecommendedAction` | string | optional | With `recommendedAction = CUSTOM`, the name of a custom remediation action. |
 | `generatedTimestamp` | Timestamp | yes | `timestamppb.Now()`. |
 | `processingStrategy` | enum | yes | `EXECUTE_REMEDIATION` (act on it) or `STORE_ONLY` (observe only). |
-| `entitiesImpacted` | repeated Entity | optional | Sub-components affected, e.g. `{entityType:"GPU", entityValue:"3"}`. |
-| `errorCode` | repeated string | optional | Vendor/error codes. |
-| `metadata` | map<string,string> | optional | Free-form key/values. |
+| `entitiesImpacted` | repeated Entity | optional | The affected subcomponents, for example `{entityType:"GPU", entityValue:"3"}`. |
+| `errorCode` | repeated string | optional | Vendor codes or error codes. |
+| `metadata` | map<string,string> | optional | Free-form key-value pairs. |
 
-The two enums you care about:
+These two enums are important for your monitor:
 
 ```protobuf
 enum ProcessingStrategy {
@@ -105,12 +94,11 @@ enum ProcessingStrategy {
 }
 ```
 
-`RecommendedAction` values (from
-[`data-models/protobufs/health_event.proto`](../../data-models/protobufs/health_event.proto)):
+The `RecommendedAction` values come from `data-models/protobufs/health_event.proto`. Also see [RecommendedAction Enum](../health-event-data-model.md#recommendedaction-enum).
 
 | Value | Meaning |
 |-------|---------|
-| `NONE` (0) | No action (use for healthy/recovery events). |
+| `NONE` (0) | No action. Use it for healthy events. |
 | `COMPONENT_RESET` (2) | Reset the component. |
 | `CONTACT_SUPPORT` (5) | Escalate to support. |
 | `RUN_FIELDDIAG` (6) | Run field diagnostics. |
@@ -118,39 +106,28 @@ enum ProcessingStrategy {
 | `RESTART_BM` (24) | Restart the bare-metal host. |
 | `REPLACE_VM` (25) | Replace the VM. |
 | `RUN_DCGMEUD` (26) | Run DCGM EUD. |
-| `CUSTOM` (27) | Custom action; set `customRecommendedAction` to its name. |
+| `CUSTOM` (27) | Custom action. Set `customRecommendedAction` to its name. |
 | `UNKNOWN` (99) | Unknown. |
 
 ### The golden rules
 
-1. **`agent` is your identity.** Downstream consumers match on it, so pick a stable, unique name.
-2. **Prefer emitting on state transitions, not every poll.** Send an unhealthy event when a
-   fault appears and a healthy event when it clears. This is a best-effort optimization to cut
-   noise, not a correctness requirement — repeated events are deduped, so re-sending the same
-   state is safe.
-3. **A healthy event clears the node condition.** Send `isHealthy=true`,
-   `recommendedAction=NONE` when things recover.
-4. **`isFatal=true` is what triggers action.** Fatal events surface as a Kubernetes node
-   condition; non-fatal events become Kubernetes Events instead.
+1. **`agent` is your identity.** Downstream consumers match on it, so select a stable, unique name.
+2. **Prefer to send health events on state transitions, not on every poll.** When a fault appears, send an unhealthy event. When the fault clears, send a healthy event. This rule is a best-effort optimization that decreases noise. It is not a correctness requirement. NVSentinel deduplicates repeated health events, so it is safe to send the same state again.
+3. **A healthy event clears the node condition.** When the component recovers, send `isHealthy=true` and `recommendedAction=NONE`.
+4. **`isFatal=true` is what triggers action.** A fatal health event shows as a Kubernetes node condition. A non-fatal health event becomes a Kubernetes Event instead.
 
 ---
 
 ## 3. Choose your workload model
 
-A monitor can observe almost anything — node-local state (`/proc`, `/sys`, GPUs, logs), the
-Kubernetes API, or an external service. That choice only affects the **Kubernetes workload
-type**:
+A monitor can observe almost any source: node-local state (`/proc`, `/sys`, GPUs, logs), the Kubernetes API or an external service. This choice affects only the **Kubernetes workload type**:
 
-- **DaemonSet** (one pod per node) — for node-local state; each pod reports its own node.
-- **Deployment** (single replica) — for a single cluster-wide source (the K8s API or an
-  external API); it sets `nodeName` from the observed entity instead of from `NODE_NAME`.
+- **DaemonSet** (one pod on each node) — for node-local state. Each pod reports its own node.
+- **Deployment** (single replica) — for a single cluster-wide source, such as the Kubernetes API or an external API. The monitor sets `nodeName` from the observed entity, not from `NODE_NAME`.
 
-The publishing path is identical either way. This tutorial builds a **DaemonSet**, the most
-common shape.
+The publishing path is the same for both workload types. This tutorial builds a **DaemonSet**, which is the most common type.
 
-Our worked example is a **`demo-health-monitor`** that periodically opens a TCP connection to a
-configurable endpoint (`CHECK_TARGET`) the node depends on. It reports the node unhealthy when
-the endpoint is unreachable and healthy again once it recovers.
+The example in this tutorial is a **`demo-health-monitor`**. It periodically opens a TCP connection to a configurable endpoint (`CHECK_TARGET`) that the node depends on. If the endpoint is unreachable, the monitor reports the node as unhealthy. When the endpoint recovers, the monitor reports the node as healthy again.
 
 ---
 
@@ -158,24 +135,19 @@ the endpoint is unreachable and healthy again once it recovers.
 
 Your monitor is an ordinary, standalone Go module. It depends on two NVSentinel Go modules:
 
-- `github.com/nvidia/nvsentinel/data-models` — the event contract (the `HealthEvent` types).
-- `github.com/nvidia/nvsentinel/commons` — the shared publisher (`commons/pkg/healthpub`), which
-  adds socket-presence gating, retries, and Prometheus metrics over the raw gRPC client.
+- `github.com/nvidia/nvsentinel/data-models` — the health event contract (the `HealthEvent` types).
+- `github.com/nvidia/nvsentinel/commons` — the shared publisher (`commons/pkg/healthpub`), which adds socket-presence gating, retries and Prometheus metrics to the raw gRPC client.
 
-Create the module (any module path works):
+Create the module. You can use any module path:
 
 ```bash
 mkdir demo-health-monitor && cd demo-health-monitor
 go mod init github.com/{your-org}/demo-health-monitor
 ```
 
-Add the two dependencies. They live in subdirectories of the NVSentinel repo and aren't
-published as tagged releases, so they resolve to commit pseudo-versions. Inside the repo those
-subdirectories refer to each other through **local `replace` directives at the placeholder
-version `v0.0.0`**, which no proxy can resolve — so from outside the repo you have to redirect
-every placeholder to a real version yourself. `commons` has two of them: `data-models` (which
-you import) and `store-client` (which you don't). Redirect both, and pin them to the **same
-commit** so the build is reproducible:
+Add the two dependencies. They are in subdirectories of the NVSentinel repository, and the NVSentinel project does not publish them as tagged releases. As a result, they resolve to commit pseudo-versions.
+
+Inside the repository, these subdirectories refer to each other through **local `replace` directives at the placeholder version `v0.0.0`**. No proxy can resolve this version. As a result, outside the repository you must redirect each placeholder to a real version yourself. `commons` has two placeholders: `data-models` (which you import) and `store-client` (which you do not import). Redirect both, and pin them to the **same commit**, so that the build is reproducible:
 
 ```bash
 export GOTOOLCHAIN=auto   # the modules need Go 1.27+; this fetches it automatically
@@ -200,15 +172,19 @@ go mod edit \
 go get github.com/nvidia/nvsentinel/commons@"$PIN"
 ```
 
-Record `$PIN` (a pseudo-version like `v0.0.0-20260916061712-4f3d7f93dae1`) alongside your
-`go.mod`: re-running with `NVS_REF=<that SHA>` reproduces exactly this dependency set.
+Record `$PIN` (a pseudo-version such as `v0.0.0-20260916061712-4f3d7f93dae1`) together with your `go.mod`. If you run the commands again with `NVS_REF=<that SHA>`, you get exactly this dependency set.
 
 ---
 
 ## 5. Write the monitor
 
-Create `main.go`. The structure is: parse config from env → dial the socket → poll →
-build an event on each state change → publish it through the shared `healthpub` publisher.
+Create `main.go`. The program does these steps:
+
+1. It parses the configuration from the environment.
+2. It dials the socket.
+3. It polls the endpoint.
+4. It builds a health event on each state change.
+5. It publishes the health event through the shared `healthpub` publisher.
 
 ```go
 package main
@@ -395,7 +371,7 @@ func envOrDefault(key, fallback string) string {
 }
 ```
 
-Tidy, build, and check that the dependency set is actually sound:
+Tidy and build the module. Then make sure that the dependency set is sound:
 
 ```bash
 go mod tidy
@@ -405,26 +381,17 @@ go mod verify    # every downloaded module matches its recorded checksum
 go list -m all   # the FULL module graph resolves, not just what you import
 ```
 
-`go list -m all` is the one that catches the placeholder problem: with the `store-client`
-replace missing it fails with `github.com/nvidia/nvsentinel/store-client@v0.0.0: invalid
-version: unknown revision store-client/v0.0.0` even though `go build` succeeded. With both
-replaces in place it prints the whole graph (~150 modules) and exits 0.
+`go list -m all` is the command that finds the placeholder problem. If the `store-client` replace is missing, the command fails with `github.com/nvidia/nvsentinel/store-client@v0.0.0: invalid version: unknown revision store-client/v0.0.0`. It fails even when `go build` succeeds. With both replaces in place, the command prints the full graph (approximately 150 modules) and exits 0.
 
-> **On tests:** this monitor ships no test files, so `go test ./...` prints
-> `[no test files]` and exits 0 — a green exit code here proves nothing. `checkReachable`
-> and `buildEvent` are both pure enough to unit-test directly; write those tests before you
-> treat the monitor as production code.
+> **On tests:** This monitor has no test files, so `go test ./...` prints `[no test files]` and exits 0. Here, a successful exit code proves nothing. `checkReachable` and `buildEvent` are both pure enough for direct unit tests. Before you use the monitor as production code, write those tests.
 
-That's a complete, contract-correct health monitor. Everything else is packaging,
-deployment, and hardening.
+This code is a complete health monitor that obeys the contract. The remaining work is to package, deploy and harden the monitor.
 
 ---
 
 ## 6. Containerize
 
-Package the monitor as a container image with a small multi-stage `Dockerfile` in the monitor
-directory. Because dependencies are fetched from the module proxy (not local paths), the build
-context is just the monitor directory itself:
+Package the monitor as a container image with a small multi-stage `Dockerfile` in the monitor directory. The build gets the dependencies from the module proxy, not from local paths. As a result, the build context is only the monitor directory:
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/golang:1.27.3-trixie AS builder
@@ -443,12 +410,9 @@ COPY --from=builder /src/demo-health-monitor /demo-health-monitor
 ENTRYPOINT ["/demo-health-monitor"]
 ```
 
-Build the image and push it to a registry your cluster can pull from. We use Docker Hub
-here — replace `{dockerhub-user}` with your Docker Hub username. Run from the monitor directory:
+Build the image. Then push it to a registry that your cluster can pull from. This example uses Docker Hub, so replace `{dockerhub-user}` with your Docker Hub username. Run these commands in the `demo-health-monitor` directory:
 
 ```bash
-cd demo-health-monitor
-
 docker login     # once, to authenticate to Docker Hub
 
 docker build -t docker.io/{dockerhub-user}/demo-health-monitor:dev .
@@ -457,21 +421,17 @@ docker build -t docker.io/{dockerhub-user}/demo-health-monitor:dev .
 docker push docker.io/{dockerhub-user}/demo-health-monitor:dev
 ```
 
-> If you use a **private** repository, make sure the cluster has the required image pull
-> credentials (e.g. an `imagePullSecret` in the `nvsentinel` namespace, referenced from the
-> DaemonSet's `spec.template.spec.imagePullSecrets`). A public repository needs none.
+> If you use a **private** repository, make sure that the cluster has the necessary image pull credentials. For example, use an `imagePullSecret` in the `nvsentinel` namespace that the DaemonSet refers to in `spec.template.spec.imagePullSecrets`. A public repository needs no credentials.
 
 ---
 
 ## 7. Run and verify
 
-Deploy the image as a DaemonSet, then trigger a fault and watch it flow through the pipeline.
-(Needs the [Prerequisites](#prerequisites).)
+Deploy the image as a DaemonSet. Then cause a fault. Watch the fault move through the pipeline. This section needs the [Prerequisites](#prerequisites).
 
-**Apply the DaemonSet.** We start `CHECK_TARGET` at a guaranteed-unreachable, reserved
-[TEST-NET](https://www.rfc-editor.org/rfc/rfc5737) address so the monitor reports a fault right
-away — then we'll point it at a reachable endpoint to clear it. It mounts the platform-connector
-socket (`hostPath` `/var/run/nvsentinel` → `/var/run`) and sets `NODE_NAME` via the downward API:
+> **Safety:** The DaemonSet runs a monitor pod on each node. At first, each pod sends a fatal health event with the `EXECUTE_REMEDIATION` strategy. The default fault-quarantine rules do not match the agent `demo-health-monitor`. If a rule in your release matches these health events, fault-quarantine cordons each node that runs a monitor pod. If node-drainer is also enabled, it drains these nodes with its configured eviction modes. Before you apply the DaemonSet, make sure that no fault-quarantine rule matches these health events, or use a test cluster.
+
+**Apply the DaemonSet.** At first, `CHECK_TARGET` is a reserved TEST-NET address (RFC 5737) that is always unreachable, so the monitor reports a fault immediately. Later, you set `CHECK_TARGET` to a reachable endpoint to clear the fault. The DaemonSet mounts the platform-connector socket (`hostPath` `/var/run/nvsentinel` → `/var/run`). It also sets `NODE_NAME` through the downward API:
 
 ```bash
 kubectl apply -f - <<'YAML'
@@ -529,15 +489,9 @@ spec:
 YAML
 ```
 
-> **The token is not optional.** platform-connector runs a `TokenReview` on every publisher
-> and pins it to the node its pod runs on, so a monitor that presents nothing has its events
-> rejected and nothing downstream ever happens. The `audience` must match
-> `global.platformConnectorAuth.audience` in the chart (the default is shown above). A
-> monitor that reports on nodes *other* than its own — a Deployment watching a cloud API,
-> say — additionally needs its ServiceAccount listed in
-> `global.platformConnectorAuth.crossNodeServiceAccounts`.
+> **The token is not optional.** platform-connector runs a `TokenReview` on each publisher and pins the publisher to the node where its pod runs. If a monitor presents no token, platform-connector rejects its health events, and no downstream action occurs. The `audience` must match the Helm value `global.platformConnectorAuth.audience`. The manifest above uses the default value. A monitor that reports on nodes *other* than its own node must also have its ServiceAccount in `global.platformConnectorAuth.crossNodeServiceAccounts`. An example of such a monitor is a Deployment that watches a cloud API.
 
-Confirm the pods are up:
+Confirm that the pods run:
 
 ```bash
 kubectl rollout status ds/demo-health-monitor -n nvsentinel
@@ -546,12 +500,9 @@ kubectl get pods -l app.kubernetes.io/name=demo-health-monitor -n nvsentinel
 
 ### Trigger and verify
 
-> Assumes the [Prerequisites](#prerequisites) are met, these steps are cluster-agnostic.
+> These steps work on any cluster that meets the [Prerequisites](#prerequisites).
 
-Because `CHECK_TARGET` is unreachable, within one poll interval the monitor emits an
-**unhealthy, fatal** `HealthEvent`. Platform-connector turns fatal events into a **Kubernetes
-node condition** automatically, using your `checkName` (`NetworkReachability`) as the condition
-**Type**. Pick any node a monitor pod runs on and watch the condition appear:
+`CHECK_TARGET` is unreachable, so the monitor sends an **unhealthy, fatal** `HealthEvent` within one poll interval. Then platform-connector automatically changes the fatal health event into a **Kubernetes node condition**. It uses your `checkName` (`NetworkReachability`) as the condition **Type**. Select a node where a monitor pod runs. Then watch the condition appear:
 
 ```bash
 # Any node running the monitor (each pod reports its own node).
@@ -566,21 +517,15 @@ kubectl get node "$NODE" \
   -o jsonpath='{range .status.conditions[?(@.type=="NetworkReachability")]}{.type}{"  "}{.status}{"  "}{.reason}{"  "}{.message}{"\n"}{end}'
 ```
 
-You should see the condition reported as a fault:
+The output shows the condition as a fault:
 
 ```text
 NetworkReachability  True  NetworkReachabilityIsNotHealthy  dial tcp 192.0.2.1:9: ... Recommended Action=CONTACT_SUPPORT;
 ```
 
-> **Note the inverted semantics:** NVSentinel sets `Status=True` to mean *a fault is present*
-> (and `Status=False` for healthy). The condition `Type` is exactly your `checkName`, and
-> `Reason` is `{checkName}IsNotHealthy` / `{checkName}IsHealthy`. The same condition is visible
-> under **Conditions** in `kubectl describe node "$NODE"`.
+> **Inverted semantics:** NVSentinel sets `Status=True` to show that *a fault is present*, and `Status=False` to show a healthy state. The condition `Type` is exactly your `checkName`. The `Reason` is `{checkName}IsNotHealthy` or `{checkName}IsHealthy`. You can also see the same condition under **Conditions** in the output of `kubectl describe node "$NODE"`.
 
-Clear the fault — point `CHECK_TARGET` at a reachable endpoint (`kubernetes.default.svc:443` is
-reachable from any in-cluster pod). On the next poll the monitor emits a healthy event and the
-condition flips back (`Status=False`, `Reason=NetworkReachabilityIsHealthy`,
-`Message="No Health Failures"`):
+To clear the fault, set `CHECK_TARGET` to a reachable endpoint. Any pod in the cluster can reach `kubernetes.default.svc:443`. On the next poll, the monitor sends a healthy event, and the condition changes back (`Status=False`, `Reason=NetworkReachabilityIsHealthy`, `Message="No Health Failures"`):
 
 ```bash
 kubectl set env ds/demo-health-monitor -n nvsentinel CHECK_TARGET=kubernetes.default.svc:443
@@ -590,25 +535,21 @@ kubectl get node "$NODE" \
   -o jsonpath='{range .status.conditions[?(@.type=="NetworkReachability")]}{.type}{"  "}{.status}{"  "}{.reason}{"  "}{.message}{"\n"}{end}'
 ```
 
-The condition now reports healthy:
+The condition then reports a healthy state:
 
 ```text
 NetworkReachability  False  NetworkReachabilityIsHealthy  No Health Failures
 ```
 
-That's the end of the path this tutorial covers: your monitor detects a fault and NVSentinel
-surfaces it as a node condition.
+This step is the end of the path that this tutorial covers. Your monitor detects a fault, and NVSentinel shows it as a node condition.
 
-> If nothing arrives at the platform-connector, the usual cause is the socket mount.
-> See [`docs/runbooks/health-monitor-uds-failures.md`](../runbooks/health-monitor-uds-failures.md).
+> If no health event arrives at the platform-connector, the usual cause is the socket mount. See [`docs/runbooks/health-monitor-uds-failures.md`](../runbooks/health-monitor-uds-failures.md).
 
 ---
 
 ## Appendix: One-shot AI prompt
 
-Paste this to an AI coding agent. It is **self-contained**: the monitor is a standalone module
-that can be created in **any repository** (it does not need to be inside the NVSentinel repo).
-Replace the bracketed parts.
+Paste this prompt into an AI coding agent. The prompt is **self-contained**. The monitor is a standalone module that you can create in **any repository**. It does not need to be inside the NVSentinel repository. Replace the bracketed parts.
 
 ```text
 Create a new NVSentinel health monitor named "[my-monitor]" that detects [the condition]

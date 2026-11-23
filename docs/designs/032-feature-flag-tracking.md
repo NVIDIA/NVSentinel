@@ -32,9 +32,7 @@ nvsentinel_feature_flag_enabled{service="<component>", flag="<snake_case>"} 0|1
 
 A lightweight Go package provides the registration surface:
 
-`NewRegistry(serviceName string, opts ...Option)` creates a registry that owns the gauge vector for the given service.
-`Set(flag string, enabled bool)` sets or updates a single flag gauge and is idempotent for the same flag name. `WithRegisterer(reg prometheus.Registerer)` is an option to use a custom Prometheus registerer, which is required for controller-runtime binaries.
-`SetStoreOnlyMode(strategy string)` is a convenience helper that sets `store_only_mode` to `1` when `strategy == "STORE_ONLY"`, and `0` otherwise.
+`NewRegistry(serviceName string, opts ...Option)` creates a registry that owns the gauge vector for the given service. `Set(flag string, enabled bool)` sets or updates a single flag gauge and is idempotent for the same flag name. `WithRegisterer(reg prometheus.Registerer)` is an option to use a custom Prometheus registerer, which is required for controller-runtime binaries. `SetStoreOnlyMode(strategy string)` is a convenience helper that sets `store_only_mode` to `1` when `strategy == "STORE_ONLY"`, and `0` otherwise.
 
 ### Registerer guidance
 

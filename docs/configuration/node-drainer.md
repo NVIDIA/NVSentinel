@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Node Drainer module evacuates workloads from quarantined nodes, safely moving pods to healthy nodes. This document covers all Helm configuration options available for system administrators.
+The node-drainer module safely evacuates workloads from quarantined nodes. Kubernetes then reschedules the pods on healthy nodes. This document describes all the Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the node-drainer module is deployed in the cluster.
+Controls whether the chart deploys the node-drainer module in the cluster.
 
 ```yaml
 global:
@@ -42,7 +42,7 @@ node-drainer:
 
 ### Kubernetes API Rate Limits
 
-Node Drainer inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Node Drainer needs different limits:
+Node-drainer inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). If node-drainer needs different limits, set component values. Otherwise, keep the inherited limits. This example sets component values:
 
 ```yaml
 node-drainer:
@@ -50,42 +50,75 @@ node-drainer:
   burst: 80
 ```
 
-Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
+Positive `qps` values enable client-side throttling. The value `0` uses the client-go default. A negative value disables client-side throttling. `burst` must be non-negative. A value of `0` uses the client-go default.
 
-> Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
+> Note: This module needs the results from fault-quarantine. It also needs the datastore. Thus, also enable the datastore and the other modules.
 
 ### Change Stream Resume Token
 
-To make node-drainer skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Node-drainer deletes only its own resume token, records a cold-start cutoff timestamp, skips startup cold-start recovery for that run, and resets the key back to `RESUME` during startup. Future restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
+> **Important**: In step 4, start only one replica. If two replicas start at the same time, both can run the reset. The second reset can then discard the resume token that the first replica saved.
+
+To make node-drainer skip accumulated health events and start from the current stream head, do these steps:
+
+1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](../runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
+2. Scale node-drainer to zero. Wait until no pod of node-drainer exists.
+3. In the shared resume-control ConfigMap, set the key of node-drainer to `CREATE`.
+4. Scale node-drainer to one replica.
+5. After node-drainer sets the key back to `RESUME`, restore the replicas of node-drainer.
+6. If you stopped the reconciliation in step 1, start it again.
+
+During the startup in step 4, node-drainer does these actions:
+
+- It resets only its own resume token. With MongoDB, it deletes the token. With PostgreSQL, it sets the token to the current head.
+- It records a cold-start cutoff timestamp.
+- It skips startup cold-start recovery for that run.
+- It sets the key back to `RESUME`.
+
+Later restarts still run cold-start recovery, but only for records newer than the recorded cutoff.
+
+These commands do steps 2 to 5. Run them one at a time. If a `kubectl wait` command fails, find the cause before you continue.
 
 ```bash
 REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
 kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait --for=delete pod -l app.kubernetes.io/name=node-drainer --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"node-drainer":"CREATE"}}'
-kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=1
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
+kubectl -n nvsentinel wait configmap/resume-control \
+  --for=jsonpath='{.data.node-drainer}'=RESUME --timeout=180s && \
+  kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
 kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 ```
 
 ### Partial Drain
 
-If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods on the impacted node for the configured namespaces regardless of the remediation action. HealthEvents with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID or else the drain will fail. 
+If this setting is enabled, the node-drainer drains only the pods that use the GPU_UUID impacted entity in COMPONENT_RESET health events. If it is disabled, the node-drainer drains all eligible pods on the impacted node for the configured namespaces, regardless of the remediation action. Health events with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID. Otherwise, the drain fails.
 
-A partial drain also cannot make progress if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation, because the metadata-collector is then not working or its pod device mapper is disabled (`metadata-collector.podMapper.enabled: false`). Rather than drain the wrong pods, the node-drainer returns an error and keeps retrying the event, so the drain never completes until the annotation appears or the pod is removed. A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.
+A partial drain also cannot make progress if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation. A missing annotation means that the metadata-collector does not work, or that its pod device mapper is disabled (`metadata-collector.podMapper.enabled: false`). The node-drainer does not drain the wrong pods. Instead, it returns an error and continues to retry the health event. Thus, the drain does not complete until the annotation appears or the pod is removed.
 
-IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource which takes action only against the GPU_UUID. If partial drain was enabled in node-drainer but fault-remediation mapped COMPONENT_RESET to a reboot action, pods which weren't drained would be restarted as part of the reboot.
+A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.
+
+IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource that acts only on the GPU_UUID. If partial drain is enabled in node-drainer but fault-remediation maps COMPONENT_RESET to a reboot action, the reboot restarts the pods that node-drainer did not drain.
+
 ```yaml
 node-drainer:
   partialDrainEnabled: true
 ```
 
-Post-remediation validation in fault-quarantine needs to know whether an event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, enable it there too so a partial drain never counts as a full drain, or set `global.partialDrainEnabled`, which overrides both subchart values.
+Post-remediation validation in fault-quarantine must know whether a health event was drained partially. `fault-quarantine.validation.partialDrainEnabled` defaults to `false`, the same as this setting. If you enable partial drain here, do one of these steps:
 
-For an event that has a recorded drain decision, the already-drained check reads that record. `fault-quarantine.validation.partialDrainEnabled` then applies only to an event that has no record:
+- Also enable it in fault-quarantine.
+- Set `global.partialDrainEnabled`, which overrides both subchart values.
+
+With either step, a partial drain never counts as a full drain.
+
+For a health event that has a recorded drain decision, the already-drained check reads that record. `fault-quarantine.validation.partialDrainEnabled` then applies only to a health event that has no record:
 
 ```yaml
 global:
@@ -101,21 +134,25 @@ node-drainer:
   partialDrainEntityMetricEnabled: false
 ```
 
-Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
+Off by default, because `entity_value` holds a GPU UUID, which adds one time series for each GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full drains, without that cardinality. Enable this metric only in this case: you need per-GPU attribution, and your Prometheus can carry the extra series.
 
 ### AllowCompletion Drain Metric
 
-`node_drainer_awaiting_completion_event_timestamp_seconds{node}` holds the creation time of the health event behind an `allowCompletion` drain that is still waiting on pods, giving the one mode with no deadline a way to say "waiting too long": alert on `time() -` this value exceeding the longest run the drained namespaces should take.
+`node_drainer_awaiting_completion_event_timestamp_seconds{node}` holds the creation time of the health event behind an `allowCompletion` drain that still waits for pods. That mode is the only mode with no deadline. The metric gives it a way to say "waiting too long". Alert when `time() -` this value exceeds the longest expected run of the drained namespaces.
 
 ```promql
 time() - node_drainer_awaiting_completion_event_timestamp_seconds > 7200
 ```
 
-The value is the event's creation time, not the moment the drain began: it is the same instant the `DeleteAfterTimeout` deadline measures from, and it can predate the drain itself. A fault quarantined, halted, then re-quarantined hours later reads as hours of waiting on the first poll — set thresholds with that in mind.
+The value is the creation time of the health event, not the moment when the drain started. It is the same instant that the `DeleteAfterTimeout` deadline measures from, and it can be earlier than the drain itself. If the drain for a health event starts hours after the event was created, the first poll already shows hours of waiting. Set thresholds with this behavior in mind.
 
-Several events can be queued for one node while it drains, and each one's poll re-asserts its own event's time. The series keeps the earliest of them, so a newer event cannot hide an older wait.
+Several health events can be in the queue for one node while it drains. The poll of each health event sets the time of that health event again. The series keeps the earliest time, so a newer health event cannot hide an older wait.
 
-**Absence is not proof that nothing is waiting.** The series is removed when the node stops draining and when completion is observed, and it is never published for an event that carries no creation time. A cancellation of one of several events queued for the same node removes the series while another event still waits; that event's next poll restores its own event's time, so the gap does not restart its clock — normally within one requeue interval (exponential from `requeueBackoffBase`, capped at two minutes), though queue delays or repeated failures can extend the gap. Treat a short gap as normal; pair with the node's drain state for a definitive answer. A node drained in part rather than in whole shares this series, since it is keyed by node alone.
+**Absence is not proof that no drain waits.** Node-drainer removes the series when the node stops draining and when it observes completion. It never publishes the series for a health event that has no creation time.
+
+The cancellation of one of several health events queued for the same node removes the series, while another health event still waits. The next poll of that health event restores its time, so the gap does not restart its clock. This normally occurs within one requeue interval (exponential from `requeueBackoffBase`, capped at two minutes). Queue delays or repeated failures can extend the gap.
+
+Treat a short gap as normal. For a definitive answer, use this metric together with the drain state of the node. A node drained in part, and not in whole, shares this series, because the node is the only key of the series.
 
 ### Eviction Timeout
 
@@ -126,7 +163,7 @@ node-drainer:
   evictionTimeoutInSeconds: "60"
 ```
 
-This timeout is passed as the `GracePeriodSeconds` in the Kubernetes eviction API call. Only used for `Immediate` eviction mode. Other modes respect the pod's configured `terminationGracePeriodSeconds`.
+Node-drainer passes this timeout as the `GracePeriodSeconds` in the Kubernetes eviction API call. Node-drainer uses this timeout only for the `Immediate` eviction mode. The other modes do not evict pods. `AllowCompletion` waits until the pods exit by themselves. At its deadline, `DeleteAfterTimeout` force deletes the remaining pods with a grace period of `0`.
 
 ### Requeue Backoff Base
 
@@ -137,57 +174,64 @@ node-drainer:
   requeueBackoffBase: 10s
 ```
 
-When pods cannot be evicted immediately, the node drainer requeues the drain event. Retries use exponential backoff starting at `requeueBackoffBase` and double up to a two-minute maximum.
+If node-drainer cannot evict pods immediately, it requeues the health event. Retries use exponential backoff. The backoff starts at `requeueBackoffBase` and doubles up to a two-minute maximum.
 
-Configure this setting based on the workload pod termination time:
+Configure this setting based on the termination time of the workload pods:
+
 - For zero-grace pods (`terminationGracePeriodSeconds: 0`), set a lower base such as `2s` to decrease drain latency.
 - For workloads with standard grace periods (`terminationGracePeriodSeconds: 30`), pod termination dominates drain latency. A short retry interval increases redundant eviction calls.
 
 ### System Namespaces
 
-Regular expression pattern matching system namespaces that are skipped during node drain operations.
+Regular expression pattern that matches the system namespaces that node-drainer skips during drain operations.
 
 ```yaml
 node-drainer:
   systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
 ```
 
-Pods in namespaces matching this regex are not evicted during drain operations.
+During drain operations, node-drainer does not evict pods in namespaces that match this regex.
 
 ### Delete After Timeout
 
-Time in minutes from the health event creation after which pods will be force deleted if still running.
+Time in minutes, from the creation of the health event, after which node-drainer force deletes the pods that still run.
 
 ```yaml
 node-drainer:
   deleteAfterTimeoutMinutes: 60
 ```
 
-Used with `DeleteAfterTimeout` eviction mode. When the timeout expires, remaining pods are force deleted regardless of their state.
+Node-drainer uses this timeout with the `DeleteAfterTimeout` eviction mode. When the timeout expires, node-drainer force deletes the remaining pods, regardless of their state.
 
 ### Not Ready Timeout
 
-Time in minutes after which a pod in NotReady state is skipped from eviction operations.
+Time in minutes after which node-drainer skips a pod in NotReady state during eviction operations.
 
 ```yaml
 node-drainer:
   notReadyTimeoutMinutes: 5
 ```
 
-When a pod has been in NotReady state for longer than this timeout, it is excluded from the list of pods to evict. This prevents attempting to evict pods that are already unhealthy and unlikely to respond to eviction requests.
+In a full drain, node-drainer skips a pod that is in NotReady state for longer than this timeout. It does not evict the pod, and it does not wait for the pod in any eviction mode. Thus, the drain can complete while the pod stays on the node. Node-drainer skips these pods because they are already unhealthy and unlikely to respond to eviction requests.
 
 ### GPU-Only Draining
 
-If enabled, the node-drainer filters pod eviction to only target workloads that request GPU resources.
+If enabled, the node-drainer limits pod eviction to the workloads that request GPU resources.
 
 ```yaml
 node-drainer:
   drainGPUPods: false
 ```
 
-The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
+The node-drainer detects GPU resource requests through device annotations, which the metadata-collector adds to pods. The node-drainer identifies pods with device annotations as GPU workloads that are eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs in one of these ways:
 
-Device annotations are added to pods requesting GPU resources by metadata-collector with the format:
+- through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits
+- through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass
+
+If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
+
+The metadata-collector adds device annotations to pods that request GPU resources. The annotations have this format:
+
 ```yaml
 annotations:
 	  dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
@@ -195,13 +239,14 @@ annotations:
 
 #### Behavior
 
-- **When enabled (`true`)**: Only pods with GPU device annotations, or that request GPUs through container limits or DRA claims, are evicted during drain operations
-- **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
-- Pods without GPU requests are preserved, maintaining critical infrastructure services
+- **When enabled (`true`)**: During drain operations, node-drainer evicts only pods that have GPU device annotations, or that request GPUs through container limits or DRA claims. It keeps pods without GPU requests, to maintain critical infrastructure services
+- **When disabled (`false`)**: Node-drainer evicts all eligible pods in the configured namespaces (default behavior)
 
 ## Pod Drain Policies
 
-Use `podDrainPolicies` when workloads in the same namespace need different drain modes. Policies match pod labels using standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors), the kind of the pod's owner, or both. The first matching policy wins. `podDrainPolicies` and `userNamespaces` are mutually exclusive; configuration with both non-empty is rejected. Set `userNamespaces: []` to clear the Helm chart's default namespace rule when enabling policies. Pods that match no policy are outside the drain scope and do not block completion.
+If workloads in the same namespace need different eviction modes, use `podDrainPolicies`. Policies match pod labels with standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors), the kind of the owner of the pod, or both. The first matching policy wins.
+
+`podDrainPolicies` and `userNamespaces` are mutually exclusive. If you set both lists to non-empty values, NVSentinel rejects the configuration. When you enable policies, set `userNamespaces: []` to clear the default namespace rule of the Helm chart. Pods that match no policy are outside the drain scope and do not block completion.
 
 ```yaml
 node-drainer:
@@ -222,29 +267,31 @@ node-drainer:
       mode: AllowCompletion
 ```
 
-Each policy has a unique, non-empty `name`, a `podSelector`, `ownerKinds` or both, and a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`). `namespace` is an optional namespace-name glob; omitting it matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key; add a key-existence requirement if absent labels should not match.
+Each policy has these fields:
 
-`ownerKinds` lists controller kinds. A pod matches when the kind of its controller owner reference is in the list. The comparison is exact and case-sensitive, so use the kind as Kubernetes stores it, for example `StatefulSet`, `ReplicaSet` or `Job`. The drainer reads only the pod's direct controller and does not follow owners further. Pods created by a Deployment have a `ReplicaSet` controller, and pods created by a CronJob have a `Job` controller. Pods without a controller never match a policy that sets `ownerKinds`. When a policy sets both `podSelector` and `ownerKinds`, a pod must match both.
+- a unique, non-empty `name`
+- a `podSelector`, `ownerKinds`, or both
+- a `mode` (`Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`)
 
-For built-in workloads, the labels that controllers add can also be used: `podSelector: "statefulset.kubernetes.io/pod-name"` selects StatefulSet pods and `podSelector: "batch.kubernetes.io/job-name"` selects Job pods. Labels come from the pod template, so any workload can carry them; `ownerKinds` matches the controller reference, which the controller sets when it creates the pod.
+`namespace` is an optional namespace-name glob. If you omit it, the policy matches all user namespaces. Selectors support equality, set membership, and key existence. As in Kubernetes, `key!=value` and `key notin (value)` also match pods without that key. If absent labels must not match, add a key-existence requirement.
 
-Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
+`ownerKinds` lists controller kinds. A pod matches when the kind of its controller owner reference is in the list. The comparison is exact and case-sensitive. Thus, use the kind as Kubernetes stores it, for example `StatefulSet`, `ReplicaSet` or `Job`.
 
-Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
+Node-drainer reads only the direct controller of the pod, and does not follow owners further. Pods that a Deployment creates have a `ReplicaSet` controller. Pods that a CronJob creates have a `Job` controller. Pods without a controller never match a policy that sets `ownerKinds`. When a policy sets both `podSelector` and `ownerKinds`, a pod must match both.
 
-Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache. The cache keeps the kind and controller flag of each owner reference.
+For built-in workloads, you can also use the labels that controllers add. For example, `podSelector: "statefulset.kubernetes.io/pod-name"` selects StatefulSet pods, and `podSelector: "batch.kubernetes.io/job-name"` selects Job pods. Labels come from the pod template, so any workload can carry them. `ownerKinds` matches the controller reference, which the controller sets when it creates the pod.
 
-`DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout. Policies never choose a mode from the workload kind by default; operators list the owner kinds in `ownerKinds`, or workload owners opt in through labels.
+Policy order takes precedence over mode. A later `Immediate` match cannot override an early `AllowCompletion` match. Policy mode has no namespace fallback. Write selectors that cover every workload that node-drainer must drain. To use namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces`.
+
+Policies narrow the eligible workloads. System namespace exclusions, DaemonSet exclusions, GPU-only filtering and the partial GPU drain scope still apply. [`drainOverrides.force`](../health-event-data-model.md#drainoverrides) changes the mode of the selected pods to `Immediate`, but does not widen that scope. Policies do not change how `drainOverrides.skip` works. You cannot combine a custom drain configuration with pod drain policies, unless `customDrain.nodeSelector` limits custom drain to part of the cluster. See [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
+
+Node-drainer reads pod labels from the informer cache on each reconciliation, and before eviction or timeout deletion. If you change a relevant label, the policy changes on a later observation. API deletion preconditions prevent a stale observation from deleting a relabeled or replaced pod. To apply configuration changes, restart node-drainer. The pod cache of node-drainer keeps only the label keys that policies reference. The cache keeps the kind and controller flag of each owner reference.
+
+`DeleteAfterTimeout` uses `deleteAfterTimeoutMinutes`, measured from the creation of the health event, also after a restart. Policies do not add a new timeout. By default, policies never choose a mode from the workload kind. Operators list the owner kinds in `ownerKinds`, or workload owners select a policy through labels.
 
 ## Scoping custom drain to part of the cluster
 
-`customDrain.enabled: true` replaces node-drainer's own eviction with a
-[drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set
-`customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition
-alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go
-through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or
-`podDrainPolicies` must stay configured for them. The selector uses standard
-[Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
+`customDrain.enabled: true` replaces the built-in eviction of node-drainer with a [drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. If only some nodes must use the plugin, set `customDrain.nodeSelector`. An example is a Slurm or LSF partition next to nodes that run ordinary Kubernetes workloads. Nodes that match the selector use the plugin. Every other node keeps the built-in eviction path, so `userNamespaces` or `podDrainPolicies` must stay configured for these nodes. The selector uses standard [Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
 
 ```yaml
 node-drainer:
@@ -257,55 +304,35 @@ node-drainer:
       mode: "AllowCompletion"
 ```
 
-An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
-drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
+With an empty or omitted `nodeSelector`, every node uses custom drain. If you also configure `userNamespaces` or `podDrainPolicies`, node-drainer rejects the configuration at startup.
 
-A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
-well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to
-act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
-startup.
+Node-drainer also rejects at startup a `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies`. Without this check, node-drainer marks the unmatched nodes drained while their pods continue to run, because no namespace and no policy select their pods. Node-drainer also rejects an invalid selector at startup.
 
-node-drainer chooses the drain method once for each health event and records it on the event. For
-a partial drain, the record also holds the entity that is drained, for example a GPU UUID. Later
-passes drain the recorded entity, so a change to `partialDrainEnabled` during the drain does not
-change what is drained. The already-drained check reads that recorded scope for each earlier event.
-A record with no scope is a full drain. An event with no record still uses `partialDrainEnabled`.
-node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a
-custom drain CR.
-Every drain action then follows the stored record. If two node-drainer passes choose at the same
-time, only the first record is kept, and the other pass follows it. A label change during the drain
-does not change the method. node-drainer chooses the method of a new event from the labels at the
-time that event starts. A drain that is already in progress when node-drainer is upgraded has no
-record. The first pass after the upgrade chooses the method again and records it.
+Node-drainer chooses the drain method one time for each health event, and records it on the health event. For a partial drain, the record also holds the entity that node-drainer drains, for example a GPU UUID. Later passes drain the recorded entity. Thus, a change to `partialDrainEnabled` during the drain does not change what node-drainer drains.
 
-If the method is `Custom` and the CR of another event has already drained the node, node-drainer
-marks the event drained and records only the scope. It records no method, because this event did not
-drain the node. An event that node-drainer marks `AlreadyDrained` because an earlier drain covered it
-records that scope in the same update as the status, when the event has no decision yet. A full drain
-records a decision with no scope and no method. An event that already has a decision keeps it. If
-the CR of the event itself completed before a method was recorded, as for a drain that started
-before node-drainer recorded decisions, node-drainer records `Custom`, then marks the event drained.
+The already-drained check reads that recorded scope for each earlier health event. A record with no scope is a full drain. A health event with no record still uses `partialDrainEnabled`.
 
-A node the cache cannot resolve is retried rather than assigned a path. Only the label keys the
-selector references are retained in the node cache.
+Node-drainer stores the record before it reads, evicts or deletes a pod, and before it creates a custom drain CR. Every drain action then follows the stored record. If two node-drainer passes choose at the same time, node-drainer keeps only the first record, and the other pass follows it. A label change during the drain does not change the method. Node-drainer chooses the method of a new health event from the labels at the time that health event starts.
 
-node-drainer keeps a recorded method when the current configuration cannot carry it out. It logs
-an error, increments `node_drainer_processing_errors_total`, and retries:
+Sometimes the method is `Custom`, and the CR of another health event already drained the node. In that case, node-drainer marks the health event drained and records only the scope. It records no method, because this health event did not drain the node.
 
-- The record says `Custom` and custom drain is now off. Turn custom drain back on, or end the
-  quarantine and delete the DrainRequest CR of the event. With custom drain off, node-drainer does
-  not delete that CR, so the plugin can keep draining the node. The CR is named
-  `drain-<node name>-<event ID>` and is in the custom drain namespace.
-- The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces`
-  and `podDrainPolicies` are empty. Set the `nodeSelector` and one of those lists again, or end the
-  quarantine. Empty lists would mark the node drained while its pods keep running. With custom drain
-  off, empty lists act as they do for an event with no record.
-- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`)
-  is one example of a record with no method. node-drainer does not choose a method in its place.
+Node-drainer can mark a health event `AlreadyDrained` because an earlier drain covered it. If that health event has no decision yet, node-drainer records the scope of that health event in the same update as the status. A full drain records a decision with no scope and no method. A health event that already has a decision keeps it.
+
+If the cache cannot resolve a node, node-drainer retries the node, and does not assign a path to it. The node cache keeps only the label keys that the selector references.
+
+Node-drainer keeps a recorded method when the current configuration cannot apply it. In these cases, node-drainer logs an error, increments `node_drainer_processing_errors_total`, and retries:
+
+- The record says `Custom`, but custom drain is off. While custom drain is off, node-drainer does not delete the DrainRequest CR of the health event. Thus, the plugin can continue to drain the node. The name of the CR is `drain-<node name>-<event ID>`, and the CR is in the custom drain namespace. Do one of these steps:
+  - Enable custom drain again.
+  - End the quarantine. Then delete the DrainRequest CR of the health event.
+- The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces` and `podDrainPolicies` are empty. Node-drainer does not use the empty lists. With empty lists, node-drainer can mark the node drained while its pods continue to run. While custom drain is off, empty lists act as they do for a health event with no record. Do one of these steps:
+  - Set the `nodeSelector` and one of those lists again.
+  - End the quarantine.
+- The record has no method, or a method other than `BuiltIn` or `Custom`. A stop (`stopped: true`) is one example of a record with no method. Node-drainer does not choose a method in its place.
 
 ## User Namespaces
 
-Defines eviction behavior for user workloads based on namespace patterns. Cannot be combined with a non-empty `podDrainPolicies` list.
+Defines the eviction behavior for user workloads, based on namespace patterns. You cannot combine it with a non-empty `podDrainPolicies` list.
 
 ### Configuration Structure
 
@@ -319,18 +346,20 @@ node-drainer:
 ### Parameters
 
 #### name
-Namespace name or pattern to match. Use `*` to match all user namespaces not explicitly configured.
+
+Namespace name or pattern to match. `*` matches all user namespaces, including the namespaces that have their own entry. If more than one entry matches a namespace, the mode with the highest priority applies: `Immediate`, then `DeleteAfterTimeout`, then `AllowCompletion`. The order and the specificity of the entries do not change the result. If a health event sets `drainOverrides.force`, node-drainer uses `Immediate` for every namespace that an entry matches. The `mode` of the entries then has no effect.
 
 #### mode
+
 Eviction strategy to apply for pods in matching namespaces. Valid values: `Immediate`, `AllowCompletion`, or `DeleteAfterTimeout`.
 
 ### Eviction Modes
 
 #### Immediate
 
-Evicts pods with minimal grace period without waiting for completion.
+Evicts pods with a grace period of `evictionTimeoutInSeconds` (60 seconds by default), and does not wait for completion.
 
-Best for: Stateless applications that can be quickly restarted.
+Best for: Stateless applications that restart quickly.
 
 ```yaml
 userNamespaces:
@@ -340,9 +369,11 @@ userNamespaces:
 
 #### AllowCompletion
 
-Waits for pods to terminate gracefully, respecting their `terminationGracePeriodSeconds`.
+Does not evict pods. Waits with no time limit until each pod exits by itself. A pod that does not exit by itself, such as a Deployment or StatefulSet pod, stays on the node. The drain then does not complete, and fault-remediation does not create a maintenance CR. To find such a drain, see [AllowCompletion Drain Metric](#allowcompletion-drain-metric).
 
-Best for: Most workloads including stateful applications and services.
+> **Note**: In a full drain, node-drainer does not wait for a pod that stays NotReady for longer than `notReadyTimeoutMinutes`. The drain can then complete, and fault-remediation can create a maintenance CR while this pod stays on the node. See [Not Ready Timeout](#not-ready-timeout).
+
+Best for: Jobs and batch workloads that exit by themselves.
 
 ```yaml
 userNamespaces:
@@ -352,7 +383,7 @@ userNamespaces:
 
 #### DeleteAfterTimeout
 
-Waits up to `deleteAfterTimeoutMinutes` (from health event creation), then force deletes remaining pods.
+Waits up to `deleteAfterTimeoutMinutes` (from the creation of the health event), then force deletes the remaining pods.
 
 Best for: Long-running training jobs that need time to checkpoint and save state.
 
@@ -390,6 +421,7 @@ userNamespaces:
     mode: "Immediate"
   - name: "batch-jobs"
     mode: "DeleteAfterTimeout"
+  # Database - no eviction; the drain waits until the pods exit by themselves
   - name: "database"
     mode: "AllowCompletion"
   - name: "*"
@@ -398,7 +430,7 @@ userNamespaces:
 
 ### Observe a Drain
 
-On a quarantined node with workloads still scheduled:
+On a quarantined node that still has scheduled workloads, run these commands:
 
 ```bash
 NODE={cordoned-node}
@@ -409,13 +441,11 @@ kubectl get events -n default \
   --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
 ```
 
-Node Drainer events are created in the **`default`** namespace (`Type=Normal`,
-`Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
-`batch-jobs` on node `gpu-node-42`:
+Node-drainer creates its Kubernetes events in the **`default`** namespace (`Type=Normal`, `Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace `batch-jobs` on node `gpu-node-42`:
 
 #### `Immediate`
 
-Pods are evicted via the Eviction API — no Node Drainer event is emitted.
+Node-drainer evicts pods through the Eviction API. It does not emit a Kubernetes event.
 
 ```text
 # kubectl get pods -A --field-selector "spec.nodeName=gpu-node-42"
@@ -453,18 +483,18 @@ LAST SEEN   TYPE          REASON                    OBJECT           MESSAGE
 1m          Normal        WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
 ```
 
-After the deadline, the pod is force-deleted and `kubectl get pods` shows it gone.
+After the deadline, node-drainer force-deletes the pod. Then `kubectl get pods` does not show the pod.
 
 ### One-shot AI prompt (per-namespace drain modes)
 
-Paste to an AI coding agent. Replace bracketed parts.
+Paste this prompt into an AI coding agent. Replace the bracketed parts.
 
 ```text
 Create a Helm values overlay for NVSentinel node-drainer per-namespace drain modes.
 
 Modes (exact strings): Immediate, AllowCompletion, DeleteAfterTimeout.
 - Immediate: Eviction API; evictionTimeoutInSeconds as a quoted string (e.g. "60")
-- AllowCompletion: wait for pod exit (terminationGracePeriodSeconds)
+- AllowCompletion: no eviction; wait with no time limit until the pod exits by itself (Jobs, batch)
 - DeleteAfterTimeout: force-delete after deleteAfterTimeoutMinutes from health-event createdAt
 
 YAML under global.nodeDrainer and node-drainer:
@@ -472,7 +502,7 @@ YAML under global.nodeDrainer and node-drainer:
   node-drainer.evictionTimeoutInSeconds: "60"
   node-drainer.deleteAfterTimeoutMinutes: [minutes, default 60]
   node-drainer.systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
-  node-drainer.userNamespaces (specific globs before "*"; omit customDrain):
+  node-drainer.userNamespaces (entry order does not matter; if several entries match a namespace, Immediate wins, then DeleteAfterTimeout, then AllowCompletion; omit customDrain):
     [ns1] → Immediate     (default: frontend)
     [ns2] → DeleteAfterTimeout (default: batch-jobs)
     [ns3] → AllowCompletion  (default: database)

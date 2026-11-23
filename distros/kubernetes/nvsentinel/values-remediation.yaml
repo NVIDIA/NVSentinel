@@ -84,7 +84,9 @@ fault-remediation:
         version: "v1alpha1"
         kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "Complete"
+        # Succeeded gives the outcome of the reset. Complete is True for each GPUReset
+        # that ended, also for a failed reset.
+        completeConditionType: "Succeeded"
         templateFileName: "gpureset-template.yaml"
         equivalenceGroup: "reset"
         impactedEntityScope: "GPU_UUID"
