@@ -234,6 +234,10 @@ deploy_plugins() {
     log "slinky-drainer: ${SLINKY_DRAINER_IMAGE}"
     log "mock-slurm-operator: locally built mock-slurm-operator:demo"
 
+    # slinky-drainer gets its pod permissions from a Role in the Slinky
+    # namespace, and a Role cannot be created in a namespace that does not exist.
+    kubectl create namespace "$SLINKY_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
     local plugin container image policy
     for plugin in slinky-drainer mock-slurm-operator; do
         # The two kustomizations name their container differently, and only the
