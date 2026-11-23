@@ -3027,6 +3027,13 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "20s", "100ms").Should(Succeed())
 			Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonTearingDownServices)))
 
+			By("Waiting for the reconciler cache to see the teardown")
+			Eventually(func(g Gomega) {
+				var cached v1alpha1.GPUReset
+				g.Expect(mgrClient.Get(ctx, typeNamespacedName, &cached)).To(Succeed())
+				g.Expect(meta.FindStatusCondition(cached.Status.Conditions, string(v1alpha1.ServicesTornDown))).NotTo(BeNil())
+			}, "10s", "100ms").Should(Succeed())
+
 			By("Turning manual mode on and reconciling until the reset is complete")
 			manualMode = true
 			reconcileUntil(v1alpha1.Complete)
