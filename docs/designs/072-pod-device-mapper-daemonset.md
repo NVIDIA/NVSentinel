@@ -58,7 +58,7 @@ Running both jobs in one pod causes three problems:
 
 1. **The mapper becomes its own module, binary and image.** The module is `pod-device-mapper`. It does not import metadata-collector or NVML.
 2. **The mapper runs in its own DaemonSet, which the metadata-collector chart renders for now, so the Helm values that operators set today keep working.** The DaemonSet has no vendor settings: no RuntimeClass, no DRA claim, and no host namespaces. Its node selector defaults to `nvidia.com/gpu.present`, so current installs run the mapper on their GPU nodes, as today. The mapper no longer waits for the driver (see [DaemonSet](#daemonset)). See [Chart](#chart) for the keys.
-3. **metadata-collector keeps only the NVIDIA discovery, in a DaemonSet renamed to `nvidia-metadata-collector`.** Its binary, CUDA image, pod settings and `gpu_metadata.json` stay as they are. The rename makes the upgrade remove every old mapper at once (see [Upgrade](#upgrade)). It moves to a new ServiceAccount with no ClusterRole, because the discovery does not call the Kubernetes API. The existing ServiceAccount and ClusterRole stay with the mapper. It becomes part of the NVIDIA plugin of ADR-070.
+3. **metadata-collector keeps only the NVIDIA discovery, in a DaemonSet renamed to `nvidia-metadata-collector`.** Its binary, CUDA image, pod settings and `gpu_metadata.json` stay as they are. The rename makes the upgrade remove the old mappers on all nodes together (see [Upgrade](#upgrade)). It moves to a new ServiceAccount with no ClusterRole, because the discovery does not call the Kubernetes API. The existing ServiceAccount and ClusterRole stay with the mapper. It becomes part of the NVIDIA plugin of ADR-070.
 
 ## Implementation
 
@@ -105,7 +105,7 @@ Until ADR-070 creates the NVIDIA plugin chart, the metadata-collector chart rend
 
 ### Upgrade
 
-The upgrade deletes the `metadata-collector` DaemonSet and creates the `nvidia-metadata-collector` and mapper DaemonSets. So the old mappers stop at once, and a node never runs two mappers, even when a rollout is slow or stuck.
+The upgrade creates the `nvidia-metadata-collector` and mapper DaemonSets, then deletes the `metadata-collector` DaemonSet. The garbage collector then deletes the old pods on all nodes together, so the old mappers stop shortly after the upgrade and do not wait for a rollout that can be slow or stuck. Until then, a node can run two mappers. If the upgrade fails before Helm deletes the old DaemonSet, the old mappers run until an upgrade succeeds.
 
 Until its new mapper pod is ready, a node has no mapper. A partial drain on that node waits for the missing annotations, as it does for a pod that the mapper has not seen yet. The discovery pods also start on all nodes at once. The health monitors keep reading the `gpu_metadata.json` that the old pod wrote, because the discovery replaces the file and never deletes it.
 
