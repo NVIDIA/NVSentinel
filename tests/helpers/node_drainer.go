@@ -16,6 +16,7 @@ package helpers
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -251,23 +252,29 @@ func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Conf
 	require.NoError(t, err)
 }
 
-// NodeDrainerMetric adds the sample described by name and labels over every node-drainer replica. A replica that
-// cannot be scraped, for example one that is still starting, counts as zero and is logged.
+// NodeDrainerMetric adds the sample described by name and labels over every node-drainer replica. It returns an error
+// if no replica exposes metrics or one cannot be scraped, so a caller never mistakes a failed scrape for a zero count.
 func NodeDrainerMetric(
 	ctx context.Context, t *testing.T, c *envconf.Config, name string, labels map[string]string,
-) float64 {
+) (float64, error) {
 	t.Helper()
 
 	client, err := c.NewClient()
-	require.NoError(t, err)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create client: %w", err)
+	}
 
 	pods := &v1.PodList{}
+
 	err = client.Resources(NVSentinelNamespace).List(ctx, pods, func(opts *metav1.ListOptions) {
 		opts.LabelSelector = "app.kubernetes.io/name=node-drainer"
 	})
-	require.NoError(t, err)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list node-drainer pods: %w", err)
+	}
 
 	total := 0.0
+	scraped := 0
 
 	for i := range pods.Items {
 		port := podPortByName(&pods.Items[i], "metrics")
@@ -277,15 +284,18 @@ func NodeDrainerMetric(
 
 		exposition, err := ScrapePodMetrics(ctx, c.Client().RESTConfig(), NVSentinelNamespace, pods.Items[i].Name, port)
 		if err != nil {
-			t.Logf("skipping replica %s: %v", pods.Items[i].Name, err)
-
-			continue
+			return 0, err
 		}
 
 		total += MetricSampleValue(t, exposition, name, labels)
+		scraped++
 	}
 
-	return total
+	if scraped == 0 {
+		return 0, fmt.Errorf("no node-drainer replica exposes a metrics port")
+	}
+
+	return total, nil
 }
 
 func podPortByName(pod *v1.Pod, name string) int32 {

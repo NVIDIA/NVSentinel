@@ -351,7 +351,8 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 		// The evaluator returns an error for an event without its scoped entity, and the queue retries it, so a fix
 		// to the configuration lets the drain continue.
 		evaluateErrors := map[string]string{"error_type": "evaluate_event_error", "node": testCtx.NodeName}
-		errorsBefore := helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors)
+		errorsBefore, err := helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors)
+		require.NoError(t, err, "the baseline needs a successful scrape of every node-drainer replica")
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("119").
@@ -362,8 +363,14 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		t.Log("Phase 1: Wait for node-drainer to evaluate the event and retry it")
 		require.Eventually(t, func() bool {
-			return helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors) >=
-				errorsBefore+2
+			errors, err := helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors)
+			if err != nil {
+				t.Logf("retrying the scrape: %v", err)
+
+				return false
+			}
+
+			return errors >= errorsBefore+2
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		t.Log("Phase 2: The node does not have the drain-failed label")
