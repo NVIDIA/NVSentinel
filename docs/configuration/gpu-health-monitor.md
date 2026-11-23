@@ -46,7 +46,7 @@ The GPU Health Monitor starts an in-process DCGM hostengine and exposes it to po
 > [!WARNING]
 > **Deprecated:** DCGM 3.x support is deprecated and will be removed on 30 November 2026. DCGM 3.x is end-of-life and gets no more patches. After the removal, NVSentinel will not detect faults on nodes that run DCGM 3.x. To find these nodes, run `kubectl get nodes -l nvsentinel.dgxc.nvidia.com/dcgm.version=3.x`. Upgrade DCGM on these nodes to 4.x. For the details, refer to [GPU Health Monitor: DCGM 3.x Support Removal](../deprecations/gpu-health-monitor-dcgm-3-support-removal.md).
 
-Use a GPU Health Monitor image whose DCGM client is not newer than its hostengine. The `nvsentinel.dgxc.nvidia.com/dcgm.version` node label selects the GPU Health Monitor image. Each label value is one lane:
+Use a GPU Health Monitor image whose DCGM client can connect to its hostengine. The `nvsentinel.dgxc.nvidia.com/dcgm.version` node label selects the GPU Health Monitor image. Each label value is one lane:
 
 | Label value | Hostengine DCGM version | Monitor image tag suffix | Monitor image DCGM version |
 |---|---|---|---|
@@ -54,7 +54,7 @@ Use a GPU Health Monitor image whose DCGM client is not newer than its hostengin
 | `4.x` | 4.x earlier than 4.8.0 | `-dcgm-4.x` | 4.7.0 |
 | `48` | 4.8.0 and later 4.x | `-dcgm-48` | 4.8.0 |
 
-A DCGM client that is newer than its hostengine can fail with `DCGM_ST_VER_MISMATCH` (`-12`). From DCGM 4.8.0, a client works with the same or a newer hostengine. Thus, hostengines earlier than 4.8.0 use the 4.7.0 client, and hostengines 4.8.0 and later use the 4.8.0 client.
+Before DCGM 4.8.0, a 4.x client works with any 4.x hostengine. Thus, the `4.x` lane uses the 4.7.0 client for all hostengines earlier than 4.8.0. From DCGM 4.8.0, a client works only with the same or a newer hostengine. A 4.8.0 client fails with `DCGM_ST_VER_MISMATCH` (`-12`) against a hostengine earlier than 4.8.0. Thus, hostengines 4.8.0 and later use the `48` lane.
 
 In `operator-service` mode, labeler sets this label from the version in the DCGM pod image. In `external-hostengine` and `embedded-mode`, you must supply the label.
 
