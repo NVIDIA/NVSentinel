@@ -3100,6 +3100,33 @@ var _ = Describe("GPUReset Controller", func() {
 			}
 		})
 
+		It("should refuse a GPUReset that waited in manual mode when the node is in service after manual mode is off", func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+			manualMode := true
+			reconciler.Config.ManualMode = &manualMode
+			nodeLabels := devicePluginDeployLabels()
+			createNodeWithOperandPods(nodeLabels, devicePluginOperandPodLabels())
+			createReset()
+
+			By("Reconciling until the reset waits in manual mode")
+			observed := reconcileUntil(v1alpha1.ManualMode)
+			Expect(getReset().Status.Phase).To(Equal(v1alpha1.ResetPending))
+
+			By("Turning manual mode off and reconciling until the reset is complete")
+			manualMode = false
+			observed = append(observed, reconcileUntil(v1alpha1.Complete)...)
+
+			done := getReset()
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonNodeInService)))
+			Expect(done.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+			expectOutcome(&done, metav1.ConditionFalse, v1alpha1.ReasonNodeInService)
+			Expect(meta.FindStatusCondition(done.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeNil())
+			Expect(done.Status.JobRef).To(BeNil())
+
+			By("Verifying no node label was ever changed")
+			expectUnchanged(observed, nodeLabels, nil)
+		})
+
 		It("should not hold a GPUReset whose teardown started before manual mode was turned on", func() {
 			manualMode := false
 			reconciler.Config.ManualMode = &manualMode
