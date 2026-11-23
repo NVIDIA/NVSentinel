@@ -68,8 +68,9 @@ data:
       statusConditionStatus = {{ .Values.customDrain.statusConditionStatus | quote }}
     {{- end }}
 
-    {{- /* Tables must follow every top-level key, so this block stays last. Without the key,
-    node-drainer uses its built-in GPU_UUID entry; an empty map configures no entity type. */}}
-    {{- if hasKey $global "partialRemediationEntityTypes" }}
-    {{- dict "partialRemediationEntityTypes" ($global.partialRemediationEntityTypes | default dict) | toToml | nindent 4 }}
+    {{- /* Tables must follow every top-level key, so this block stays last. node-drainer fails to
+    start without the key, so the chart fails first. */}}
+    {{- if not (hasKey $global "partialRemediationEntityTypes") }}
+    {{- fail "global.partialRemediationEntityTypes is required. The chart default holds the GPU_UUID entry." }}
     {{- end }}
+    {{- dict "partialRemediationEntityTypes" ($global.partialRemediationEntityTypes | default dict) | toToml | nindent 4 }}

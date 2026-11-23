@@ -358,7 +358,7 @@ stop = true
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := LoadTomlConfigFromString(tt.doc)
+			cfg, err := loadTestConfig(tt.doc)
 			if tt.want == nil && tt.contains == "" {
 				require.NoError(t, err)
 				require.Empty(t, cfg.RuleSets)
@@ -384,7 +384,7 @@ stop = true
 func TestLoadTomlConfigFromString_UnknownKeyAndInvalidFields_ReportsAll(t *testing.T) {
 	t.Parallel()
 
-	_, err := LoadTomlConfigFromString(`
+	_, err := loadTestConfig(`
 [[ruleSets]]
 name = "Bad_Name"
 priorty = 100
@@ -407,7 +407,7 @@ stop = false
 func TestLoadTomlConfigFromString_NoRuleSets_KeepsDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := LoadTomlConfigFromString("deleteAfterTimeoutMinutes = 15\n")
+	cfg, err := loadTestConfig("deleteAfterTimeoutMinutes = 15\n")
 	require.NoError(t, err)
 	require.Empty(t, cfg.RuleSets)
 	require.Equal(t, 15, cfg.DeleteAfterTimeoutMinutes)

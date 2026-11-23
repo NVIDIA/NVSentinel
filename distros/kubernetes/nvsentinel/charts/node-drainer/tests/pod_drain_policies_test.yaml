@@ -15,6 +15,9 @@
 suite: pod drain policies
 templates:
   - templates/configmap.yaml
+set:
+  # The umbrella chart sets the default; the configmap fails without it.
+  global.partialRemediationEntityTypes: {}
 tests:
   - it: preserves namespace-only configuration by default
     asserts:

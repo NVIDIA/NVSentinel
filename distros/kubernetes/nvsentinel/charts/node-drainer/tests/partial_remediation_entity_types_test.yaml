@@ -1,0 +1,32 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The umbrella chart sets global.partialRemediationEntityTypes. Rendered on its own, this chart has no
+# value for it, which is how a missing key looks to the configmap.
+suite: partial remediation entity types
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: fails without global.partialRemediationEntityTypes
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes is required. The chart default holds the GPU_UUID entry.
+
+  - it: renders an empty map as an empty table
+    set:
+      global.partialRemediationEntityTypes: {}
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\n\[partialRemediationEntityTypes\]\n*$'

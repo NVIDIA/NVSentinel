@@ -46,6 +46,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
@@ -1446,13 +1447,14 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 	}
 
 	tomlConfig := config.TomlConfig{
-		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
-		SystemNamespaces:          "kube-*",
-		DeleteAfterTimeoutMinutes: 5,
-		NotReadyTimeoutMinutes:    2,
-		DrainGPUPods:              enableDrainGPUPods,
-		UserNamespaces:            userNamespaces,
-		PartialDrainEnabled:       true,
+		EvictionTimeoutInSeconds:      config.Duration{Duration: 30 * time.Second},
+		SystemNamespaces:              "kube-*",
+		DeleteAfterTimeoutMinutes:     5,
+		NotReadyTimeoutMinutes:        2,
+		DrainGPUPods:                  enableDrainGPUPods,
+		UserNamespaces:                userNamespaces,
+		PartialDrainEnabled:           true,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 	}
 	return setupConfiguredTest(t, tomlConfig, dryRun)
 }
@@ -1494,7 +1496,7 @@ func setupConfiguredTest(t *testing.T, tomlConfig config.TomlConfig, dryRun bool
 		1*time.Minute,
 		new(2),
 		tomlConfig.DrainGPUPods,
-		tomlConfig.EntityTypes(),
+		tomlConfig.PartialRemediationEntityTypes,
 		dryRun,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(nil),
@@ -1579,14 +1581,15 @@ func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
 	require.NoError(t, err)
 
 	tomlConfig := config.TomlConfig{
-		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
-		SystemNamespaces:          "kube-*",
-		DeleteAfterTimeoutMinutes: 5,
-		NotReadyTimeoutMinutes:    2,
-		DrainGPUPods:              false,
-		UserNamespaces:            userNamespaces,
-		CustomDrain:               customDrainConfig,
-		PartialDrainEnabled:       true,
+		EvictionTimeoutInSeconds:      config.Duration{Duration: 30 * time.Second},
+		SystemNamespaces:              "kube-*",
+		DeleteAfterTimeoutMinutes:     5,
+		NotReadyTimeoutMinutes:        2,
+		DrainGPUPods:                  false,
+		UserNamespaces:                userNamespaces,
+		CustomDrain:                   customDrainConfig,
+		PartialDrainEnabled:           true,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 	}
 
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1611,7 +1614,7 @@ func setupCustomDrain(t *testing.T, customDrainConfig config.CustomDrainConfig,
 		1*time.Minute,
 		new(2),
 		false,
-		tomlConfig.EntityTypes(),
+		tomlConfig.PartialRemediationEntityTypes,
 		false,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(customDrainNodes.LabelKeys()),
@@ -2801,7 +2804,8 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		UserNamespaces: []config.UserNamespace{
 			{Name: "*", Mode: config.ModeImmediateEvict},
 		},
-		PartialDrainEnabled: true,
+		PartialDrainEnabled:           true,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 	}
 
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -2826,7 +2830,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		1*time.Minute,
 		new(2),
 		false,
-		tomlConfig.EntityTypes(),
+		tomlConfig.PartialRemediationEntityTypes,
 		false,
 		tomlConfig.SystemNamespaces,
 		informers.NodeFields(nil),

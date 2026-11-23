@@ -31,18 +31,30 @@ func accelEntityType(actions ...string) PartialRemediationEntityType {
 	}
 }
 
+// gpuEntityType is the GPU_UUID entry of the Helm chart default. The modeltest package has the same
+// fixture for other packages; this package cannot import it.
+func gpuEntityType() PartialRemediationEntityType {
+	return PartialRemediationEntityType{
+		Devices: []PartialRemediationDevice{
+			{ResourceNames: []string{"nvidia.com/gpu", "nvidia.com/pgpu"}},
+			{Driver: GPUDRADriverName, DeviceClasses: []string{GPUDRADriverName}, EntityValueAttribute: "uuid"},
+		},
+		ScopedActions: []string{"COMPONENT_RESET"},
+	}
+}
+
 func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 	tests := []struct {
 		name    string
 		types   PartialRemediationEntityTypes
 		wantErr []string
 	}{
-		{name: "default", types: DefaultPartialRemediationEntityTypes()},
+		{name: "chart default", types: PartialRemediationEntityTypes{GPUUUIDEntityType: gpuEntityType()}},
 		{name: "empty map", types: PartialRemediationEntityTypes{}},
 		{
 			name: "second entity type",
 			types: PartialRemediationEntityTypes{
-				GPUUUIDEntityType: DefaultPartialRemediationEntityTypes()[GPUUUIDEntityType],
+				GPUUUIDEntityType: gpuEntityType(),
 				"ACCEL_SERIAL":    accelEntityType("accel-reset"),
 			},
 		},
@@ -96,7 +108,7 @@ func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 		{
 			name: "action scoped to two entity types",
 			types: PartialRemediationEntityTypes{
-				GPUUUIDEntityType: DefaultPartialRemediationEntityTypes()[GPUUUIDEntityType],
+				GPUUUIDEntityType: gpuEntityType(),
 				"ACCEL_SERIAL":    accelEntityType("COMPONENT_RESET"),
 			},
 			wantErr: []string{"action COMPONENT_RESET is scoped to both ACCEL_SERIAL and GPU_UUID"},
@@ -141,7 +153,7 @@ func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 
 func TestPartialRemediationEntityTypesEntityTypeForAction(t *testing.T) {
 	types := PartialRemediationEntityTypes{
-		GPUUUIDEntityType: DefaultPartialRemediationEntityTypes()[GPUUUIDEntityType],
+		GPUUUIDEntityType: gpuEntityType(),
 		"ACCEL_SERIAL":    accelEntityType("accel-reset"),
 	}
 
@@ -169,7 +181,7 @@ func TestPartialRemediationEntityTypesEntityTypeForAction(t *testing.T) {
 }
 
 func TestPartialRemediationEntityTypeNames(t *testing.T) {
-	gpu := DefaultPartialRemediationEntityTypes()[GPUUUIDEntityType]
+	gpu := gpuEntityType()
 
 	if got, want := gpu.AnnotationKeys(), []string{"nvidia.com/gpu", "nvidia.com/pgpu", "gpu.nvidia.com"}; !slices.Equal(got, want) {
 		t.Errorf("AnnotationKeys() = %q, want %q", got, want)

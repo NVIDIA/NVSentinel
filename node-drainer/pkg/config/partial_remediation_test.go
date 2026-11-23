@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 const namespaceRules = "[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n"
@@ -64,15 +65,15 @@ func TestLoadTomlConfigFromString_PartialRemediationEntityTypes(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:  "absent key uses the built-in GPU_UUID entry",
-			input: namespaceRules,
-			want:  model.DefaultPartialRemediationEntityTypes(),
+			name:    "absent key is rejected",
+			input:   namespaceRules,
+			wantErr: ErrPartialRemediationEntityTypesMissing.Error(),
 		},
 		{
 			name:  "rendered map is decoded",
 			input: namespaceRules + renderedEntityTypes,
 			want: model.PartialRemediationEntityTypes{
-				model.GPUUUIDEntityType: model.DefaultPartialRemediationEntityTypes()[model.GPUUUIDEntityType],
+				model.GPUUUIDEntityType: modeltest.GPUEntityTypes()[model.GPUUUIDEntityType],
 				"ACCEL_SERIAL":          accel,
 			},
 		},
@@ -103,12 +104,13 @@ func TestLoadTomlConfigFromString_PartialRemediationEntityTypes(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, tt.want, cfg.EntityTypes())
+			require.Equal(t, tt.want, cfg.PartialRemediationEntityTypes)
 		})
 	}
 }
 
-// A config built in code without the key, as tests and older callers do, gets the built-in entry.
-func TestTomlConfigEntityTypes_ZeroValue_ReturnsBuiltInEntry(t *testing.T) {
-	require.Equal(t, model.DefaultPartialRemediationEntityTypes(), (&TomlConfig{}).EntityTypes())
+// loadTestConfig loads a configuration for tests that are not about partialRemediationEntityTypes. It adds the
+// key, which the Helm chart always renders, as an empty table.
+func loadTestConfig(doc string) (*TomlConfig, error) {
+	return LoadTomlConfigFromString(doc + "\n[partialRemediationEntityTypes]\n")
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/stretchr/testify/assert"
@@ -468,7 +469,7 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset(systemPod, daemonPod, eligiblePod, node)
-	informers, err := NewInformers(client, 0, new(5), false, model.DefaultPartialRemediationEntityTypes(), false, `^kube-system$`, NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(), false, `^kube-system$`, NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -512,7 +513,7 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	informers, err := NewInformers(client, 0, new(5), false, model.DefaultPartialRemediationEntityTypes(), false, "", NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(), false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -605,7 +606,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 	const (
 		missingAnnotation = "is requesting devices but is missing device annotation; " +
 			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)"
-		noClaimNeeded     = "-" // bind the claim status entry with a nil ResourceClaimName
+		noClaimNeeded = "-" // bind the claim status entry with a nil ResourceClaimName
 	)
 
 	tests := []struct {
@@ -752,7 +753,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		}
 	}
 
-	informers, err := NewInformers(client, 0, new(5), true, model.DefaultPartialRemediationEntityTypes(), false, "", NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), true, modeltest.GPUEntityTypes(), false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -818,7 +819,7 @@ func TestFindEvictablePodsInNamespaceAndNode_ConfiguredEntityType_UsesItsDevices
 		require.NoError(t, err)
 	}
 
-	entityTypes := model.DefaultPartialRemediationEntityTypes()
+	entityTypes := modeltest.GPUEntityTypes()
 	entityTypes["ACCEL_SERIAL"] = model.PartialRemediationEntityType{
 		Devices: []model.PartialRemediationDevice{
 			{ResourceNames: []string{"example.com/accel"}},

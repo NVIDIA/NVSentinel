@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
@@ -702,8 +703,9 @@ func newDecisionEvaluator(t *testing.T, customEnabled bool, nodeSelector string,
 	t.Helper()
 
 	cfg := config.TomlConfig{
-		SystemNamespaces: "kube-*",
-		UserNamespaces:   namespaces,
+		SystemNamespaces:              "kube-*",
+		UserNamespaces:                namespaces,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 		CustomDrain: config.CustomDrainConfig{
 			Enabled:               customEnabled,
 			NodeSelector:          nodeSelector,
@@ -806,7 +808,9 @@ func (s *completedDrainStore) FindHealthEventsByQuery(context.Context,
 // scoped action has no entity of the configured type is retried, not marked Failed, so a fix to
 // scopedActions lets the drain continue.
 func TestEvaluateEventWithDatabase_ScopedActionWithoutEntity_ReturnsErrorForRetry(t *testing.T) {
-	evaluator := &NodeDrainEvaluator{config: config.TomlConfig{PartialDrainEnabled: true}}
+	evaluator := &NodeDrainEvaluator{config: config.TomlConfig{
+		PartialDrainEnabled: true, PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
+	}}
 	event := quarantinedEvent("node-1")
 	event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
 	event.HealthEvent.EntitiesImpacted = []*protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}}

@@ -197,7 +197,7 @@ func initializeKubeComponents(
 		clientSet,
 		&tomlCfg.NotReadyTimeoutMinutes,
 		tomlCfg.DrainGPUPods,
-		tomlCfg.EntityTypes(),
+		tomlCfg.PartialRemediationEntityTypes,
 		params.DryRun,
 		tomlCfg.SystemNamespaces,
 		nodeFields,

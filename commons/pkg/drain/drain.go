@@ -97,18 +97,26 @@ func didDrainCompleteForEvent(ctx context.Context, healthEventStore datastore.He
 	return doesDrainCoverPartialEntity(ctx, drainCompletedForEvent, entity, currentPartialEntity, eventID, nodeName), nil
 }
 
+// preUpgradeEntityTypes is the partial drain rule of the versions that did not record the drain scope: only
+// COMPONENT_RESET got a partial drain, scoped to GPU_UUID. It works out the scope of the events that those
+// versions drained, so it does not follow the configuration. It has no devices, because working out the
+// scope reads only the scoped actions.
+var preUpgradeEntityTypes = model.PartialRemediationEntityTypes{
+	model.GPUUUIDEntityType: {ScopedActions: []string{protos.RecommendedAction_COMPONENT_RESET.String()}},
+}
+
 // earlierDrainScope returns the entity an earlier drain covered, or nil for a drain of the full node.
 // node-drainer records the scope on each event before it drains, so a later change to partialDrainEnabled or
 // to partialRemediationEntityTypes does not rewrite it. An event without a record was drained by a version
 // that did not record the scope and gave partial drains only to COMPONENT_RESET on GPU_UUID, so its scope is
-// derived from the built-in entry.
+// derived from preUpgradeEntityTypes.
 func earlierDrainScope(status *datastore.HealthEventWithStatus, healthEvent *protos.HealthEvent,
 	partialDrainEnabled bool) (*protos.Entity, error) {
 	if decision := status.HealthEventStatus.DrainDecision; decision != nil {
 		return scopeEntity(decision.Scope), nil
 	}
 
-	return PartialDrainEntity(healthEvent, partialDrainEnabled, model.DefaultPartialRemediationEntityTypes())
+	return PartialDrainEntity(healthEvent, partialDrainEnabled, preUpgradeEntityTypes)
 }
 
 // scopeEntity copies a stored scope into the proto entity the coverage check compares.

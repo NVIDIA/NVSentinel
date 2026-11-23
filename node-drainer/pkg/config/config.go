@@ -29,6 +29,11 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 )
 
+// ErrPartialRemediationEntityTypesMissing means the configuration has no partialRemediationEntityTypes key.
+// The Helm chart always renders it from global.partialRemediationEntityTypes, which holds the default.
+var ErrPartialRemediationEntityTypesMissing = errors.New(
+	"partialRemediationEntityTypes is missing; set global.partialRemediationEntityTypes in the Helm values")
+
 type EvictMode string
 
 const (
@@ -80,19 +85,9 @@ type TomlConfig struct {
 	// entity they targeted. Off by default because entity_value is a GPU UUID.
 	PartialDrainEntityMetricEnabled bool `toml:"partialDrainEntityMetricEnabled"`
 	// PartialRemediationEntityTypes lists the entity types that get partial drains, their devices and
-	// their scoped actions. The chart renders it from global.partialRemediationEntityTypes. Read it
-	// through EntityTypes, which falls back to the built-in GPU_UUID entry when the key is absent.
+	// their scoped actions. The chart renders it from global.partialRemediationEntityTypes, which holds
+	// the default. Loading fails without the key; an empty table configures no entity type.
 	PartialRemediationEntityTypes model.PartialRemediationEntityTypes `toml:"partialRemediationEntityTypes"`
-}
-
-// EntityTypes returns the configured entity-type map, or the built-in GPU_UUID entry when the
-// configuration has no partialRemediationEntityTypes key.
-func (c *TomlConfig) EntityTypes() model.PartialRemediationEntityTypes {
-	if c.PartialRemediationEntityTypes == nil {
-		return model.DefaultPartialRemediationEntityTypes()
-	}
-
-	return c.PartialRemediationEntityTypes
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {
@@ -221,7 +216,10 @@ func validateAndSetDefaults(config *TomlConfig, md toml.MetaData) (*TomlConfig, 
 		return nil, err
 	}
 
-	config.PartialRemediationEntityTypes = config.EntityTypes()
+	if config.PartialRemediationEntityTypes == nil {
+		return nil, ErrPartialRemediationEntityTypesMissing
+	}
+
 	if err := config.PartialRemediationEntityTypes.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
 	}

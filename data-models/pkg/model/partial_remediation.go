@@ -19,16 +19,13 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // PartialRemediationEntityTypes maps an entity type of health events, such as GPU_UUID, to the devices
 // of that type and the actions that repair one device of that type (ADR-071). The Helm chart renders it
 // from global.partialRemediationEntityTypes into the configuration of each component that needs it.
 //
-// A nil map means that the configuration has no partialRemediationEntityTypes key. Components then use
-// DefaultPartialRemediationEntityTypes. An empty map means that no entity type is configured, so no
+// The chart default holds the GPU_UUID entry. An empty map means that no entity type is configured, so no
 // action gets a partial drain.
 type PartialRemediationEntityTypes map[string]PartialRemediationEntityType
 
@@ -54,26 +51,8 @@ type PartialRemediationDevice struct {
 	EntityValueAttribute string `toml:"entityValueAttribute"`
 }
 
-// GPUUUIDEntityType is the entity type of the built-in entry.
+// GPUUUIDEntityType is the entity type of health events that names a GPU.
 const GPUUUIDEntityType = "GPU_UUID"
-
-// DefaultPartialRemediationEntityTypes returns the built-in GPU_UUID entry. Components use it when their
-// configuration has no partialRemediationEntityTypes key, and the chart default sets the same entry.
-func DefaultPartialRemediationEntityTypes() PartialRemediationEntityTypes {
-	return PartialRemediationEntityTypes{
-		GPUUUIDEntityType: {
-			Devices: []PartialRemediationDevice{
-				{ResourceNames: []string{"nvidia.com/gpu", "nvidia.com/pgpu"}},
-				{
-					Driver:               GPUDRADriverName,
-					DeviceClasses:        []string{GPUDRADriverName},
-					EntityValueAttribute: "uuid",
-				},
-			},
-			ScopedActions: []string{protos.RecommendedAction_COMPONENT_RESET.String()},
-		},
-	}
-}
 
 // Validate reports every entry that the components cannot use. The Helm chart runs the same checks.
 func (t PartialRemediationEntityTypes) Validate() error {

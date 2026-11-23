@@ -163,7 +163,8 @@ func (e *NodeDrainEvaluator) eventDrainScope(healthEvent model.HealthEventWithSt
 		return recorded.GetScope(), nil
 	}
 
-	return drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled, e.config.EntityTypes())
+	return drain.PartialDrainEntity(healthEvent.HealthEvent, e.config.PartialDrainEnabled,
+		e.config.PartialRemediationEntityTypes)
 }
 
 // selectDrainMethod chooses BuiltIn or Custom for this event. A new decision carries the

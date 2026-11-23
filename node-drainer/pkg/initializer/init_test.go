@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 )
 
@@ -91,7 +91,7 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 
 			notReadyTimeoutMinutes := 10
 			initializedInformers, initErr := initializeInformers(
-				clientset, &notReadyTimeoutMinutes, false, model.DefaultPartialRemediationEntityTypes(), false,
+				clientset, &notReadyTimeoutMinutes, false, modeltest.GPUEntityTypes(), false,
 				"kube-system", informers.NodeFields(nil),
 			)
 			require.NoError(t, initErr)

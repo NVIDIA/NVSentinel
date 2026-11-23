@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -195,7 +196,7 @@ func TestPartialDrainEntity_UsesScopedActions(t *testing.T) {
 	t.Parallel()
 
 	accel := &protos.Entity{EntityType: "ACCEL_SERIAL", EntityValue: "ACC-1"}
-	types := model.DefaultPartialRemediationEntityTypes()
+	types := modeltest.GPUEntityTypes()
 	types["ACCEL_SERIAL"] = model.PartialRemediationEntityType{
 		Devices: []model.PartialRemediationDevice{{
 			Driver: "accel.example.com", DeviceClasses: []string{"accel.example.com"}, EntityValueAttribute: "serial",
