@@ -27,4 +27,25 @@ spec:
     - ports:
         - port: {{ .Values.service.port | default 50051 }}
           protocol: TCP
+---
+# This NetworkPolicy allows ingress traffic to the metrics endpoint. Without it the only
+# policy selecting these pods is the one above, which declares policyTypes Ingress and so
+# denies every other port, leaving the chart's own PodMonitor unable to scrape the port
+# named metrics that the Deployment exposes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "provider.fullname" . }}-allow-metrics-traffic
+  labels:
+    {{- include "provider.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "provider.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ ((.Values.global).metricsPort) | default 2112 }}
+          protocol: TCP
 
