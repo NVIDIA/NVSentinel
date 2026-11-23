@@ -19,24 +19,22 @@ Status: Proposed (tracking issue [#2419](https://github.com/NVIDIA/NVSentinel/is
    - [Mitigations](#mitigations)
 6. [Alternatives Considered](#alternatives-considered)
    - [Run the mapper from a chart of its own now](#run-the-mapper-from-a-chart-of-its-own-now)
-   - [Give the mapper the new ServiceAccount](#give-the-mapper-the-new-serviceaccount)
    - [Run the mapper as a second container in the metadata-collector DaemonSet](#run-the-mapper-as-a-second-container-in-the-metadata-collector-daemonset)
    - [Keep the mapper in the metadata-collector binary with a flag to skip NVML](#keep-the-mapper-in-the-metadata-collector-binary-with-a-flag-to-skip-nvml)
-   - [Map pods to devices centrally from the Kubernetes API](#map-pods-to-devices-centrally-from-the-kubernetes-api)
 7. [Notes](#notes)
    - [Non-goals](#non-goals)
 8. [References](#references)
 
 ## Context
 
-metadata-collector runs two jobs in one process, one image and one DaemonSet:
+metadata-collector runs two jobs in one pod backed by a DaemonSet:
 
 - **NVIDIA discovery** reads NVML and `nvidia-smi`, then writes `gpu_metadata.json` to `/var/lib/nvsentinel` for the GPU, syslog and NIC health monitors.
 - **Pod device mapper** writes the `dgxc.nvidia.com/devices` annotation on pods every 30 seconds. node-drainer reads the annotation to find the pods affected in a partial drain.
 
 ```mermaid
 flowchart TB
-    subgraph pod["metadata-collector: one DaemonSet, one image, one process"]
+    subgraph pod["metadata-collector: one pod"]
         spec["Pod spec<br/>nodes: gpu.present, driver.installed<br/>privileged, hostNetwork, hostPID, /sys<br/>CUDA base image"]
         rbac["ClusterRole<br/>patch pods<br/>get nodes/pods, nodes/proxy"]
         disc["NVIDIA discovery<br/>NVML, nvidia-smi"]
@@ -59,8 +57,8 @@ Running both jobs in one pod causes three problems:
 ## Decision
 
 1. **The mapper becomes its own module, binary and image.** The module is `pod-device-mapper`. It does not import metadata-collector or NVML.
-2. **The mapper runs in its own DaemonSet, which the metadata-collector chart renders for now.** The DaemonSet has no vendor settings: no RuntimeClass, no DRA claim, and no host namespaces. Its node selector defaults to `nvidia.com/gpu.present`, so current installs run the mapper on their GPU nodes, as today. The mapper no longer waits for the driver (see [DaemonSet](#daemonset)). Every `metadata-collector` key keeps working (see [Chart](#chart)).
-3. **metadata-collector keeps only the NVIDIA discovery.** Its binary, CUDA image, pod settings and `gpu_metadata.json` stay as they are. It moves to a new ServiceAccount with no ClusterRole, because the discovery does not call the Kubernetes API. The existing ServiceAccount and ClusterRole stay with the mapper. It becomes part of the NVIDIA plugin of ADR-070.
+2. **The mapper runs in its own DaemonSet, which the metadata-collector chart renders for now, so the Helm values that operators set today keep working.** The DaemonSet has no vendor settings: no RuntimeClass, no DRA claim, and no host namespaces. Its node selector defaults to `nvidia.com/gpu.present`, so current installs run the mapper on their GPU nodes, as today. The mapper no longer waits for the driver (see [DaemonSet](#daemonset)). See [Chart](#chart) for the keys.
+3. **metadata-collector keeps only the NVIDIA discovery, in a DaemonSet renamed to `nvidia-metadata-collector`.** Its binary, CUDA image, pod settings and `gpu_metadata.json` stay as they are. The rename makes the upgrade remove every old mapper at once (see [Upgrade](#upgrade)). It moves to a new ServiceAccount with no ClusterRole, because the discovery does not call the Kubernetes API. The existing ServiceAccount and ClusterRole stay with the mapper. It becomes part of the NVIDIA plugin of ADR-070.
 
 ## Implementation
 
@@ -74,7 +72,7 @@ This work starts after ADR-071 is implemented. After ADR-071, the mapper reads D
 
 ### DaemonSet
 
-| Setting | metadata-collector today | metadata-collector after | Mapper DaemonSet |
+| Setting | metadata-collector today | `nvidia-metadata-collector` | Mapper DaemonSet |
 |---|---|---|---|
 | Privileged, host network, host PID | Yes | Yes | No |
 | User | Root (`runAsUser: 0`) | Root | Root (`runAsUser: 0`), with all capabilities dropped |
@@ -107,11 +105,9 @@ Until ADR-070 creates the NVIDIA plugin chart, the metadata-collector chart rend
 
 ### Upgrade
 
-The upgrade replaces the metadata-collector pods at the pace of its update strategy (5% at a time by default). It creates the new mapper DaemonSet, so all mapper pods start at once. Until its metadata-collector pod is replaced, a node runs two mappers: the old one in the metadata-collector pod, and the new one. The old pod keeps the existing ServiceAccount, so the old mapper keeps its access until the pod is replaced.
+The upgrade deletes the `metadata-collector` DaemonSet and creates the `nvidia-metadata-collector` and mapper DaemonSets. So the old mappers stop at once, and a node never runs two mappers, even when a rollout is slow or stuck.
 
-A node can also have no mapper for a short time, if its metadata-collector pod is replaced before its new mapper pod is ready. Each rolling update of metadata-collector has the same gap today. A partial drain on that node waits for the missing annotations, as it does for a pod that the mapper has not seen yet.
-
-Both mappers read the same kubelet data and write the same annotation. They write the same values for device-plugin devices and for DRA GPUs that both can resolve. They write different values only for a DRA device that the old mapper cannot resolve ([#2454](https://github.com/NVIDIA/NVSentinel/issues/2454)). The old mapper writes a partial annotation, and the new mapper removes it on its next poll. The annotation then alternates between partial and complete until the old pod is replaced. Today it stays partial.
+Until its new mapper pod is ready, a node has no mapper. A partial drain on that node waits for the missing annotations, as it does for a pod that the mapper has not seen yet. The discovery pods also start on all nodes at once. The health monitors keep reading the `gpu_metadata.json` that the old pod wrote, because the discovery replaces the file and never deletes it.
 
 Because all mapper pods start at once, every mapper on a node with DRA pods lists ResourceSlices in the same short window. ADR-071 [keeps this list cheap](071-device-scope-from-configuration.md#dra-devices): it is filtered by node and driver, and the API server answers it from its cache.
 
@@ -121,7 +117,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 - **`gpu_metadata.json`:** the path and format do not change, and its readers do not change.
 - **Helm values:** every `metadata-collector` key keeps working, and the new keys are under `podMapper` (see [Chart](#chart)).
 - **Flags:** the metadata-collector binary still accepts `--pod-mapper-enabled` and `--pod-mapper-max-consecutive-failures`, and ignores them with a log line, so an older pod spec keeps starting.
-- **Metrics:** the mapper metrics keep their names. They now come from the mapper DaemonSet's pods, so a query that filters them by the metadata-collector pod no longer matches. The mapper's metrics port moves from the node IP to the pod IP, and its number comes from `global.metricsPort`, so it changes on a cluster that set `metrics.port`.
+- **Metrics:** the metric names do not change. The pods have new names, so a query that filters by the `metadata-collector` pod name no longer matches. The mapper's metrics port moves from the node IP to the pod IP, and its number comes from `global.metricsPort`, so it changes on a cluster that set `metrics.port`.
 - **Images:** the chart and the images are released together. A newer metadata-collector image under an older chart is not supported: the pod then has no mapper, and partial drains wait.
 
 ## Rationale
@@ -141,7 +137,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 
 - One more module, image and DaemonSet to build, release and run. Each GPU node runs one more pod. When `podMapper.resources` is unset, that pod requests as much as the discovery pod (100m CPU and 128Mi memory by default), so the two pods request twice as much as one pod does today.
 - Until the NVIDIA plugin chart exists, a core DaemonSet ships in the metadata-collector chart, and turning off metadata-collector also turns off the mapper, as today.
-- During the upgrade, two mappers on a node can disagree on a DRA device, and all mapper pods list ResourceSlices at once (see [Upgrade](#upgrade)).
+- During the upgrade, the discovery and the mapper restart on all nodes at once, and all mapper pods list ResourceSlices at once (see [Upgrade](#upgrade)).
 
 ### Mitigations
 
@@ -151,11 +147,7 @@ Because all mapper pods start at once, every mapper on a node with DRA pods list
 
 ### Run the mapper from a chart of its own now
 
-The mapper would get a core subchart in this change. **Rejected** because that subchart cannot read the `metadata-collector` values that operators set today, so each key would need a migration. A Helm `condition` could carry `podMapper.enabled`, but it skips a quoted `"false"` and starts the mapper. The placement and resource values would stop applying to the mapper without an install check for each one.
-
-### Give the mapper the new ServiceAccount
-
-The discovery would keep the existing ServiceAccount, and the upgrade would remove its ClusterRole. **Rejected** because RBAC applies to the running pods at once. Each old mapper would then fail every poll, and after `podMapper.maxConsecutiveFailures` polls its metadata-collector process would exit and restart until the rollout replaces its pod.
+The mapper would get a core subchart in this change. **Deferred** because that subchart cannot read the `metadata-collector` values that operators set today, so each key would need a migration. A Helm `condition` could carry `podMapper.enabled`, but it skips a quoted `"false"` and starts the mapper. The placement and resource values would stop applying to the mapper without an install check for each one.
 
 ### Run the mapper as a second container in the metadata-collector DaemonSet
 
@@ -164,10 +156,6 @@ The mapper gets its own binary and image, but runs as a second container in the 
 ### Keep the mapper in the metadata-collector binary with a flag to skip NVML
 
 The binary would skip the discovery on request and run only the mapper. **Rejected** because the mapper would still ship in the CUDA image, in the same module as the NVIDIA code, and ADR-070 moves that code to the NVIDIA plugin.
-
-### Map pods to devices centrally from the Kubernetes API
-
-A Deployment, or node-drainer itself, would read DRA allocations from ResourceClaim statuses and would need no DaemonSet. **Rejected** because device-plugin allocations are not in the Kubernetes API. Only the kubelet on the node knows which device IDs it gave to a pod, and it serves them only on a local socket.
 
 ## Notes
 
