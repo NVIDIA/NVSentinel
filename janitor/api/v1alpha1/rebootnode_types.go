@@ -22,8 +22,21 @@ import (
 const (
 	// RebootNodeConditionSignalSent indicates whether the reboot signal has been sent to the CSP
 	RebootNodeConditionSignalSent = "SignalSent"
-	// RebootNodeConditionNodeReady indicates whether the node has returned to ready state after reboot
+	// RebootNodeConditionNodeReady reports whether the controller considers
+	// the reboot workflow complete. In CSP mode, True means the node's boot ID
+	// changed and the reboot request was removed; in manual mode, True means
+	// the node reports Ready without the controller verifying a boot ID
+	// change. The name is kept for API compatibility with existing automation.
+	//
+	// Deprecated: use RebootNodeConditionRebootCompleted instead.
 	RebootNodeConditionNodeReady = "NodeReady"
+	// RebootNodeConditionRebootCompleted is the preferred spelling of the
+	// NodeReady condition: it reports whether the controller considers the
+	// reboot workflow complete. In CSP mode, True means the node's boot ID
+	// changed and the reboot request was removed; in manual mode, True means
+	// the node reports Ready without the controller verifying a boot ID
+	// change. Both conditions are always set to the same value.
+	RebootNodeConditionRebootCompleted = "RebootCompleted"
 	// ManualModeConditionType indicates that manual mode is enabled and outside actor is required
 	ManualModeConditionType = "ManualMode"
 	// ConditionReasonInitializing is the reason stamped on conditions seeded
@@ -83,19 +96,19 @@ type RebootNodeList struct {
 
 func (r *RebootNode) IsRebootInProgress() bool {
 	rebootSignalSent := false
-	nodeNotReady := false
+	rebootNotCompleted := false
 
 	for _, condition := range r.Status.Conditions {
 		if condition.Type == RebootNodeConditionSignalSent && condition.Status == metav1.ConditionTrue {
 			rebootSignalSent = true
 		}
 
-		if condition.Type == RebootNodeConditionNodeReady && condition.Status != metav1.ConditionTrue {
-			nodeNotReady = true
+		if isNodeReadyOrRebootCompleted(condition.Type) && condition.Status != metav1.ConditionTrue {
+			rebootNotCompleted = true
 		}
 	}
 
-	return rebootSignalSent && nodeNotReady
+	return rebootSignalSent && rebootNotCompleted
 }
 
 func (r *RebootNode) GetCSPReqRef() string {
@@ -106,6 +119,36 @@ func (r *RebootNode) GetCSPReqRef() string {
 	}
 
 	return ""
+}
+
+// isNodeReadyOrRebootCompleted reports whether the condition type is the
+// reboot-completion condition under either its legacy or preferred name.
+func isNodeReadyOrRebootCompleted(conditionType string) bool {
+	return conditionType == RebootNodeConditionNodeReady ||
+		conditionType == RebootNodeConditionRebootCompleted
+}
+
+// SetRebootCompletionCondition writes the given condition under both the
+// legacy NodeReady type and the preferred RebootCompleted type, so automation
+// reading either name stays correct.
+func (r *RebootNode) SetRebootCompletionCondition(status metav1.ConditionStatus, reason, message string) {
+	now := metav1.Now()
+
+	r.SetCondition(metav1.Condition{
+		Type:               RebootNodeConditionNodeReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: now,
+	})
+
+	r.SetCondition(metav1.Condition{
+		Type:               RebootNodeConditionRebootCompleted,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: now,
+	})
 }
 
 // SetInitialConditions sets the initial conditions for the RebootNode to Unknown state
@@ -121,7 +164,7 @@ func (r *RebootNode) SetInitialConditions() {
 			hasSignalSent = true
 		}
 
-		if condition.Type == RebootNodeConditionNodeReady {
+		if isNodeReadyOrRebootCompleted(condition.Type) {
 			hasNodeReady = true
 		}
 	}
@@ -139,14 +182,18 @@ func (r *RebootNode) SetInitialConditions() {
 	}
 
 	if !hasNodeReady {
-		nodeReadyCondition := metav1.Condition{
-			Type:               RebootNodeConditionNodeReady,
+		rebootCondition := metav1.Condition{
 			Status:             metav1.ConditionUnknown,
 			Reason:             ConditionReasonInitializing,
-			Message:            "Node ready state not yet determined",
+			Message:            "Reboot completion not yet determined",
 			LastTransitionTime: now,
 		}
-		r.SetCondition(nodeReadyCondition)
+
+		rebootCondition.Type = RebootNodeConditionNodeReady
+		r.SetCondition(rebootCondition)
+
+		rebootCondition.Type = RebootNodeConditionRebootCompleted
+		r.SetCondition(rebootCondition)
 	}
 }
 

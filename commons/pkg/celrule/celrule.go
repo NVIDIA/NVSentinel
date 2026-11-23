@@ -156,6 +156,28 @@ func NodeFieldPaths(expression string) (fieldPaths [][]string, isComplete bool, 
 	return fieldPaths, isComplete, nil
 }
 
+// CheckBooleanExpression reports whether expression compiles to a boolean in the
+// same environment as a rule for variable.
+//
+// variable is "event" or "node". A field read such as event.componentClass has
+// type dyn, because the variable is cel.AnyType, so the type checker cannot
+// prove it is a boolean. Dyn and any are accepted here. The evaluator still
+// rejects a non-boolean result when the rule runs. A type the checker knows,
+// such as a string or an int, is rejected here.
+func CheckBooleanExpression(variable, expression string) error {
+	_, checkedAst, err := typeCheck(variable, expression)
+	if err != nil {
+		return err
+	}
+
+	outputType := checkedAst.OutputType()
+	if allowsBooleanResult(outputType) {
+		return nil
+	}
+
+	return fmt.Errorf("expression must return a boolean, got %s", outputType)
+}
+
 func newEnv(variable string) (*cel.Env, error) {
 	env, err := cel.NewEnv(
 		cel.Variable(variable, cel.AnyType),
@@ -169,19 +191,9 @@ func newEnv(variable string) (*cel.Env, error) {
 }
 
 func compile(variable, expression string) (cel.Program, error) {
-	env, err := newEnv(variable)
+	env, checkedAst, err := typeCheck(variable, expression)
 	if err != nil {
 		return nil, err
-	}
-
-	ast, issues := env.Parse(expression)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to parse expression: %w", issues.Err())
-	}
-
-	checkedAst, issues := env.Check(ast)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to check expression: %w", issues.Err())
 	}
 
 	program, err := env.Program(checkedAst)
@@ -190,6 +202,35 @@ func compile(variable, expression string) (cel.Program, error) {
 	}
 
 	return program, nil
+}
+
+func typeCheck(variable, expression string) (*cel.Env, *cel.Ast, error) {
+	env, err := newEnv(variable)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ast, issues := env.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, nil, fmt.Errorf("failed to parse expression: %w", issues.Err())
+	}
+
+	checkedAst, issues := env.Check(ast)
+	if issues != nil && issues.Err() != nil {
+		return nil, nil, fmt.Errorf("failed to check expression: %w", issues.Err())
+	}
+
+	return env, checkedAst, nil
+}
+
+func allowsBooleanResult(outputType *cel.Type) bool {
+	if outputType == nil {
+		return false
+	}
+
+	return outputType.IsExactType(cel.BoolType) ||
+		outputType.IsExactType(cel.DynType) ||
+		outputType.IsExactType(cel.AnyType)
 }
 
 func evaluate(program cel.Program, activation map[string]any) (bool, error) {

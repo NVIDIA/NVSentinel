@@ -59,6 +59,7 @@ Runs on Linux and on macOS, Intel or Apple Silicon.
 - **helm** — Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
 - **jq** — JSON processor ([install](https://jqlang.github.io/jq/download/))
 - **curl** — used to look up the current NVSentinel release
+- **column** — formats the status tables; preinstalled on most systems, while minimal Debian and Ubuntu images need the `bsdextrautils` package
 
 Resources: roughly 4 CPU cores, 8 GB RAM and 20 GB of free disk.
 

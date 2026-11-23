@@ -2,19 +2,20 @@
 
 ## Overview
 
-GPU health monitor requires connection to NVIDIA DCGM for all GPU health checks. Connectivity failures prevent GPU monitoring entirely on affected nodes.
+The GPU Health Monitor requires a connection to NVIDIA DCGM for all GPU health checks. A connectivity failure stops all GPU monitoring on the affected node.
 
 **Key points:**
-- DCGM comes from one of three sources, set by `global.dcgm.mode`: the GPU Operator service, an external node-local hostengine, or an in-process embedded hostengine
-- Failures generate `GpuDcgmConnectivityFailure` node condition
-- Complete loss of GPU health monitoring on affected node
+
+- DCGM comes from one of three sources, which `global.dcgm.mode` selects: the GPU Operator service, an external node-local hostengine or an in-process embedded hostengine.
+- Failures generate the `GpuDcgmConnectivityFailure` node condition.
+- GPU health monitoring stops completely on the affected node.
 
 ## Symptoms
 
-- Node condition `GpuDcgmConnectivityFailure` present
-- GPU monitor logs show DCGM connection errors
+- The node condition `GpuDcgmConnectivityFailure` is present.
+- The GPU Health Monitor logs show DCGM connection errors.
 
-If there is no GPU Health Monitor pod on the node at all, this runbook does not apply. A missing pod is a scheduling problem, not a connectivity problem — go to [No Monitor Pod on the Node](#no-monitor-pod-on-the-node).
+If there is no GPU Health Monitor pod on the node, this runbook does not apply. A missing pod is a scheduling problem, not a connectivity problem. Go to [No Monitor Pod on the Node](#no-monitor-pod-on-the-node).
 
 ## Procedure
 
@@ -24,7 +25,8 @@ If there is no GPU Health Monitor pod on the node at all, this runbook does not 
 kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} --tail=50 | grep -i dcgm
 ```
 
-Look for:
+Find these messages in the output:
+
 - `"Error getting DCGM handle"`
 - `"DCGM connectivity failure detected"`
 - `"Failed to connect to DCGM"`
@@ -37,25 +39,25 @@ Read the configured mode from the release. This is the authoritative answer:
 helm get values nvsentinel -n nvsentinel --all | grep -A 14 "^  dcgm:"
 ```
 
-The mode is `operator-service` (the default), `external-hostengine`, or `embedded-mode`. To confirm what the pod actually runs, read its arguments:
+The mode is `operator-service` (the default), `external-hostengine` or `embedded-mode`. To confirm the mode that the pod uses, read its arguments:
 
 ```bash
 kubectl get pod -n nvsentinel {GPU_HEALTH_MONITOR_POD} -o yaml | grep -E "dcgm-addr|dcgm-mode" -A 1
 ```
 
-`--dcgm-mode` tells you which family the pod is in, and `--dcgm-addr` separates the two remote modes:
+`--dcgm-mode` shows the family of the pod. `--dcgm-addr` separates the two remote modes:
 
 | Configured mode | `--dcgm-mode` | `--dcgm-addr` | `hostNetwork` |
 |---|---|---|---|
-| `operator-service` | `remote` | DCGM service DNS name, e.g. `nvidia-dcgm.gpu-operator.svc:5555` | absent |
+| `operator-service` | `remote` | DCGM service DNS name, for example `nvidia-dcgm.gpu-operator.svc:5555` | absent |
 | `external-hostengine` | `remote` | node-local, `localhost:5555` by default | `true` |
 | `embedded-mode` | `local-managed` | loopback, `localhost:5555` by default | absent |
 
-Then diagnose against the source the mode actually uses:
+Then diagnose the DCGM source that the mode uses:
 
-- **`operator-service`** — continue to step 3. The DCGM pod and service are the dependency.
-- **`external-hostengine`** — skip step 3. No DCGM pod exists. Check the externally managed `nv-hostengine` on the node instead, and confirm the monitor pod has `hostNetwork: true` so `localhost` resolves in the host network namespace.
-- **`embedded-mode`** — skip step 3. The hostengine runs inside the monitor container, so a connectivity failure points at the container's own GPU and driver access. Confirm `runtimeClassName` names the cluster's NVIDIA RuntimeClass and that the container is privileged.
+- **`operator-service`** — continue to step 3. The DCGM pod and the DCGM service are the dependency.
+- **`external-hostengine`** — skip step 3. No DCGM pod exists. Instead, examine the externally managed `nv-hostengine` on the node. Confirm that the GPU Health Monitor pod has `hostNetwork: true`, so that `localhost` resolves in the host network namespace.
+- **`embedded-mode`** — skip step 3. The hostengine runs in the GPU Health Monitor container. Thus, a connectivity failure shows a problem with the GPU and driver access of the container itself. Confirm that `runtimeClassName` names the NVIDIA RuntimeClass of the cluster. Also confirm that the container is privileged.
 
 ### 3. Verify DCGM Pod Running (operator-service only)
 
@@ -69,11 +71,11 @@ kubectl get pods -n {DCGM_NS} -l app=nvidia-dcgm -o wide
 kubectl logs -n {DCGM_NS} {DCGM_POD} --tail=30
 ```
 
-DCGM pod must be `Running` on the same node as the failing GPU monitor.
+The DCGM pod must be `Running` on the same node as the failing GPU Health Monitor.
 
 ### 4. Test DCGM Connectivity
 
-Test DCGM connectivity from within the gpu-health-monitor pod:
+Test the DCGM connectivity from inside the GPU Health Monitor pod:
 
 ```bash
 # Exec into the GPU monitor pod
@@ -86,13 +88,18 @@ dcgmi discovery -l --host nvidia-dcgm.gpu-operator.svc:5555   # operator-service
 dcgmi discovery -l --host localhost:5555                      # external-hostengine or embedded-mode (default)
 ```
 
-In `embedded-mode` the monitor starts the hostengine in-process and exposes it on pod-local loopback, so `dcgmi` inside this pod reaches that same engine. A failure here is node-local rather than a broken network hop, but it does not by itself say which part failed: the hostengine may not have started, or it started and cannot reach the GPUs because the driver, RuntimeClass, or container runtime is not giving the pod device access. The checks below separate the two.
+In `embedded-mode`, the GPU Health Monitor starts the hostengine in-process and exposes it on the pod-local loopback. Thus, `dcgmi` in this pod reaches that same engine. A failure here is node-local and not a broken network hop. But the failure alone does not show which part failed. There are two possible causes:
 
-If `dcgmi` produces no output at all and cannot be interrupted with Ctrl-C, stop here and go to [Unresponsive DCGM](#unresponsive-dcgm) — the probe is hung rather than unreachable, and every further query will hang the same way.
+- The hostengine did not start.
+- The hostengine started, but it cannot reach the GPUs, because the driver, the RuntimeClass or the container runtime does not give the pod device access.
+
+The checks that follow separate the two causes.
+
+If `dcgmi` produces no output and you cannot interrupt it with Ctrl-C, go directly to [Unresponsive DCGM](#unresponsive-dcgm). The probe is hung, not unreachable, and every further query hangs in the same way.
 
 If DCGM commands fail, check the items for your mode:
 
-- **`operator-service`** — the configured DCGM service exists, and network policies allow traffic from the nvsentinel namespace to the one hosting it. Derive the Service name and namespace from `--dcgm-addr` rather than assuming the default:
+- **`operator-service`** — the configured DCGM service exists, and network policies allow traffic from the nvsentinel namespace to the namespace of the service. Get the Service name and namespace from `--dcgm-addr`. Do not assume the default values:
 
   ```bash
   # --dcgm-addr is <service>.<namespace>.svc[.cluster.local]:<port>
@@ -102,10 +109,11 @@ If DCGM commands fail, check the items for your mode:
   kubectl get svc -n "$DCGM_NS" "$DCGM_SVC"
   kubectl get svc -n "$DCGM_NS" "$DCGM_SVC" -o jsonpath='{.spec.internalTrafficPolicy}{"\n"}'
   ```
-- **`external-hostengine`** — `nv-hostengine` is running on the node and listening on the configured port; the monitor pod has `hostNetwork: true`; a host firewall does not block the port.
-- **`embedded-mode`** — `runtimeClassName` names the cluster's NVIDIA RuntimeClass; the container is privileged; `nvidia-smi -L` inside the pod lists the GPUs. Without GPU and driver injection the embedded engine cannot start.
 
-If `dcgmi` works but the monitor still logs `Duplicate key passed to function` or `Max limit reached for the object`, go to [Stale DCGM Field Groups](#stale-dcgm-field-groups).
+- **`external-hostengine`** — `nv-hostengine` runs on the node and listens on the configured port. The GPU Health Monitor pod has `hostNetwork: true`. A host firewall does not block the port.
+- **`embedded-mode`** — `runtimeClassName` names the NVIDIA RuntimeClass of the cluster. The container is privileged. `nvidia-smi -L` in the pod lists the GPUs. Without GPU and driver injection, the embedded engine cannot start.
+
+If `dcgmi` works but the GPU Health Monitor still logs `Duplicate key passed to function` or `Max limit reached for the object`, go to [Stale DCGM Field Groups](#stale-dcgm-field-groups).
 
 ### 5. Verify Resolution
 
@@ -120,9 +128,9 @@ kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} -f | grep "Publish DCGM"
 
 ## No Monitor Pod on the Node
 
-A node with no GPU Health Monitor pod produces no connectivity failure, because no process is there to report one. The node reports no GPU health at all, and nothing in the stack flags it.
+A node with no GPU Health Monitor pod produces no connectivity failure, because no process is there to report one. The node reports no GPU health, and nothing in the stack flags this problem.
 
-Compare the monitor pods against the GPU nodes:
+Compare the GPU Health Monitor pods with the GPU nodes:
 
 ```bash
 # Nodes running a monitor pod
@@ -132,11 +140,11 @@ kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o w
 kubectl get nodes -L nvsentinel.dgxc.nvidia.com/dcgm.version
 ```
 
-Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x` or `4.x`. The monitor DaemonSets select on it in all three source modes, so an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there to fail.
+Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x` or `4.x`. The GPU Health Monitor DaemonSets select nodes by this label in all three source modes. Thus, an unlabeled node is never a scheduling target. The DaemonSet stays healthy and reports no error, because Kubernetes never places a pod there that can fail.
 
-Which mode you run decides whether that is a bug or the expected setup step:
+The mode that you run decides whether a missing label is a bug or an expected setup step:
 
-- **`operator-service`** — labeler derives the label from the GPU Operator DCGM pod image. A missing label means labeler could not read a usable DCGM pod for that node, which is not the same as the pod being absent. Check in this order:
+- **`operator-service`** — labeler sets the label from the version in the GPU Operator DCGM pod image. A missing label means that labeler was not able to read a usable DCGM pod for that node. This is not the same as an absent pod. Do the checks in this order:
 
   ```bash
   # Is a DCGM pod scheduled on the node, and is it Ready?
@@ -148,10 +156,10 @@ Which mode you run decides whether that is a bug or the expected setup step:
   kubectl logs -n nvsentinel deployment/labeler | grep -i dcgm
   ```
 
-  `requireDCGMReadyForBootstrap` defaults to `true`, so on a node bootstrapping for the first time labeler withholds the label until the DCGM pod reports Ready. A pod stuck `Running` but not Ready produces exactly this symptom. Once the bootstrap annotation is written, labeler sets the label regardless of later readiness. See [labeler](../labeler.md).
-- **`external-hostengine` and `embedded-mode`** — there is no DCGM pod, so labeler cannot derive the version and never creates the label. You supply it. See [DCGM Version Node Label](../configuration/gpu-health-monitor.md#dcgm-version-node-label).
+  `requireDCGMReadyForBootstrap` defaults to `true`. Thus, on a node that bootstraps for the first time, labeler does not set the label until the DCGM pod reports Ready. A pod that is stuck in `Running` but is not Ready causes exactly this symptom. After labeler writes the bootstrap annotation, it sets the label regardless of later readiness. See [labeler](../labeler.md).
+- **`external-hostengine` and `embedded-mode`** — there is no DCGM pod. Thus, labeler cannot get the version, and it never creates the label. You must supply the label. See [DCGM Version Node Label](../configuration/gpu-health-monitor.md#dcgm-version-node-label).
 
-Also check that the node is not opted out. Labeler removes its detection labels from a node labeled `nvsentinel.dgxc.nvidia.com/managed=false`:
+Also make sure that the node does not have the opt-out label. Labeler removes its detection labels from a node that has the label `nvsentinel.dgxc.nvidia.com/managed=false`:
 
 ```bash
 kubectl get node {NODE_NAME} -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep -E "managed|dcgm.version"
@@ -159,19 +167,20 @@ kubectl get node {NODE_NAME} -o jsonpath='{.metadata.labels}' | tr ',' '\n' | gr
 
 ## Stale DCGM Field Groups
 
-This failure applies to `operator-service` and `external-hostengine`. In these modes the monitor connects to a hostengine that it does not own, and that hostengine outlives the monitor pod.
+This failure applies to `operator-service` and `external-hostengine`. In these modes, the GPU Health Monitor connects to a hostengine that it does not own. That hostengine outlives the GPU Health Monitor pod.
 
 The hostengine deletes the field groups of a client only when it sees the client connection close. If the connection drops silently, for example when a network policy or a network fault drops the TCP flow, the hostengine keeps the old groups. Each stale group stays until the hostengine restarts.
 
 **Symptoms:**
-- Node condition `GpuDcgmConnectivityFailure` stays `True`
-- Step 4 passes: `dcgmi` reaches the hostengine
-- GPU monitor logs show one of these errors on each retry:
-  - `Error getting DCGM handle: Duplicate key passed to function`. A stale field group still holds the name that the monitor uses. Older monitor versions do not delete it.
-  - `Error getting DCGM handle: Max limit reached for the object`. The hostengine has no free slots. It allows 64 field groups and 64 entity groups in total, for all clients.
-- Metric `dcgm_api_failures_total{error_name="dcgm_initialize_monitoring"}` increases. This metric counts every setup failure after the monitor connects, so other causes are possible. Use the log errors above to confirm the cause. Older monitor versions do not have this metric value. A failed connection increments `error_name="ErrorInitDCGMHandle"` instead.
 
-List the field groups and the entity groups on the hostengine. Run the commands in the GPU monitor pod. `dcgmi` accepts only one address. If the `--dcgm-addr` value from step 2 has one address, use it for `{DCGM_ADDR}`. If it has more than one, use the address from the last `Successfully created DCGM handle to` log line:
+- The node condition `GpuDcgmConnectivityFailure` stays `True`.
+- Step 4 passes: `dcgmi` reaches the hostengine.
+- The GPU Health Monitor logs show one of these errors on each retry:
+  - `Error getting DCGM handle: Duplicate key passed to function`. A stale field group still holds the name that the GPU Health Monitor uses.
+  - `Error getting DCGM handle: Max limit reached for the object`. The hostengine has no free slots. It allows 64 field groups and 64 entity groups in total, for all clients.
+- The metric `dcgm_api_failures_total{error_name="dcgm_initialize_monitoring"}` increases. This metric counts every setup failure after the GPU Health Monitor connects, so other causes are possible. Use the log errors above to confirm the cause. A failed connection increments `error_name="ErrorInitDCGMHandle"` instead.
+
+List the field groups and the entity groups on the hostengine. Run the commands in the GPU Health Monitor pod. `dcgmi` accepts only one address. If the `--dcgm-addr` value from step 2 has one address, use it for `{DCGM_ADDR}`. If it has more than one, use the address from the last `Successfully created DCGM handle to` log line:
 
 ```bash
 kubectl logs -n nvsentinel {GPU_HEALTH_MONITOR_POD} | grep "Successfully created DCGM handle to" | tail -1
@@ -179,9 +188,18 @@ kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi fieldgroup -l --hos
 kubectl exec -n nvsentinel {GPU_HEALTH_MONITOR_POD} -- dcgmi group -l --host {DCGM_ADDR}
 ```
 
-Each output shows the total, for example `8 field groups found.` The monitor creates one entity group named `dcgm_health` and one field group named `nvsentinel_field_monitors`. Monitor versions v1.10.0 to v1.20.0 name the field group `gpu_temp_limit`. More than one group with the same monitor name confirms this failure. A total close to 64 in either list only indicates this failure, because the active groups of other clients also count. Before you restart the hostengine, read the group names in each list and identify the stale groups. The `Duplicate key passed to function` error needs only one stale group. In this case, one field group with the monitor field-group name confirms this failure, whatever the totals are.
+Each output shows the total, for example `8 field groups found.` The GPU Health Monitor creates one entity group named `dcgm_health` and one field group named `nvsentinel_field_monitors`. More than one group with the same name as a GPU Health Monitor group confirms this failure. A total close to 64 in either list can show this failure, but it does not confirm it. The active groups of other clients also count.
 
-Newer monitor versions delete stale groups by name. Each time the monitor connects, it first deletes every entity group named `dcgm_health` and every field group named `nvsentinel_field_monitors`. Then it creates new groups with these names. It also deletes every field group named `gpu_temp_limit`, which older versions leave after an unclean stop. The monitor selects these groups by name, not by owner. If another client uses one of these names, the monitor also deletes the group of that client. Groups with other names stay. Metric `dcgm_api_failures_total{error_name="stale_group_cleanup"}` increases when the monitor cannot list or delete a group. The monitor tries again at the next connection.
+Before you restart the hostengine, do these steps:
+
+1. Read the group names in each list.
+2. Identify the stale groups.
+
+The `Duplicate key passed to function` error needs only one stale group. In this case, one field group with the field-group name of the GPU Health Monitor confirms this failure, whatever the totals are.
+
+The GPU Health Monitor deletes stale groups by name. Each time it connects, it first deletes every entity group named `dcgm_health` and every field group named `nvsentinel_field_monitors`. Then it creates new groups with these names. It also deletes every field group named `gpu_temp_limit`.
+
+The GPU Health Monitor selects these groups by name, not by owner. If another client uses one of these names, the GPU Health Monitor also deletes the group of that client. Groups with other names stay. The metric `dcgm_api_failures_total{error_name="stale_group_cleanup"}` increases when the GPU Health Monitor cannot list or delete a group. The GPU Health Monitor tries again at the next connection.
 
 **Resolution:** restart the hostengine. The restart deletes all stale groups.
 
@@ -190,25 +208,29 @@ Newer monitor versions delete stale groups by name. Each time the monitor connec
   ```bash
   kubectl delete pod -n {DCGM_NS} {DCGM_POD}
   ```
+
 - **`external-hostengine`** — restart `nv-hostengine` with the method that your platform uses to manage it.
 
-The restart disconnects all DCGM clients on the node. The monitor connects again without a restart. Other clients, such as `dcgm-exporter`, can restart one time. Then do [step 5](#5-verify-resolution). If NVSentinel cordoned the node because of this condition, see [Cordoned Nodes](cordoned-nodes.md).
+The restart disconnects all DCGM clients on the node. The GPU Health Monitor connects again without a restart. Other clients, such as `dcgm-exporter`, can restart one time. Then do [step 5](#5-verify-resolution). If NVSentinel cordoned the node because of this condition, see [Cordoned Nodes](cordoned-nodes.md).
 
 ## Unresponsive DCGM
 
-A different failure mode from the above: instead of refusing the connection, a DCGM probe stops answering. Callers can park indefinitely, and the query never returns an error. In embedded mode this is node-local but not yet proof of a kernel-driver wedge — DCGM userspace deadlock can look the same. The node may keep reporting `Ready` with every GPU allocatable and no taint, so it continues accepting work that then fails to start.
+This failure mode is different from the failure modes above. A DCGM probe does not refuse the connection. Instead, it stops answering. The callers can wait indefinitely, and the query never returns an error. In embedded mode, this hang is node-local, but it does not prove a kernel-driver wedge. A DCGM userspace deadlock can look the same.
+
+The node can continue to report `Ready`, with every GPU allocatable and no taint. Thus, it continues to accept work that then fails to start.
 
 **Symptoms:**
-- Node condition `GpuDcgmUnresponsive`, error code `DCGM_PROBE_HANG` in embedded mode (when `probeStoreOnly` is false; otherwise the event is stored/metric-only)
-- Remote modes use `GpuDcgmConnectivityFailure` / `DCGM_PROBE_HANG` with `CONTACT_SUPPORT`, because an endpoint or network hang does not prove that this node needs a reboot
-- Metric `dcgm_probe_hangs` incremented for the hung `operation_name`
-- GPU monitor logs: `"has not returned after Ns ... treating the DCGM probe as unresponsive"`
-- Two common on-node shapes for the same underlying fault:
-  - `dcgm-exporter` stays `Running` with `/health` green while scrapes fail (`up==0` for hours/days, no new log lines after "Listening on")
-  - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself remains `Ready` with GPUs allocatable
-- Do **not** use `NotReady`/`unreachable` alone to exclude this failure mode. A node can become `NotReady`/`unreachable` after the monitor has already started and recorded a hang; verify the monitor pod was running and check `dcgm_probe_hangs` / `GpuDcgmUnresponsive` evidence before dismissing it. Ordinary kubelet death with no monitor activity is a different failure class.
 
-Confirm with a bounded `nvidia-smi` probe (always use `timeout` — an unbounded hang can leave another unkillable `D`-state process):
+- In embedded mode, the node condition `GpuDcgmUnresponsive` with error code `DCGM_PROBE_HANG` appears when `probeStoreOnly` is false. Otherwise, NVSentinel only stores the health event and exports it as a metric.
+- Remote modes use `GpuDcgmConnectivityFailure` / `DCGM_PROBE_HANG` with `CONTACT_SUPPORT`, because an endpoint or network hang does not prove that this node needs a reboot.
+- The metric `dcgm_probe_hangs` increments for the hung `operation_name`.
+- GPU Health Monitor logs: `"has not returned after Ns ... treating the DCGM probe as unresponsive"`
+- The same underlying fault has two common forms on the node:
+  - `dcgm-exporter` stays `Running` with `/health` green while scrapes fail (`up==0` for hours or days, and no new log lines after "Listening on").
+  - Or GPU containers fail to start with `context deadline exceeded` / `StartError` exit 128, while the node itself stays `Ready` with GPUs allocatable.
+- Do **not** use `NotReady`/`unreachable` alone to exclude this failure mode. A node can become `NotReady`/`unreachable` after the GPU Health Monitor has already started and recorded a hang. Before you dismiss this failure mode, verify that the GPU Health Monitor pod ran at that time. Also examine `dcgm_probe_hangs` and `GpuDcgmUnresponsive` for evidence of a hang. Ordinary kubelet death with no GPU Health Monitor activity is a different failure class.
+
+Confirm with a bounded `nvidia-smi` probe. Always use `timeout`, so that a hung probe does not stay on the node. But `timeout` cannot stop a process that is already in `D` state. In that case, the command hangs, and `nvidia-smi` stays until the kernel wait ends. If the command does not return after 15 seconds, treat the result as a broader GPU/driver hang:
 
 ```bash
 timeout 15 nvidia-smi -L >/dev/null 2>&1; echo $?
@@ -216,8 +238,16 @@ timeout 15 nvidia-smi -L >/dev/null 2>&1; echo $?
 # 0   → nvidia-smi is fine; the stuck call is more likely DCGM-specific
 ```
 
-**Resolution:** reboot the node. Whether the hang is a wedged driver or DCGM userspace holding driver locks, the stuck processes typically cannot be cleared short of a reboot.
+**Resolution:** reboot the node. The hang can be a wedged driver, or DCGM userspace that holds driver locks. In both cases, usually only a reboot can clear the stuck processes.
 
-The check ships observe-only, so by default it records the fault and leaves the reboot to you. Where [`probeStoreOnly`](../configuration/gpu-health-monitor.md#probestoreonly) has been set to `false`, the monitor requests the reboot itself: the event's `RESTART_BM` action becomes a `RebootNode` CR once node-drainer has evicted the workloads.
+By default, the check is observe-only. Thus, it records the fault, and you do the reboot. In embedded mode, if you set [`probeStoreOnly`](../configuration/gpu-health-monitor.md#probestoreonly) to `false`, the GPU Health Monitor requests the reboot itself. After node-drainer evicts the workloads, the `RESTART_BM` action of the health event becomes a `RebootNode` CR.
 
-If the condition never appeared, either the watchdog is disabled (`dcgm.probeDeadlineSeconds: 0`), or its deadline is late enough that the liveness probe restarted the container before the event was published. Check for a restart loop on the monitor pod with no accompanying node condition, and compare `probeDeadlineSeconds` against the liveness budget described in [probeDeadlineSeconds](../configuration/gpu-health-monitor.md#probedeadlineseconds).
+If the condition never appeared, there are two possible causes:
+
+- The watchdog is disabled (`dcgm.probeDeadlineSeconds: 0`).
+- The deadline of the watchdog is so late that the liveness probe restarted the container before the GPU Health Monitor published the health event.
+
+To find the cause, do these steps:
+
+1. Check for a restart loop on the GPU Health Monitor pod with no related node condition.
+2. Compare `probeDeadlineSeconds` with the liveness budget that [probeDeadlineSeconds](../configuration/gpu-health-monitor.md#probedeadlineseconds) describes.

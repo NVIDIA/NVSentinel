@@ -2,47 +2,47 @@
 
 ## Overview
 
-The GPU Health Monitor continuously monitors the health of NVIDIA GPUs in your Kubernetes cluster using DCGM (Data Center GPU Manager). It detects GPU hardware issues like ECC errors, thermal problems, and PCIe failures before they impact your workloads.
+The GPU Health Monitor uses DCGM (Data Center GPU Manager) to monitor the health of the NVIDIA GPUs in your Kubernetes cluster continuously. It detects GPU hardware faults, for example ECC errors, thermal problems and PCIe failures, before they affect your workloads.
 
-Think of it as a heart rate monitor for your GPUs - constantly checking vitals and alerting when something goes wrong.
+The GPU Health Monitor examines the GPUs continuously, and it sends a health event when it finds a fault.
 
 ### Why Do You Need This?
 
 GPU failures are expensive and can cause silent data corruption or job crashes:
 
-- **Early detection**: Catch GPU issues before they crash training jobs
-- **Prevent data corruption**: Detect ECC errors that could silently corrupt computation results
-- **Avoid cascading failures**: Identify problematic GPUs before they impact multi-node workloads
-- **Save time**: Automatically detect issues instead of manual investigation
+- **Early detection**: Detect GPU faults before they crash training jobs.
+- **Prevent data corruption**: Detect ECC errors that can silently corrupt computation results.
+- **Avoid cascading failures**: Identify faulty GPUs before they affect multi-node workloads.
+- **Save time**: Detect faults automatically, without manual investigation.
 
-Without GPU monitoring, failures often go unnoticed until jobs crash or produce incorrect results, wasting valuable compute time and requiring manual troubleshooting.
+Without GPU monitoring, you often do not see a failure until a job crashes or produces incorrect results. This wastes valuable compute time and makes manual troubleshooting necessary.
 
 ## How It Works
 
-The GPU Health Monitor runs as a DaemonSet on GPU nodes:
+The GPU Health Monitor runs as a DaemonSet on GPU nodes. It does these steps:
 
-1. Connects to DCGM service running on each node
-2. Polls DCGM health checks at regular intervals (default: configured polling interval)
-3. Detects GPU health issues (ECC errors, thermal problems, PCIe issues, etc.)
-4. Sends health events to Platform Connectors via gRPC
-5. Maintains state to avoid duplicate event reporting
+1. Connects to the DCGM service that runs on each node.
+2. Polls the DCGM health checks at a regular interval. The `gpu-health-monitor.dcgm.pollIntervalSeconds` Helm value sets this interval (default: 15 seconds).
+3. Detects GPU faults, for example ECC errors, thermal problems and PCIe issues.
+4. Sends health events to Platform Connectors through gRPC.
+5. Keeps state, so that it does not report duplicate health events.
 
-DCGM provides comprehensive GPU health monitoring including memory errors, thermal violations, PCIe problems, and more. The monitor translates these DCGM health checks into standardized health events that NVSentinel can act upon.
+DCGM monitors many areas of GPU health, for example memory errors, thermal violations and PCIe problems. The GPU Health Monitor converts the results of these DCGM health checks to standard health events. NVSentinel can act on these health events.
 
 ## Configuration
 
 Configure the GPU Health Monitor through Helm values:
 
 ```yaml
-gpu-health-monitor:
-  enabled: true
-  
+global:
+  gpuHealthMonitor:
+    enabled: true
   dcgm:
-    dcgmK8sServiceEnabled: true
     service:
       endpoint: "nvidia-dcgm-dra.gpu-operator.svc,nvidia-dcgm.gpu-operator.svc"  # DCGM service hosts
       port: 5555
-  
+
+gpu-health-monitor:
   useHostNetworking: false  # Enable if DCGM requires host network access
   
   verbose: "False"  # Enable debug logging
@@ -50,44 +50,55 @@ gpu-health-monitor:
 
 ### Configuration Options
 
-- **DCGM Service**: Configure DCGM endpoint and port
-- **Host Networking**: Enable if DCGM service requires host network access
-- **Polling Interval**: Configure how frequently to check GPU health (set via DCGM configuration)
-- **Verbose Logging**: Enable detailed debug output
-- **Incident Suppression**: Drop specific DCGM error codes before they generate a health event — see [DCGM Health Check Incident Suppression](configuration/gpu-health-monitor.md#dcgm-health-check-incident-suppression)
-- **Probe Watchdog**: Report a DCGM probe that hangs instead of erroring — see [Unresponsive DCGM Detection](configuration/gpu-health-monitor.md#unresponsive-dcgm-detection)
+- **DCGM Service**: Configure the DCGM endpoint and port.
+- **Host Networking**: If the DCGM service requires host network access, enable this option.
+- **Polling Interval**: Configure how frequently the GPU Health Monitor checks GPU health. To set this interval, use the `gpu-health-monitor.dcgm.pollIntervalSeconds` Helm value. The default is 15 seconds.
+- **Verbose Logging**: Enable the detailed debug output.
+- **Incident Suppression**: Drop specific DCGM error codes before they generate a health event. For more information, see [DCGM Health Check Incident Suppression](configuration/gpu-health-monitor.md#dcgm-health-check-incident-suppression).
+- **Probe Watchdog**: Report a DCGM probe that hangs instead of returning an error. For more information, see [Unresponsive DCGM Detection](configuration/gpu-health-monitor.md#unresponsive-dcgm-detection).
 
 ## What It Monitors
 
 ### DCGM Health Watches
 
-The monitor checks multiple GPU health aspects through DCGM. Below are some of the key health watches - this is not an exhaustive list and may evolve over time as DCGM capabilities expand:
+The GPU Health Monitor checks several areas of GPU health through DCGM. The list that follows is not complete, and it can change when DCGM adds new capabilities. Some of the key health watches are:
 
-**Memory Errors**: Single-bit and double-bit ECC errors
-**Thermal Issues**: Temperature violations and throttling events
-**PCIe Problems**: PCIe replay errors and link issues
-**Power Issues**: Power violations and power capping events
-**InfoROM Errors**: GPU InfoROM corruption
-**NVLink Errors**: NVLink connectivity and error detection
+- **Memory Errors**: Single-bit and double-bit ECC errors
+- **Thermal Issues**: Temperature violations and throttling events
+- **PCIe Problems**: PCIe replay errors and link issues
+- **Power Issues**: Power violations and power capping events
+- **InfoROM Errors**: GPU InfoROM corruption
+- **NVLink Errors**: NVLink connectivity and error detection
 
-> **Note**: The specific health watches available depend on your DCGM version and GPU model. NVIDIA regularly adds new health checks and monitoring capabilities to DCGM. Consult your DCGM documentation for the complete list of supported health watches for your environment.
+> **Note**: The available health watches depend on your DCGM version and GPU model. NVIDIA regularly adds new health checks and monitoring capabilities to DCGM. For the complete list of health watches that your environment supports, refer to your DCGM documentation.
 
 ## Key Features
 
 ### DCGM Integration
-Leverages NVIDIA's Data Center GPU Manager for comprehensive GPU health monitoring with proven reliability.
+
+The GPU Health Monitor uses NVIDIA Data Center GPU Manager (DCGM) to monitor GPU health.
 
 ### Automatic State Management
-Maintains entity-level cache to track reported issues and avoid sending duplicate events within a single boot session.
+
+The GPU Health Monitor keeps a cache for each entity, which tracks the issues that it reported. This cache prevents duplicate health events in one boot session.
 
 ### Categorized Health Events
-Maps DCGM health checks to categorized events (fatal, warning, info) for appropriate response levels.
+
+The GPU Health Monitor maps the result of each DCGM health check to a fatal or a non-fatal health event. A health event is fatal when the recommended action for its DCGM error code is not `NONE`. NVSentinel uses this classification to select the level of response.
 
 ### GPU Metadata Enrichment
-Includes GPU serial numbers, UUIDs, and other metadata in health events for precise identification and tracking.
+
+The GPU Health Monitor adds the chassis serial number, GPU UUIDs and other metadata to health events. With this metadata, you can identify and track the hardware precisely.
 
 ### Connectivity Monitoring
-Detects and reports DCGM connectivity issues to ensure monitoring remains functional.
+
+The GPU Health Monitor detects and reports DCGM connectivity issues to make sure that the monitoring stays functional.
 
 ### Unresponsive DCGM Detection
-Detects a DCGM call that stops answering instead of returning an error. Embedded mode reports the node-local hang as `GpuDcgmUnresponsive`, observe-only by default; remote modes report a connectivity failure without recommending a node reboot — see [Unresponsive DCGM Detection](configuration/gpu-health-monitor.md#unresponsive-dcgm-detection).
+
+The GPU Health Monitor detects a DCGM call that stops answering instead of returning an error:
+
+- In embedded mode, it reports the node-local hang as `GpuDcgmUnresponsive`. By default, this check is observe-only.
+- In remote modes, it reports a connectivity failure and does not recommend a node reboot.
+
+For more information, see [Unresponsive DCGM Detection](configuration/gpu-health-monitor.md#unresponsive-dcgm-detection).

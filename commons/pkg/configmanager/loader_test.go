@@ -93,3 +93,66 @@ enabled = true
 		t.Fatal("expected error for invalid TOML syntax, got nil")
 	}
 }
+
+func TestLoadTOMLConfigWithMetadataReportsUndecodedKey(t *testing.T) {
+	t.Parallel()
+
+	tomlContent := `name = "test"
+port = 8080
+enabled = true
+extra = "ignored"
+`
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(tomlContent), 0600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	var cfg testTOMLConfig
+
+	if err := LoadTOMLConfig(configPath, &cfg); err != nil {
+		t.Fatalf("LoadTOMLConfig rejected an unknown key: %v", err)
+	}
+
+	if cfg.Name != "test" || cfg.Port != 8080 || !cfg.Enabled {
+		t.Fatalf("decoded config = %+v", cfg)
+	}
+
+	var decoded testTOMLConfig
+
+	md, err := LoadTOMLConfigWithMetadata(configPath, &decoded)
+	if err != nil {
+		t.Fatalf("LoadTOMLConfigWithMetadata: %v", err)
+	}
+
+	if decoded != cfg {
+		t.Fatalf("metadata load = %+v, LoadTOMLConfig = %+v", decoded, cfg)
+	}
+
+	found := false
+
+	for _, key := range md.Undecoded() {
+		if key.String() == "extra" {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Fatalf("undecoded keys = %v, want extra", md.Undecoded())
+	}
+}
+
+func TestLoadTOMLConfigWithMetadataNonExistentFile(t *testing.T) {
+	t.Parallel()
+
+	var cfg testTOMLConfig
+
+	md, err := LoadTOMLConfigWithMetadata(filepath.Join(t.TempDir(), "missing.toml"), &cfg)
+	if err == nil {
+		t.Fatal("expected error for non-existent file, got nil")
+	}
+
+	if len(md.Keys()) != 0 {
+		t.Fatalf("metadata keys = %v, want none", md.Keys())
+	}
+}

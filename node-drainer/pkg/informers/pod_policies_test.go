@@ -133,7 +133,7 @@ func TestCheckIfObservedPodsAreEvictedInImmediateMode_RelabelledPods_RejectsStal
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
 	ctx := t.Context()
-	observedInformers, err := NewInformers(client, 0, new(5), false, false, "", nil, "mode")
+	observedInformers, err := NewInformers(client, 0, new(5), false, false, "", NodeFields(nil), "mode")
 	require.NoError(t, err)
 	require.NoError(t, observedInformers.Run(ctx))
 	for _, mode := range []string{"completion", "unmatched"} {

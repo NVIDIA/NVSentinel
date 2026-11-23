@@ -392,6 +392,7 @@ class DCGMWatcher:
         self._health_watches = self._get_available_health_watches()
         log.debug(f"Got available health watches {self._health_watches}")
         metrics.num_health_watches.set(len(self._health_watches))
+        metrics.num_fields.set(len(self._get_available_fields()))
 
         self._error_codes = self._get_available_error_codes()
         log.debug(f"Got available error codes {self._error_codes}")
@@ -507,7 +508,8 @@ class DCGMWatcher:
         DCGM_FR_NVLINK_DOWN has two expected-down cases (see
         MetadataReader.classify_nvlink_down):
           - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
-          - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
+          - UNBRIDGED_PCIE (A100/H100 PCIe and supported GeForce RTX models
+            with zero active links): from
             metadata alone this is indistinguishable from a card whose NVLink
             bridge was already dead at collection time, so it is suppressed
             ONLY when the operator has explicitly asserted the fleet runs
