@@ -266,28 +266,54 @@ func TestCollectGPUCountMismatchDropsTopology(t *testing.T) {
 	assert.Equal(t, -1, metadata.GPUs[0].NUMANode, "NUMA must stay -1 when topology is dropped")
 }
 
-func TestCheckGPUCountMismatch(t *testing.T) {
-	err := checkGPUCountMismatch(
-		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
-		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}}},
-	)
-	assert.NoError(t, err, "equal counts must produce no error")
+func TestAlignTopologyToGPUs(t *testing.T) {
+	gpus := func(ids ...int) *model.GPUMetadata {
+		m := &model.GPUMetadata{}
+		for _, id := range ids {
+			m.GPUs = append(m.GPUs, model.GPUInfo{GPUID: id})
+		}
 
-	err = checkGPUCountMismatch(
-		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1"}},
-		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}, {GPUID: 1}, {GPUID: 2}}},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "2 GPU columns")
-	assert.Contains(t, err.Error(), "3 GPUs")
+		return m
+	}
 
-	err = checkGPUCountMismatch(
-		&nic.TopoMatrix{GPUs: []string{"GPU0", "GPU1", "GPU2"}},
-		&model.GPUMetadata{GPUs: []model.GPUInfo{{GPUID: 0}}},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "3 GPU columns")
-	assert.Contains(t, err.Error(), "1 GPUs")
+	tests := []struct {
+		name      string
+		labels    []string
+		collected *model.GPUMetadata
+		nvmlCount int
+		want      map[int]int
+		wantErr   string
+	}{
+		{name: "full match", labels: []string{"GPU0", "GPU1"}, collected: gpus(0, 1), nvmlCount: 2,
+			want: map[int]int{0: 0, 1: 1}},
+		{name: "column for a skipped GPU is kept", labels: []string{"GPU0", "GPU1", "GPU2", "GPU3"},
+			collected: gpus(0, 2, 3), nvmlCount: 4, want: map[int]int{0: 0, 1: 1, 2: 2, 3: 3}},
+		{name: "equal counts but different labels", labels: []string{"GPU0", "GPU1", "GPU2"},
+			collected: gpus(0, 2, 3), nvmlCount: 4, wantErr: "no column for GPU3"},
+		{name: "column NVML does not report", labels: []string{"GPU0", "GPU1"}, collected: gpus(0), nvmlCount: 1,
+			wantErr: "not a GPU NVML reports"},
+		{name: "collected GPU missing from matrix", labels: []string{"GPU0"}, collected: gpus(0, 1), nvmlCount: 2,
+			wantErr: "no column for GPU1"},
+		{name: "malformed label", labels: []string{"GPU0", "NIC1"}, collected: gpus(0), nvmlCount: 2,
+			wantErr: "not of the form GPU<n>"},
+		{name: "duplicate label", labels: []string{"GPU0", "GPU0"}, collected: gpus(0), nvmlCount: 2,
+			wantErr: "more than once"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := alignTopologyToGPUs(&nic.TopoMatrix{GPUs: tc.labels}, tc.collected, tc.nvmlCount)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestCollect_GPUIdentityFailures_KeepsHealthyGPUs(t *testing.T) {
@@ -343,14 +369,12 @@ func TestCollect_GPUIdentityFailures_KeepsHealthyGPUs(t *testing.T) {
 				assert.Equal(t, fmt.Sprintf("0000:%02x:00.0", id+1), written.GPUs[i].PCIAddress)
 			}
 
-			if len(tc.errors) > 0 {
-				assert.Empty(t, written.NICTopology)
+			// A skipped GPU keeps its matrix column, so the NIC relationships stay intact
+			// and each surviving GPU gets the NUMA value of its own labeled column.
+			assert.Equal(t, topo.matrix.Relationships, written.NICTopology)
 
-				for _, gpu := range written.GPUs {
-					assert.Equal(t, -1, gpu.NUMANode)
-				}
-			} else {
-				assert.Equal(t, topo.matrix.Relationships, written.NICTopology)
+			for _, gpu := range written.GPUs {
+				assert.Equal(t, gpu.GPUID, gpu.NUMANode)
 			}
 		})
 	}

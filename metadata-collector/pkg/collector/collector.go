@@ -135,7 +135,7 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 		metadata.GPUs[i].NUMANode = -1
 	}
 
-	c.populateNICTopology(ctx, metadata)
+	c.populateNICTopology(ctx, metadata, count)
 
 	return metadata, nil
 }
@@ -144,7 +144,7 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 // metadata.NICTopology. Failures degrade to an empty map rather than
 // aborting the collector — other consumers of gpu_metadata.json still
 // receive the NVML-derived fields.
-func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPUMetadata) {
+func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPUMetadata, nvmlCount int) {
 	matrix, err := c.nicTopo.Collect(ctx)
 	if err != nil {
 		slog.Warn("Failed to collect NIC topology matrix, nic_topology will be empty",
@@ -158,7 +158,8 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
-	if err := checkGPUCountMismatch(matrix, metadata); err != nil {
+	columns, err := alignTopologyToGPUs(matrix, metadata, nvmlCount)
+	if err != nil {
 		slog.Warn("Dropping nic_topology and gpu numa_node to avoid misaligned data",
 			"error", err,
 			"nvml_gpu_count", len(metadata.GPUs),
@@ -169,7 +170,7 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
-	populateGPUNUMANodes(metadata, matrix)
+	populateGPUNUMANodes(metadata, matrix, columns)
 
 	if len(matrix.NICs) == 0 {
 		slog.Info("No InfiniBand NICs reported by nvidia-smi topo -m, nic_topology will be empty")
@@ -187,27 +188,66 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 	)
 }
 
-// populateGPUNUMANodes copies the parsed NUMA Affinity values from
-// the topo matrix into the corresponding GPUInfo entries. The caller
-// guarantees the GPU counts match (mismatches cause an early return
-// before this function is called).
-func populateGPUNUMANodes(metadata *model.GPUMetadata, matrix *nic.TopoMatrix) {
+// populateGPUNUMANodes copies each GPU's NUMA Affinity value from the
+// topo matrix column whose label matches its NVML index.
+func populateGPUNUMANodes(metadata *model.GPUMetadata, matrix *nic.TopoMatrix, columns map[int]int) {
 	for i := range metadata.GPUs {
-		if i < len(matrix.GPUNUMANodes) {
-			metadata.GPUs[i].NUMANode = matrix.GPUNUMANodes[i]
+		col, ok := columns[metadata.GPUs[i].GPUID]
+		if ok && col < len(matrix.GPUNUMANodes) {
+			metadata.GPUs[i].NUMANode = matrix.GPUNUMANodes[col]
 		}
 	}
 }
 
-// checkGPUCountMismatch returns an error when the parsed matrix
-// disagrees with NVML's GPU count, or nil when they match.
-func checkGPUCountMismatch(matrix *nic.TopoMatrix, metadata *model.GPUMetadata) error {
-	topo, nvmlCount := len(matrix.GPUs), len(metadata.GPUs)
-	if topo == nvmlCount {
-		return nil
+// topoColumnsByGPUID maps the GPU index in each topo matrix column label
+// (GPU0, GPU1, ...) to that column's position.
+func topoColumnsByGPUID(matrix *nic.TopoMatrix) (map[int]int, error) {
+	columns := make(map[int]int, len(matrix.GPUs))
+
+	for col, label := range matrix.GPUs {
+		id, err := strconv.Atoi(strings.TrimPrefix(label, "GPU"))
+		if err != nil || !strings.HasPrefix(label, "GPU") {
+			return nil, fmt.Errorf("topo matrix GPU column %q is not of the form GPU<n>", label)
+		}
+
+		if _, dup := columns[id]; dup {
+			return nil, fmt.Errorf("topo matrix lists %s more than once", label)
+		}
+
+		columns[id] = col
 	}
 
-	return fmt.Errorf("topo matrix parsed %d GPU columns but NVML reports %d GPUs", topo, nvmlCount)
+	return columns, nil
+}
+
+// alignTopologyToGPUs maps each GPU index to its topo matrix column, using
+// the column labels (GPU0, GPU1, ...) rather than positions. Every collected
+// GPU must have a column. An extra column is accepted only for a GPU that NVML
+// reports but whose identity could not be read, so the NIC relationships stay
+// valid when one GPU has fallen off the bus. Anything else means the matrix
+// and NVML disagree, and the caller drops the topology.
+func alignTopologyToGPUs(matrix *nic.TopoMatrix, metadata *model.GPUMetadata, nvmlCount int) (map[int]int, error) {
+	columns, err := topoColumnsByGPUID(matrix)
+	if err != nil {
+		return nil, err
+	}
+
+	collected := make(map[int]struct{}, len(metadata.GPUs))
+	for _, gpu := range metadata.GPUs {
+		if _, ok := columns[gpu.GPUID]; !ok {
+			return nil, fmt.Errorf("topo matrix has no column for GPU%d", gpu.GPUID)
+		}
+
+		collected[gpu.GPUID] = struct{}{}
+	}
+
+	for id := range columns {
+		if _, ok := collected[id]; !ok && (id < 0 || id >= nvmlCount) {
+			return nil, fmt.Errorf("topo matrix column GPU%d is not a GPU NVML reports", id)
+		}
+	}
+
+	return columns, nil
 }
 
 // prepareTopologyData builds the device map and parses NVLink topology.
