@@ -10,7 +10,7 @@ The labeler automatically manages these node labels:
 
 | Label | Values | Purpose |
 |-------|--------|---------|
-| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x`, `48` | DCGM version lane detected from DCGM pods; see [DCGM Version Lanes](#dcgm-version-lanes) |
+| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x`, `48.x` | DCGM version lane detected from DCGM pods; see [DCGM Version Lanes](#dcgm-version-lanes) |
 | `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node |
 | `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | Kata Containers runtime presence |
 | `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | Current GPU count from the configured class expression |
@@ -92,17 +92,17 @@ labeler:
 
 ## DCGM Version Lanes
 
-Maps the DCGM version in the DCGM pod image tag to the `nvsentinel.dgxc.nvidia.com/dcgm.version` label. A node gets the label of the lane with the highest `minVersion` at or below its DCGM version. The order of the list does not matter.
+Maps the DCGM pod image on a node to the `nvsentinel.dgxc.nvidia.com/dcgm.version` label. Each lane has a `label` and a [CEL](https://cel.dev) `expression`. The labeler evaluates the lanes in list order. A node gets the label of the first lane whose expression is `true`. A node that matches no lane gets no label.
 
 ```yaml
 labeler:
   dcgmVersionLanes:
-    - minVersion: "3.0.0"
-      label: "3.x"
-    - minVersion: "4.0.0"
-      label: "4.x"
-    - minVersion: "4.8.0"
-      label: "48"
+    - label: "3.x"
+      expression: "version.major == 3"
+    - label: "4.x"
+      expression: "version.major == 4 && version.minor < 8"
+    - label: "48.x"
+      expression: "version.major > 4 || (version.major == 4 && version.minor >= 8)"
 ```
 
 With the default lanes:
@@ -112,15 +112,37 @@ With the default lanes:
 | Earlier than 3.0.0 | none |
 | 3.x | `3.x` |
 | 4.0.0 to earlier than 4.8.0 | `4.x` |
-| 4.8.0 and later, including 5.x | `48` |
+| 4.8.0 and later, including 5.x | `48.x` |
+
+An expression can use one variable:
+
+| Variable | Type | Value |
+|---|---|---|
+| `version` | `map(string, int)` | `major`, `minor` and `patch` from the DCGM image tag, for example `version.minor` |
+
+For example, to give DCGM 4.9.0 and later their own lane, add a lane and limit the `48.x` lane to 4.8:
+
+```yaml
+labeler:
+  dcgmVersionLanes:
+    - label: "3.x"
+      expression: "version.major == 3"
+    - label: "4.x"
+      expression: "version.major == 4 && version.minor < 8"
+    - label: "48.x"
+      expression: "version.major == 4 && version.minor == 8"
+    - label: "49.x"
+      expression: "version.major > 4 || (version.major == 4 && version.minor >= 9)"
+```
 
 Rules:
 
 - Each `label` must match the `nodeSelector` of a GPU Health Monitor DaemonSet. If no DaemonSet matches, the node gets no GPU Health Monitor pod, and nothing reports an error.
-- `minVersion` must have the form `X.Y.Z`. Each `minVersion` must be unique.
-- `label` must be a valid Kubernetes label value. Quote it in YAML: an unquoted `48` is a number, and the labeler rejects it.
+- `label` must be a valid Kubernetes label value. Each `label` must be unique. Quote it in YAML: an unquoted number, for example `5`, is not a string, and the labeler rejects it.
+- `expression` must return `bool`.
 - An image tag without a full `X.Y.Z` version, for example `dcgm:4.8-ubuntu24.04`, counts as `<major>.0.0`. The labeler logs a warning.
-- The labeler checks the lanes at startup. A missing or invalid configuration stops the labeler with an `invalid --dcgm-version-lanes` error.
+- The labeler compiles and type-checks the expressions at startup. A missing or invalid configuration stops the labeler with an `invalid --dcgm-version-lanes` error.
+- If an expression fails at runtime, for example because it reads a key that `version` does not have, the labeler logs a warning and skips that lane.
 - In `external-hostengine` and `embedded-mode`, the labeler keeps an existing `dcgm.version` label only if its value is one of the configured labels.
 
 ## Driver Pod Discovery

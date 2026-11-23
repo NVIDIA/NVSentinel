@@ -24,4 +24,18 @@ tests:
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: '--dcgm-version-lanes=[{"label":"3.x","minVersion":"3.0.0"},{"label":"4.x","minVersion":"4.0.0"},{"label":"48","minVersion":"4.8.0"}]'
+          content: '--dcgm-version-lanes=[{"expression":"version.major == 3","label":"3.x"},{"expression":"version.major == 4 && version.minor < 8","label":"4.x"},{"expression":"version.major > 4 || (version.major == 4 && version.minor >= 8)","label":"48.x"}]'
+
+  # CEL operators must not be HTML-escaped, so that the pod args stay readable.
+  - it: must pass custom lanes in order without escaping CEL operators
+    set:
+      global.auditLogging.enabled: false
+      dcgmVersionLanes:
+        - label: "49.x"
+          expression: "version.major > 4 || (version.major == 4 && version.minor >= 9)"
+        - label: "4.x"
+          expression: "version.major == 4"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: '--dcgm-version-lanes=[{"expression":"version.major > 4 || (version.major == 4 && version.minor >= 9)","label":"49.x"},{"expression":"version.major == 4","label":"4.x"}]'

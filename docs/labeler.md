@@ -75,7 +75,7 @@ The Labeler applies these labels to nodes:
 
 **Label**: `nvsentinel.dgxc.nvidia.com/dcgm.version`
 
-**Values**: `3.x`, `4.x`, `48`, or empty if not detected
+**Values**: the `label` of the first matching lane. With the default lanes: `3.x`, `4.x`, `48.x`. If no lane matches, the labeler removes the label from the node.
 
 This label shows the DCGM version lane that runs on the node. With the default lanes:
 
@@ -83,9 +83,9 @@ This label shows the DCGM version lane that runs on the node. With the default l
 |---|---|
 | `3.x` | 3.x |
 | `4.x` | 4.x earlier than 4.8.0 |
-| `48` | 4.8.0 and later |
+| `48.x` | 4.8.0 and later |
 
-A DCGM client must not be newer than its hostengine. From DCGM 4.8.0, a client works with the same or a newer hostengine, so 4.x is split into two lanes at 4.8.0. The lanes are configurable; see [DCGM Version Lanes](configuration/labeler.md#dcgm-version-lanes).
+From DCGM 4.8.0, a DCGM client must be the same version as its hostengine or older, so 4.x is split into two lanes at 4.8.0. The lanes are configurable; see [DCGM Version Lanes](configuration/labeler.md#dcgm-version-lanes).
 
 ### Driver Installed
 

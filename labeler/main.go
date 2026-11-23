@@ -156,8 +156,9 @@ func parseFlags() cliOptions {
 	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm,nvidia-dcgm-dra",
 		"Comma-separated app label values for DCGM pods")
 	dcgmVersionLanes := flag.String("dcgm-version-lanes", "",
-		`Required. JSON list of DCGM version lanes, each {"minVersion": "X.Y.Z", "label": "<value>"}. `+
-			"A node gets the label of the lane with the highest minVersion at or below its DCGM version.")
+		`Required. JSON list of DCGM version lanes, each {"label": "<value>", "expression": "<CEL>"}. `+
+			"A node gets the label of the first lane whose expression is true. Expressions can use "+
+			"version (major, minor, patch from the DCGM image tag).")
 	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
 		"nvidia-driver-installer", "App label value for GKE driver installer pods")

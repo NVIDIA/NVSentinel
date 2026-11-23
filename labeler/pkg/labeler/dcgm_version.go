@@ -24,32 +24,33 @@ import (
 	"strconv"
 	"strings"
 
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-var (
-	// dcgmImageVersionRegex matches the version in a DCGM image tag. The minor and patch versions are optional.
-	dcgmImageVersionRegex = regexp.MustCompile(`dcgm:(\d+)\.(?:(\d+)\.(\d+))?`)
-	laneMinVersionRegex   = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
-)
+// dcgmImageVersionRegex matches the version in a DCGM image tag. The minor and patch versions are optional.
+var dcgmImageVersionRegex = regexp.MustCompile(`dcgm:(\d+)\.(?:(\d+)\.(\d+))?`)
 
-// DCGMVersionLane maps the DCGM versions from MinVersion up to the next lane to a dcgm.version label value.
+// DCGMVersionLane sets the dcgm.version label value to Label when Expression is true. Expression is a CEL
+// expression with one variable, version: a map with the int keys major, minor and patch, from the DCGM image tag.
 type DCGMVersionLane struct {
-	MinVersion string `json:"minVersion"`
 	Label      string `json:"label"`
+	Expression string `json:"expression"`
 }
 
-// DCGMVersionLanes are validated lanes, sorted by minimum version.
+// DCGMVersionLanes are validated lanes with compiled expressions, in configuration order.
 type DCGMVersionLanes struct {
 	lanes []dcgmVersionLane
 }
 
 type dcgmVersionLane struct {
-	minVersion [3]int
-	label      string
+	label   string
+	program cel.Program
 }
 
-// ParseDCGMVersionLanes parses and validates a JSON list of DCGMVersionLane. The order of the list does not matter.
+// ParseDCGMVersionLanes parses and validates a JSON list of DCGMVersionLane. The order of the list is the order of
+// evaluation: the first lane whose expression is true wins.
 func ParseDCGMVersionLanes(data string) (DCGMVersionLanes, error) {
 	var input []DCGMVersionLane
 
@@ -68,41 +69,59 @@ func ParseDCGMVersionLanes(data string) (DCGMVersionLanes, error) {
 		return DCGMVersionLanes{}, errors.New("DCGM version lanes: at least one lane is required")
 	}
 
+	env, err := cel.NewEnv(cel.Variable("version", cel.MapType(cel.StringType, cel.IntType)))
+	if err != nil {
+		return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: create CEL environment: %w", err)
+	}
+
 	lanes := make([]dcgmVersionLane, 0, len(input))
 
 	for _, lane := range input {
-		m := laneMinVersionRegex.FindStringSubmatch(lane.MinVersion)
-		if m == nil {
-			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: minVersion %q must be X.Y.Z", lane.MinVersion)
-		}
-
-		minVersion, err := parseDCGMVersion(m[1], m[2], m[3])
-		if err != nil {
-			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: minVersion %q: %w", lane.MinVersion, err)
-		}
-
 		if lane.Label == "" || len(validation.IsValidLabelValue(lane.Label)) > 0 {
 			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: label %q must be a non-empty label value",
 				lane.Label)
 		}
 
-		if slices.ContainsFunc(lanes, func(l dcgmVersionLane) bool { return l.minVersion == minVersion }) {
-			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: duplicate minVersion %q", lane.MinVersion)
+		if slices.ContainsFunc(lanes, func(l dcgmVersionLane) bool { return l.label == lane.Label }) {
+			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: duplicate label %q", lane.Label)
 		}
 
-		lanes = append(lanes, dcgmVersionLane{minVersion: minVersion, label: lane.Label})
-	}
+		program, err := compileLaneExpression(env, lane.Expression)
+		if err != nil {
+			return DCGMVersionLanes{}, fmt.Errorf("DCGM version lanes: lane %q: %w", lane.Label, err)
+		}
 
-	slices.SortFunc(lanes, func(a, b dcgmVersionLane) int {
-		return slices.Compare(a.minVersion[:], b.minVersion[:])
-	})
+		lanes = append(lanes, dcgmVersionLane{label: lane.Label, program: program})
+	}
 
 	return DCGMVersionLanes{lanes: lanes}, nil
 }
 
-// labelForImage returns the label of the lane with the highest minimum version that is not above the DCGM version
-// of the image. It returns "" if the image is not a DCGM image or its version is below the lowest lane. A tag without
-// minor and patch versions maps to <major>.0.0.
+func compileLaneExpression(env *cel.Env, expression string) (cel.Program, error) {
+	if strings.TrimSpace(expression) == "" {
+		return nil, errors.New("expression is required")
+	}
+
+	ast, issues := env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("compile expression %q: %w", expression, issues.Err())
+	}
+
+	if out := ast.OutputType(); !out.IsExactType(cel.BoolType) && !out.IsExactType(cel.DynType) {
+		return nil, fmt.Errorf("expression must return bool, got %s", out)
+	}
+
+	program, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("create program for expression %q: %w", expression, err)
+	}
+
+	return program, nil
+}
+
+// labelForImage returns the label of the first lane whose expression is true for the DCGM image. It
+// returns "" if the image is not a DCGM image or no expression is true. A tag without minor and patch versions maps
+// to <major>.0.0. A lane whose expression fails or does not return bool is skipped.
 func (l DCGMVersionLanes) labelForImage(image string) string {
 	m := dcgmImageVersionRegex.FindStringSubmatch(image)
 	if m == nil {
@@ -122,17 +141,33 @@ func (l DCGMVersionLanes) labelForImage(image string) string {
 		return ""
 	}
 
-	label := ""
-
-	for _, lane := range l.lanes {
-		if slices.Compare(lane.minVersion[:], version[:]) > 0 {
-			break
-		}
-
-		label = lane.label
+	vars := map[string]any{
+		"version": map[string]int64{"major": version[0], "minor": version[1], "patch": version[2]},
 	}
 
-	return label
+	for _, lane := range l.lanes {
+		result, _, err := lane.program.Eval(vars)
+		if err != nil || types.IsUnknownOrError(result) {
+			slog.Warn("DCGM version lane expression failed; skipping lane",
+				"lane", lane.label, "image", image, "error", err)
+
+			continue
+		}
+
+		matched, ok := result.Value().(bool)
+		if !ok {
+			slog.Warn("DCGM version lane expression did not return bool; skipping lane",
+				"lane", lane.label, "image", image, "type", result.Type())
+
+			continue
+		}
+
+		if matched {
+			return lane.label
+		}
+	}
+
+	return ""
 }
 
 // isLabel reports whether value is the label of a lane.
@@ -142,11 +177,11 @@ func (l DCGMVersionLanes) isLabel(value string) bool {
 	return slices.ContainsFunc(l.lanes, func(lane dcgmVersionLane) bool { return lane.label == value })
 }
 
-func parseDCGMVersion(major, minor, patch string) ([3]int, error) {
-	var version [3]int
+func parseDCGMVersion(major, minor, patch string) ([3]int64, error) {
+	var version [3]int64
 
 	for i, part := range []string{major, minor, patch} {
-		n, err := strconv.Atoi(part)
+		n, err := strconv.ParseInt(part, 10, 64)
 		if err != nil {
 			return version, err
 		}

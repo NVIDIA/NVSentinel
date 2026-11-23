@@ -24,9 +24,9 @@ import (
 // testDCGMVersionLanes are the chart default lanes, for tests that create a Labeler.
 var testDCGMVersionLanes = func() DCGMVersionLanes {
 	lanes, err := ParseDCGMVersionLanes(`[` +
-		`{"minVersion":"3.0.0","label":"3.x"},` +
-		`{"minVersion":"4.0.0","label":"4.x"},` +
-		`{"minVersion":"4.8.0","label":"48"}]`)
+		`{"label":"3.x","expression":"version.major == 3"},` +
+		`{"label":"4.x","expression":"version.major == 4 && version.minor < 8"},` +
+		`{"label":"48.x","expression":"version.major > 4 || (version.major == 4 && version.minor >= 8)"}]`)
 	if err != nil {
 		panic(err)
 	}
@@ -46,29 +46,39 @@ func TestDCGMVersionLanes_LabelForImage_DefaultLanes(t *testing.T) {
 			want:  "",
 		},
 		{
+			name:  "version 3.x maps to 3.x",
+			image: "nvcr.io/nvidia/cloud-native/dcgm:3.3.9-1-ubuntu22.04",
+			want:  "3.x",
+		},
+		{
 			name:  "version below 4.8.0 maps to 4.x",
 			image: "nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04",
 			want:  "4.x",
 		},
 		{
-			name:  "version 4.8.0 maps to 48",
+			name:  "version 4.8.0 maps to 48.x",
 			image: "nvcr.io/nvidia/cloud-native/dcgm:4.8.0-ubuntu24.04",
-			want:  "48",
+			want:  "48.x",
 		},
 		{
 			name:  "minor versions compare as numbers",
 			image: "nvcr.io/nvidia/cloud-native/dcgm:4.10.0-ubuntu24.04",
-			want:  "48",
+			want:  "48.x",
 		},
 		{
-			name:  "version above the highest lane maps to the highest lane",
+			name:  "version 5.x maps to 48.x",
 			image: "nvcr.io/nvidia/cloud-native/dcgm:5.0.0-ubuntu24.04",
-			want:  "48",
+			want:  "48.x",
 		},
 		{
 			name:  "tag without patch version maps to the major version lane",
 			image: "nvcr.io/nvidia/cloud-native/dcgm:4.8-ubuntu24.04",
 			want:  "4.x",
+		},
+		{
+			name:  "image that is not DCGM gets no label",
+			image: "nvcr.io/nvidia/k8s-device-plugin:v0.17.0",
+			want:  "",
 		},
 	}
 
@@ -79,17 +89,35 @@ func TestDCGMVersionLanes_LabelForImage_DefaultLanes(t *testing.T) {
 	}
 }
 
-func TestParseDCGMVersionLanes_UnsortedLanes_UsesHighestMinVersionAtOrBelowImage(t *testing.T) {
+func TestDCGMVersionLanes_LabelForImage_FirstMatchingLaneWins(t *testing.T) {
 	lanes, err := ParseDCGMVersionLanes(`[
-		{"minVersion": "4.8.0", "label": "48"},
-		{"minVersion": "4.0.0", "label": "4.x"},
-		{"minVersion": "4.9.2", "label": "492"}
+		{"label": "481-broken", "expression": "version.major == 4 && version.minor == 8 && version.patch == 1"},
+		{"label": "48.x", "expression": "version.major == 4 && version.minor >= 8"},
+		{"label": "4.x", "expression": "version.major == 4"}
 	]`)
 	require.NoError(t, err)
 
 	assert.Equal(t, "4.x", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.7.0-ubuntu24.04"))
-	assert.Equal(t, "48", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.9.1-ubuntu24.04"))
-	assert.Equal(t, "492", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.9.2-ubuntu24.04"))
+	assert.Equal(t, "48.x", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.8.0-ubuntu24.04"))
+	assert.Equal(t, "481-broken", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.8.1-ubuntu24.04"))
+}
+
+func TestDCGMVersionLanes_LabelForImage_EvaluationErrorSkipsLane(t *testing.T) {
+	lanes, err := ParseDCGMVersionLanes(`[
+		{"label": "build", "expression": "version['build'] == 1"},
+		{"label": "4.x", "expression": "version.major == 4"}
+	]`)
+	require.NoError(t, err)
+
+	// version has no build key, so the first expression fails with "no such key".
+	assert.Equal(t, "4.x", lanes.labelForImage("nvcr.io/nvidia/cloud-native/dcgm:4.8.0-ubuntu24.04"))
+}
+
+func TestDCGMVersionLanes_IsLabel(t *testing.T) {
+	assert.True(t, testDCGMVersionLanes.isLabel("48.x"))
+	assert.True(t, testDCGMVersionLanes.isLabel(" 4.x "))
+	assert.False(t, testDCGMVersionLanes.isLabel("48"))
+	assert.False(t, testDCGMVersionLanes.isLabel(""))
 }
 
 func TestParseDCGMVersionLanes_InvalidConfig_ReturnsError(t *testing.T) {
@@ -110,28 +138,53 @@ func TestParseDCGMVersionLanes_InvalidConfig_ReturnsError(t *testing.T) {
 		},
 		{
 			name:    "unknown field",
-			lanes:   `[{"minVersion": "4.0.0", "maxVersion": "4.8.0", "label": "4.x"}]`,
+			lanes:   `[{"minVersion": "4.0.0", "label": "4.x", "expression": "true"}]`,
 			wantErr: "unknown field",
 		},
 		{
-			name:    "minVersion is not X.Y.Z",
-			lanes:   `[{"minVersion": "4.8", "label": "48"}]`,
-			wantErr: `minVersion "4.8"`,
-		},
-		{
 			name:    "unquoted numeric label",
-			lanes:   `[{"minVersion": "4.8.0", "label": 48}]`,
+			lanes:   `[{"label": 48, "expression": "true"}]`,
 			wantErr: "parse DCGM version lanes",
 		},
 		{
 			name:    "label is not a valid label value",
-			lanes:   `[{"minVersion": "4.8.0", "label": "4.8+"}]`,
+			lanes:   `[{"label": "4.8+", "expression": "true"}]`,
 			wantErr: `label "4.8+"`,
 		},
 		{
-			name:    "duplicate minVersion",
-			lanes:   `[{"minVersion": "4.8.0", "label": "48"}, {"minVersion": "4.8.0", "label": "49"}]`,
-			wantErr: `duplicate minVersion "4.8.0"`,
+			name:    "duplicate label",
+			lanes:   `[{"label": "48.x", "expression": "true"}, {"label": "48.x", "expression": "false"}]`,
+			wantErr: `duplicate label "48.x"`,
+		},
+		{
+			name:    "missing expression",
+			lanes:   `[{"label": "48.x"}]`,
+			wantErr: `lane "48.x": expression is required`,
+		},
+		{
+			name:    "expression does not compile",
+			lanes:   `[{"label": "48.x", "expression": "version.major >="}]`,
+			wantErr: `lane "48.x": compile expression`,
+		},
+		{
+			name:    "expression uses an unknown variable",
+			lanes:   `[{"label": "48.x", "expression": "dcgm.major == 4"}]`,
+			wantErr: `lane "48.x": compile expression`,
+		},
+		{
+			name:    "expression reads the node",
+			lanes:   `[{"label": "canary", "expression": "node.metadata.labels['pool'] == 'canary'"}]`,
+			wantErr: `lane "canary": compile expression`,
+		},
+		{
+			name:    "expression reads the image",
+			lanes:   `[{"label": "48.x", "expression": "image.contains('ubuntu24.04')"}]`,
+			wantErr: `lane "48.x": compile expression`,
+		},
+		{
+			name:    "expression does not return bool",
+			lanes:   `[{"label": "48.x", "expression": "version.major"}]`,
+			wantErr: `lane "48.x": expression must return bool`,
 		},
 	}
 

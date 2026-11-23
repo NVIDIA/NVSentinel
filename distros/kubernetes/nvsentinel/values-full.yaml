@@ -1421,18 +1421,20 @@ labeler:
   dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
 
   # DCGM version lanes
-  # Map the DCGM version of the DCGM pod image to the nvsentinel.dgxc.nvidia.com/dcgm.version label.
-  # A node gets the label of the lane with the highest minVersion at or below its DCGM version.
-  # A node with a DCGM version below the lowest lane gets no label.
+  # Map the DCGM pod image on a node to the nvsentinel.dgxc.nvidia.com/dcgm.version label.
+  # The labeler evaluates the lanes in order. A node gets the label of the first lane whose
+  # CEL expression is true. A node that matches no lane gets no label.
+  # Each expression must return bool and can use one variable:
+  #   version: map with the int keys major, minor and patch, from the DCGM image tag
   # Each label must match the nodeSelector of a gpu-health-monitor DaemonSet.
-  # Quote all values so that YAML keeps them as strings (for example "48").
+  # Quote all labels so that YAML keeps them as strings.
   dcgmVersionLanes:
-    - minVersion: "3.0.0"
-      label: "3.x"
-    - minVersion: "4.0.0"
-      label: "4.x"
-    - minVersion: "4.8.0"
-      label: "48"
+    - label: "3.x"
+      expression: "version.major == 3"
+    - label: "4.x"
+      expression: "version.major == 4 && version.minor < 8"
+    - label: "48.x"
+      expression: "version.major > 4 || (version.major == 4 && version.minor >= 8)"
 
   # Driver pod discovery
   # Value of the `app` pod label used to find the GPU Operator driver pod on each node.

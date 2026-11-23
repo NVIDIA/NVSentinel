@@ -61,7 +61,7 @@ func TestTopologyLabels(t *testing.T) {
 
 				dcgmVersion, exists := node.Labels[DCGMVersionLabel]
 				assert.True(t, exists, "Node %s with DCGM deploy label missing DCGM version label", nodeName)
-				assert.Contains(t, []string{"3.x", "4.x", "48"}, dcgmVersion, "Node %s has unexpected DCGM version label: %s", nodeName, dcgmVersion)
+				assert.Contains(t, []string{"3.x", "4.x", "48.x"}, dcgmVersion, "Node %s has unexpected DCGM version label: %s", nodeName, dcgmVersion)
 
 				pods, err := helpers.GetPodsOnNode(ctx, client.Resources(), nodeName)
 				assert.NoError(t, err, "failed to get pods on node %s", nodeName)
