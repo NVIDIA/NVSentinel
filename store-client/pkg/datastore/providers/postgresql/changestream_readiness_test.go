@@ -50,9 +50,7 @@ func TestHybridChangeStream_PollsWhileListenUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT resume_token FROM resume_tokens WHERE client_name = $1")).
-		WithArgs("test-client").
-		WillReturnError(sql.ErrNoRows)
+	expectInitialPosition(t, mock, "test-client")
 	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
 	mock.ExpectQuery(regexp.QuoteMeta(changelogQuery)).WillReturnRows(changelogRows())
 	watcher.Start(ctx)

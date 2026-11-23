@@ -2,34 +2,34 @@
 
 ## Overview
 
-The Fault Remediation module is NVSentinel's bridge to external repair systems. After a node has been quarantined and drained, this module creates maintenance requests that trigger break-fix workflows - such as node reboots, hardware replacements, or cloud provider interventions.
+The Fault Remediation module connects NVSentinel to external repair systems. After NVSentinel quarantines and drains a node, Fault Remediation creates maintenance CRs. These maintenance CRs start remediation actions, for example node reboots, hardware replacements or cloud provider interventions.
 
-Think of it as a dispatch coordinator - similar to how a facility manager calls in specialists when equipment needs repair, Fault Remediation notifies your maintenance systems that a node is ready for servicing.
+Fault Remediation works as a dispatch coordinator. A facility manager calls specialists when equipment needs repair. In the same way, Fault Remediation tells your maintenance systems that a node is ready for maintenance.
 
 ### Why Do You Need This?
 
-After NVSentinel isolates a faulty node and evacuates workloads, the hardware needs to be fixed:
+After NVSentinel isolates a faulty node and evacuates its workloads, the hardware needs a repair:
 
-- **Hardware replacement**: Faulty GPUs need to be physically replaced
-- **Node reboots**: Some issues resolve with a clean restart
-- **GPU resets**: Some issues resolve with a GPU reset
-- **Cloud provider actions**: VMs may need termination and recreation
+- **Hardware replacement**: Faulty GPUs need a physical replacement
+- **Node reboots**: A clean restart corrects some faults
+- **GPU resets**: A GPU reset corrects some faults
+- **Cloud provider actions**: Some VMs need termination and recreation
 
-The Fault Remediation module creates Kubernetes Custom Resources (CRDs) that external operators (like Janitor) watch and act upon to perform the actual repair work.
+Fault Remediation creates Kubernetes custom resources (maintenance CRs). External operators, for example Janitor, watch these maintenance CRs and do the repair work.
 
 ## How It Works
 
-The Fault Remediation module watches the datastore for drained nodes that need repair:
+Fault Remediation watches the datastore for drained nodes that need repair. For each health event, Fault Remediation does these steps:
 
-1. Receives events with recommended actions (RESTART_VM, REPLACE_VM, etc.)
-2. Filters out NONE and UNKNOWN actions
-3. Records the selected remediation action on the event
+1. Receives the health event and its recommended action, for example RESTART_VM or REPLACE_VM
+2. Skips the NONE action. For an action that has no entry in `maintenance.actions`, for example UNKNOWN, Fault Remediation creates no maintenance CR. It increments `fault_remediation_unsupported_actions_total`. If the node is still quarantined for this health event, it sets the state label to `remediation-failed`.
+3. Records the selected remediation action on the health event
 4. Checks if a maintenance CR already exists for the node
-5. Optionally triggers log collection
-6. Creates maintenance Custom Resource using configured template
-7. Updates node labels to track remediation state
+5. Starts log collection, if log collection is enabled
+6. Creates a maintenance CR from the configured template
+7. Updates node labels to track the remediation state
 
-External operators watch for these CRs and perform the actual maintenance work (reboot, terminate, replace, etc.).
+External operators watch these maintenance CRs and do the maintenance work, for example a reboot, a termination or a replacement.
 
 ## Configuration
 
@@ -55,7 +55,7 @@ fault-remediation:
         version: "v1alpha1"
         kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "Complete"
+        completeConditionType: "Succeeded"
         templateFileName: "gpureset-template.yaml"
         equivalenceGroup: "reset"
         impactedEntityScope: "GPU_UUID"
@@ -88,41 +88,51 @@ fault-remediation:
 
 ### Configuration Options
 
-- **Dry Run**: Test CRD creation without creating maintenance requests
-- **Maintenance CRD**: Define the Custom Resource to create (apiGroup, version, kind, namespace)
-- **Template**: Go template for generating CRDs
-- **Log Collection**: Optionally collect diagnostic logs before remediation (syslog, GPU logs, driver information)
+- **Dry Run**: Tests the creation of maintenance CRs, but does not create them
+- **Maintenance CRD**: Defines the custom resource to create (apiGroup, version, kind, namespace)
+- **Template**: Go template that generates the maintenance CRs
+- **Log Collection**: Optional collection of diagnostic logs before remediation (syslog, GPU logs, driver information)
 
 ## Key Features
 
 ### Template-Based CRD Generation
-Flexible Go template system to match your maintenance operator:
-- Customize CRD structure 
-- Access node name, the impacted GPU UUID, event ID, and other properties
+
+The Go templates let you match the maintenance CRs to your maintenance operator:
+
+- Customize the structure of the maintenance CR
+- Use the node name, the impacted GPU UUID, the health event ID and other properties
 - Support different remediation types (reboot, terminate, replace)
 
 ### Intelligent Filtering
-Only creates requests when needed:
-- Skips NONE and UNKNOWN actions
+
+Fault Remediation creates a maintenance CR only when it is necessary:
+
+- Skips NONE actions, and actions that have no entry in `maintenance.actions` (for example UNKNOWN)
 - Checks for existing maintenance CRs
-- Prevents duplicate requests
+- Prevents duplicate maintenance CRs
 
 ### State Tracking
-Updates node labels throughout remediation lifecycle:
-- `remediating`: Maintenance request created
+
+Fault Remediation updates node labels during the remediation lifecycle:
+
+- `remediating`: Maintenance CR created
 - `remediation-succeeded`: Maintenance completed
-- `remediation-failed`: Maintenance encountered errors
+- `remediation-failed`: Maintenance had errors
 
 ### Remediation Decision
-Records on each event the entry of `maintenance.actions` that it uses, in `remediationDecision` of the event status. It writes the record before the log collector and the maintenance CR, so it is on the event of a remediation that is in progress. The entry is the recommended action of the event, or `customRecommendedAction` for a `CUSTOM` event. An event that is skipped, for example with an action that has no entry, gets no record. See [Drain and Remediation Decisions](health-event-data-model.md#drain-and-remediation-decisions).
+
+For each health event, Fault Remediation records the entry of `maintenance.actions` that it uses. It writes this record in `remediationDecision` of the health event status. It writes the record before the log collector runs and before it creates the maintenance CR. Thus, the record is on the health event while the remediation is in progress.
+
+The entry is the recommended action of the health event, or `customRecommendedAction` for a `CUSTOM` health event. Fault Remediation writes no record for a health event that it skips, for example a health event with an action that has no entry. See [Drain and Remediation Decisions](health-event-data-model.md#drain-and-remediation-decisions).
 
 ### Optional Log Collection
-Gather diagnostics before remediation for troubleshooting and root cause analysis.
+
+Fault Remediation can collect diagnostics before remediation, for troubleshooting and root cause analysis.
 
 ## Integration Patterns
 
-The Fault Remediation module creates CRDs consumed by external operators:
+Fault Remediation creates maintenance CRs. External operators use these maintenance CRs:
 
-**Janitor Operator**: Watches for maintenance CRDs and performs cloud provider API calls to reboot/terminate nodes.
-**Custom Break-Fix Systems**: Define custom CRD schemas and deploy operators to integrate with your own maintenance systems.
-**Manual Workflow Systems**: Deploy a controller that creates tickets from CRs for manual processing in your ticketing system.
+- **Janitor**: Watches the maintenance CRs and calls the cloud provider API to reboot or terminate nodes.
+- **Custom Break-Fix Systems**: Define custom CRD schemas. Then deploy operators that integrate with your own maintenance systems.
+- **Manual Workflow Systems**: Deploy a controller that creates tickets in your ticketing system from the maintenance CRs, for manual processing.

@@ -735,3 +735,40 @@ func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
 		t.Fatal("cutoff key was written with a zero cutoff")
 	}
 }
+
+// headResetDBClient also implements ResetResumeTokenToHead, like the PostgreSQL client.
+type headResetDBClient struct {
+	mockResumeTokenDBClient
+	headResets int
+}
+
+func (m *headResetDBClient) ResetResumeTokenToHead(_ context.Context, tokenConfig TokenConfig) error {
+	m.headResets++
+	m.tokenConfig = tokenConfig
+
+	return nil
+}
+
+func TestResetResumeTokenOnStartWithStore_CreateResetsToHeadWhenSupported(t *testing.T) {
+	tokenConfig := TokenConfig{ClientName: "fault-quarantine"}
+	dbClient := &headResetDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
+
+	decision, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, tokenConfig, store)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A CREATE means "skip what accumulated", so the token is moved to the head, not deleted.
+	if dbClient.headResets != 1 || dbClient.deleteCalls != 0 {
+		t.Fatalf("head resets = %d, deletes = %d; want 1 and 0", dbClient.headResets, dbClient.deleteCalls)
+	}
+
+	if dbClient.tokenConfig != tokenConfig {
+		t.Fatalf("ResetResumeTokenToHead got token config %+v, want %+v", dbClient.tokenConfig, tokenConfig)
+	}
+
+	if !decision.StartFresh {
+		t.Fatal("StartFresh = false, want true")
+	}
+}

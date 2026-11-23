@@ -2,27 +2,27 @@
 
 ## Overview
 
-MongoDB is used to persist health events that are created by health monitors like syslog-health-monitor, gpu-health-monitor etc for 30 days. The fault-handling modules(like fault-quarantine, node-drainer, fault-remediation) connect to MongoDB to process these events and cordon/uncordon/remediate the node. When MongoDB pods crash or fail to start, all event processing in NVSentinel stops.
+NVSentinel uses MongoDB to persist health events for 30 days. Health monitors, such as syslog-health-monitor and gpu-health-monitor, create these health events. The fault-handling modules, such as fault-quarantine, node-drainer and fault-remediation, connect to MongoDB to process these events. Then they cordon, uncordon or remediate the node. When MongoDB pods crash or fail to start, all event processing in NVSentinel stops.
 
 ## Common Causes
 
-MongoDB connection failure can occur due to the following reasons:
+These causes can make the MongoDB connection fail:
 
 ### 1. **TLS Certificates Not Installed or Expired**
-   - Missing `mongodb-tls-secret` or `mongo-app-client-cert-secret` secrets
+   - Missing `mongo-root-ca-secret`, `mongo-ca-secret`, `mongo-server-cert-0`, `mongo-server-cert-1`, `mongo-server-cert-2` or `mongo-app-client-cert-secret` secrets
    - Expired certificates
 
 ### 2. **Initialization Job Not Completed**
-   - `create-mongodb-database-<seconds>-<scriptHash>` job failed or still running (`-l app.kubernetes.io/name=create-mongodb-database`)
-   - Job creates required database, collections, and indexes
-   - Without successful completion, MongoDB pod can't initialize properly
+   - `create-mongodb-database-<seconds>-<hash>` Job failed or is still in progress (`-l app.kubernetes.io/name=create-mongodb-database`)
+   - The Job creates the required database, collections, and indexes
+   - If the Job does not complete successfully, the MongoDB pod cannot initialize correctly
 
 ### 3. **Storage Class Is Missing**
-   - PersistentVolumeClaims (PVCs) use StorageClass to dynamically provision volume. Without a valid StorageClass, PVCs cannot bind to storage and MongoDB pods cannot start without bounded PVCs
+   - PersistentVolumeClaims (PVCs) use a StorageClass to provision volumes dynamically. Without a valid StorageClass, PVCs cannot bind to storage. MongoDB pods cannot start without bound PVCs
 
 ### 4. **Open-File Limit Too Low**
    - The node gives containers a soft open-file limit below 64000, for example 1024
-   - mongod runs out of file descriptors when the number of client connections grows with the cluster, and crashes
+   - When the number of client connections grows with the cluster, mongod has no free file descriptors and crashes
 
 ## Quick Diagnosis
 
@@ -120,7 +120,7 @@ kubectl -n nvsentinel logs -l app.kubernetes.io/name=mongodb --tail=50 | grep -i
 
 **Scenario A: Mongo secrets do NOT exist (cert-manager webhook is the problem)**
 
-If Step 1 showed no mongo secrets, or Step 3 showed cert-manager-webhook-ca is expired:
+If Step 1 showed no mongo secrets, or if Step 3 showed that cert-manager-webhook-ca is expired, do these steps:
 
 ```bash
 # Step 1: Fix cert-manager
@@ -142,7 +142,11 @@ kubectl -n nvsentinel delete pvc -l app.kubernetes.io/name=mongodb
 
 **Scenario B: Mongo secrets exist but are expired (cert-manager is healthy)**
 
-If Step 1 showed mongo secrets exist, and Step 4 showed they are expired, but Step 3 showed cert-manager webhook is healthy:
+If all of these conditions are true, do the steps in the code block below:
+
+- Step 1 showed that the mongo secrets exist.
+- Step 4 showed that they are expired.
+- Step 3 showed that the cert-manager webhook is healthy.
 
 ```bash
 # Step 1: Delete the expired mongo secrets
@@ -165,7 +169,7 @@ kubectl -n nvsentinel delete pvc -l app.kubernetes.io/name=mongodb
 ### Issue 2: Initialization Job Failed
 
 ```bash
-# Check job status (name is create-mongodb-database-<seconds>-<scriptHash>)
+# Check job status (name is create-mongodb-database-<seconds>-<hash>)
 kubectl -n nvsentinel get job -l app.kubernetes.io/name=create-mongodb-database
 
 # Check job logs
@@ -209,12 +213,12 @@ kubectl get storageclass
 
 ### Issue 4: Open-File Limit Too Low
 
-mongod uses one file descriptor for each client connection. Each platform-connectors pod has its own connection pool, so the number of connections grows with the number of nodes. If the node gives containers a low soft open-file limit, mongod runs out of file descriptors and crashes. This usually happens after the cluster grows, for example from 50 to 500 nodes.
+mongod uses one file descriptor for each client connection. Each platform-connectors pod has its own connection pool, so the number of connections grows with the number of nodes. If the node gives containers a low soft open-file limit, mongod uses all of its file descriptors and crashes. This usually occurs after the cluster grows, for example from 50 to 500 nodes.
 
 **Symptoms:**
 
-- MongoDB pods are in `CrashLoopBackOff`. In [issue #1555](https://github.com/NVIDIA/NVSentinel/issues/1555), mongod exited with code 139.
-- MongoDB does not become ready. With Bitnami, the `mongodb` StatefulSet shows fewer than 3 ready replicas. In issue #1555 it showed `0/3`, and because of the `OrderedReady` policy, the last replica did not start. With the Percona Operator, `kubectl -n nvsentinel get perconaservermongodb` does not show `ready`.
+- MongoDB pods are in `CrashLoopBackOff`. mongod can exit with code 139.
+- MongoDB does not become ready. With Bitnami, the `mongodb` StatefulSet shows fewer than 3 ready replicas, for example `0/3`. Because of the `OrderedReady` policy, the last replica can fail to start. With the Percona Operator, `kubectl -n nvsentinel get perconaservermongodb` does not show `ready`.
 - fault-quarantine, node-drainer and fault-remediation crash with `ReplicaSetNoPrimary` or `connection refused`.
 
 **Diagnosis:**
@@ -244,7 +248,7 @@ systemctl show containerd --property=LimitNOFILESoft --property=LimitNOFILE
 # LimitNOFILESoft below 64000 (for example 1024) confirms this issue
 ```
 
-If a MongoDB pod is running, you can also read the limit of mongod directly:
+If a MongoDB pod runs, you can also read the limit of mongod directly:
 
 ```bash
 # Bitnami
@@ -309,8 +313,8 @@ kubectl -n nvsentinel get statefulset mongodb
 kubectl -n nvsentinel get perconaservermongodb
 ```
 
-If a MongoDB pod moves to a node that you did not change, it fails again. Change every node that can run MongoDB, or keep MongoDB on nodes that you changed. See [Node Placement](../configuration/mongodb-store.md#node-placement) for Bitnami and [Pod placement (Percona)](../configuration/mongodb-store.md#pod-placement-percona) for the Percona Operator.
+If a MongoDB pod moves to a node that you did not change, it fails again. Change every node that can run MongoDB, or keep MongoDB on nodes that you changed. For Bitnami, refer to [Node Placement](../configuration/mongodb-store.md#node-placement). For the Percona Operator, refer to [Pod placement (Percona)](../configuration/mongodb-store.md#pod-placement-percona).
 
-fault-quarantine, node-drainer and fault-remediation reconnect when the replica set has a primary. If MongoDB was down for a long time, see [Stale Events](stale-events.md).
+fault-quarantine, node-drainer and fault-remediation reconnect when the replica set has a primary. If MongoDB was down for a long time, refer to [Stale Events](stale-events.md).
 
-To find this problem before mongod fails, monitor the connection capacity of mongod. See [Open-file limit](../configuration/mongodb-store.md#open-file-limit-node-prerequisite).
+To find this problem before mongod fails, monitor the connection capacity of mongod. Refer to [Open-file limit](../configuration/mongodb-store.md#open-file-limit-node-prerequisite).

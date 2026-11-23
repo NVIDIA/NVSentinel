@@ -71,6 +71,7 @@ Runs on Linux and on macOS, Intel or Apple Silicon.
 - **go** — Go 1.25+ ([install](https://go.dev/dl/))
 - **jq** — JSON processor ([install](https://jqlang.github.io/jq/download/))
 - **curl** — used to look up the current NVSentinel release
+- **column** — formats the status tables; preinstalled on most systems, while minimal Debian and Ubuntu images need the `bsdextrautils` package
 
 Resources: roughly 4 CPU cores, 8 GB RAM and 20 GB of free disk.
 
@@ -138,6 +139,8 @@ If that fails too, reset rather than retrying further — a half-processed event
 | Protect | fault-quarantine, then node-drainer | the node cordoned |
 | Remediate | fault-remediation, then memory-reclaim-controller | a `MemoryReclaim` existing, then `status.reclaimedPods` being written, then the pod gone |
 | Back in service | the monitor, then fault-quarantine | `MemoryAvailableCheck` turning `False`, then the node uncordoned |
+
+Start this step right after step 2. Nothing in it drives the remediation: once the fault lands, the controllers run the whole cycle on their own, and the script only watches it happen. If the node is already back in service when the script starts, it stops at once and asks you to run step 2 again.
 
 Every check reads an object — a node condition, a CR status, a `deletionTimestamp` — never a controller's log. Logs are for debugging; a demo that asserts on them asserts on wording.
 

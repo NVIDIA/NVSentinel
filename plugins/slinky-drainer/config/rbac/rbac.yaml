@@ -30,11 +30,27 @@ rules:
   resources: ["nodes"]
   verbs: ["get", "list", "watch", "update", "patch"]
 - apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "delete", "watch"]
-- apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
+---
+# The controller reads and deletes pods only in the namespace that it gets in
+# --slinky-namespace, so the pod rule is a Role in that namespace and not a part
+# of the ClusterRole. The namespace of this Role and of its RoleBinding must be
+# the same as the value of that flag. config/default sets all three from
+# one value. The namespace must exist before you apply this file.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: slinky-drainer-pods
+  namespace: slinky
+  labels:
+    app: slinky-drainer
+    app.kubernetes.io/name: slinky-drainer
+    app.kubernetes.io/component: controller
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "delete", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -52,4 +68,21 @@ subjects:
 - kind: ServiceAccount
   name: slinky-drainer
   namespace: nvsentinel
-
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: slinky-drainer-pods
+  namespace: slinky
+  labels:
+    app: slinky-drainer
+    app.kubernetes.io/name: slinky-drainer
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: slinky-drainer-pods
+subjects:
+- kind: ServiceAccount
+  name: slinky-drainer
+  namespace: nvsentinel

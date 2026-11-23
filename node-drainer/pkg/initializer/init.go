@@ -34,6 +34,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -162,7 +163,7 @@ type kubeComponents struct {
 
 // initializeKubeComponents builds the Kubernetes clients and the informers. The pod drain
 // policies and the custom drain node selector are compiled here because the informers need
-// their label keys: those are the only labels kept in the caches.
+// their label keys: those, plus any fields a Node rule reads, are what the caches keep.
 func initializeKubeComponents(
 	ctx context.Context, params InitializationParams, tomlCfg *config.TomlConfig,
 ) (*kubeComponents, error) {
@@ -188,13 +189,16 @@ func initializeKubeComponents(
 		return nil, fmt.Errorf("failed to compile custom drain node selector: %w", err)
 	}
 
+	nodeFields := informers.NodeFields(customDrainNodes.LabelKeys())
+	logNodeCacheFields(ctx, nodeFields)
+
 	informersInstance, err := initializeInformers(
 		clientSet,
 		&tomlCfg.NotReadyTimeoutMinutes,
 		tomlCfg.DrainGPUPods,
 		params.DryRun,
 		tomlCfg.SystemNamespaces,
-		customDrainNodes.LabelKeys(),
+		nodeFields,
 		podPolicies.LabelKeys()...,
 	)
 	if err != nil {
@@ -207,6 +211,45 @@ func initializeKubeComponents(
 		restMapper:    restMapper,
 		informers:     informersInstance,
 	}, nil
+}
+
+// logNodeCacheFields reports which node fields the cache will keep, and warns
+// when a Node rule forces every label or reads status. Status is never cached,
+// so a rule that reads it sees an empty status. There are no Node rules until
+// rule sets are configured, so today this logs the custom-drain label keys and
+// the annotations node-drainer reads for its own use.
+func logNodeCacheFields(ctx context.Context, fields nodecache.Keys) {
+	for _, effect := range fields.Effects() {
+		logNodeRuleEffect(ctx, effect)
+	}
+
+	slog.InfoContext(ctx, "Node cache keeps the fields rules read",
+		"labels", fields.RetainedLabelNames(),
+		"annotations", fields.RetainedAnnotationNames(),
+		"ownAnnotations", informers.NodeAnnotationKeys(),
+		"spec", fields.HasNodeRule(),
+		"managedFields", fields.HasNodeRule() && !fields.PruneManagedFields(),
+	)
+}
+
+// logNodeRuleEffect warns when one expression makes the cache keep more than
+// named keys, or when it reads status that the cache drops.
+func logNodeRuleEffect(ctx context.Context, effect nodecache.RuleEffect) {
+	if !effect.KeepAllLabels && !effect.KeepAllAnnotations && !effect.ReadsStatus {
+		return
+	}
+
+	args := []any{
+		"expression", effect.Expression,
+		"allLabels", effect.KeepAllLabels,
+		"allAnnotations", effect.KeepAllAnnotations,
+		"readsStatus", effect.ReadsStatus,
+	}
+	if effect.ParseError != nil {
+		args = append(args, "error", effect.ParseError)
+	}
+
+	slog.WarnContext(ctx, "Node rule widens the node cache", args...)
 }
 
 const cleanupTimeout = 5 * time.Second
@@ -353,7 +396,7 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 // initializeInformers creates drain informers with an hourly resync and the configured policy label keys.
 func initializeInformers(clientset kubernetes.Interface,
 	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	nodeLabelKeys []string, podLabelKeys ...string) (*informers.Informers, error) {
+	nodeFields nodecache.Keys, podLabelKeys ...string) (*informers.Informers, error) {
 	return informers.NewInformers(
 		clientset,
 		time.Hour,
@@ -361,7 +404,7 @@ func initializeInformers(clientset kubernetes.Interface,
 		drainGPUPods,
 		dryRun,
 		systemNamespaces,
-		nodeLabelKeys,
+		nodeFields,
 		podLabelKeys...,
 	)
 }
