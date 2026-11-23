@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"maps"
 	"slices"
 	"sync"
@@ -690,6 +691,10 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			numReconciles:     2,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				require.ErrorContains(t, err, "no supported entities for a partial drain found")
+				require.ErrorIs(t, err, eventutil.ErrNoImpactedEntity)
+				// Each retry is counted as a selection failure, not a generic evaluation error.
+				require.GreaterOrEqual(t, getCounterVecValue(t, metrics.ProcessingErrors,
+					"impacted_entity_selection_error", nodeName), float64(2))
 				pod, getErr := client.CoreV1().Pods("completion-test").Get(ctx, "running-pod-1", metav1.GetOptions{})
 				require.NoError(t, getErr)
 				require.Nil(t, pod.DeletionTimestamp, "a missing GPU identity must not evict any pod")

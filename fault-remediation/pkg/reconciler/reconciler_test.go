@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"testing"
 	"time"
 
@@ -3265,6 +3267,43 @@ func TestHandleRemediationEvent_NoValidScopedEntity_FinishedEventIsAcknowledged(
 	}
 }
 
+func TestHandleRemediationEvent_NoValidScopedEntity_EndedQuarantineIsAcknowledged(t *testing.T) {
+	// fault-quarantine recovered the node, but this event's own record still reads Quarantined
+	// with FaultRemediated unset. The live quarantine has ended, so the event must not retry.
+	doc := &events.HealthEventDoc{
+		ID: "recovered-without-scope",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				Id: "recovered-without-scope", NodeName: "node-a",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU_UUID"}},
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+		RemediationClient: &scopedResetClient{},
+		NodeReader:        fake.NewClientBuilder().WithObjects(node).Build(),
+	}, false)
+	watcher := &MockChangeStreamWatcher{}
+	store := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			t.Fatal("an event whose quarantine ended must not write status or a decision")
+			return nil
+		},
+	}
+	before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+
+	result, err := r.handleRemediationEvent(context.Background(), doc,
+		datastore.EventWithToken{ResumeToken: []byte("recovered-token")}, watcher, store)
+	require.NoError(t, err)
+	require.True(t, result.IsZero())
+	_, processed, _, _ := watcher.GetCallCounts()
+	require.Equal(t, 1, processed, "the event must be acknowledged once")
+	require.Equal(t, before, getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a"))
+}
+
 func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3276,19 +3315,25 @@ func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Unconfigured methods panic if selection failure reaches any I/O path.
-			r := NewFaultRemediationReconciler(nil, nil, nil,
-				ReconcilerConfig{RemediationClient: &scopedResetClient{}}, false)
 			doc := &events.HealthEventDoc{
 				ID: "missing-scope",
 				HealthEventWithStatus: model.HealthEventWithStatus{
 					HealthEvent: &protos.HealthEvent{
-						NodeName: "node-a", RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+						Id: "missing-scope", NodeName: "node-a", RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 						EntitiesImpacted: tt.entities,
 					},
 					HealthEventStatus: &protos.HealthEventStatus{},
 				},
 			}
+			// The node's quarantine still holds this event, so the selection failure must retry.
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+				Name: "node-a", Annotations: quarantineAnnotationForTest(t, doc.HealthEvent),
+			}}
+			// Unconfigured methods panic if selection failure reaches any other I/O path.
+			r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+				RemediationClient: &scopedResetClient{},
+				NodeReader:        fake.NewClientBuilder().WithObjects(node).Build(),
+			}, false)
 			watcher := &MockChangeStreamWatcher{}
 			store := &MockHealthEventStore{
 				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {

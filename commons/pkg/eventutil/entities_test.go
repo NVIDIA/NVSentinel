@@ -15,6 +15,7 @@
 package eventutil
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -59,5 +60,14 @@ func TestFirstImpactedEntity_EntityOrder_SelectsFirstNonEmptyOfType(t *testing.T
 			require.NoError(t, err)
 			require.Same(t, tt.want, got)
 		})
+	}
+}
+
+func TestFirstImpactedEntity_NoValidEntity_WrapsErrNoImpactedEntity(t *testing.T) {
+	event := &protos.HealthEvent{NodeName: "node-a", EntitiesImpacted: []*protos.Entity{{EntityType: "GPU_UUID"}}}
+
+	_, err := FirstImpactedEntity(event, "GPU_UUID")
+	if !errors.Is(err, ErrNoImpactedEntity) {
+		t.Fatalf("error %v does not wrap ErrNoImpactedEntity", err)
 	}
 }

@@ -15,10 +15,15 @@
 package eventutil
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+// ErrNoImpactedEntity reports that a health event has no usable entity of the scoped type.
+// Callers retry such events and count them separately from other errors.
+var ErrNoImpactedEntity = errors.New("no non-empty impacted entity")
 
 // FirstImpactedEntity returns the first entity of entityType with a non-empty value,
 // in event order, as specified by ADR-071. The caller selects the scope type;
@@ -30,6 +35,6 @@ func FirstImpactedEntity(healthEvent *protos.HealthEvent, entityType string) (*p
 		}
 	}
 
-	return nil, fmt.Errorf("health event for node %s has no non-empty impacted entity of type %s",
-		healthEvent.GetNodeName(), entityType)
+	return nil, fmt.Errorf("health event for node %s has no non-empty impacted entity of type %s: %w",
+		healthEvent.GetNodeName(), entityType, ErrNoImpactedEntity)
 }

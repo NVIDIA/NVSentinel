@@ -246,7 +246,8 @@ func skipReasonWithoutGroup(ctx context.Context, healthEventWithStatus model.Hea
 }
 
 // trySkipFinishedEvent acknowledges an event that needs no remediation, using only checks that
-// do not need an equivalence group: the event snapshot, then the current datastore record.
+// do not need an equivalence group: the event snapshot, the current datastore record, then
+// the node's live quarantine.
 func (r *FaultRemediationReconciler) trySkipFinishedEvent(
 	ctx context.Context,
 	healthEventWithStatus *events.HealthEventDoc,
@@ -263,8 +264,25 @@ func (r *FaultRemediationReconciler) trySkipFinishedEvent(
 		return ctrl.Result{}, nil, true
 	}
 
-	return r.trySkipResolvedEvent(ctx, healthEventStore, eventWithToken, watcherInstance,
-		healthEventWithStatus.HealthEvent, healthEventWithStatus.ID)
+	if res, err, done := r.trySkipResolvedEvent(ctx, healthEventStore, eventWithToken, watcherInstance,
+		healthEventWithStatus.HealthEvent, healthEventWithStatus.ID); done {
+		return res, err, true
+	}
+
+	// The event's own record can still read Quarantined after fault-quarantine recovered the
+	// node, so also check the live quarantine. A failed check falls through to a retry.
+	active, checkErr := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent)
+
+	quarantineEnded := checkErr == nil && !active
+	if !quarantineEnded {
+		return ctrl.Result{}, nil, false
+	}
+
+	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err, true
+	}
+
+	return ctrl.Result{}, nil, true
 }
 
 func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,

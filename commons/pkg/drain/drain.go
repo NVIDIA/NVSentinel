@@ -183,8 +183,8 @@ func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled boo
 		}
 	}
 
-	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s",
-		healthEvent.NodeName)
+	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s: %w",
+		healthEvent.NodeName, eventutil.ErrNoImpactedEntity)
 }
 
 func doesDrainCoverPartialEntity(ctx context.Context, drainCompleted bool, partialEntity,
