@@ -34,10 +34,10 @@ Compute disabled candidates only where chart settings fully describe emitted nam
 
 ### Recovery of retired faults
 
-1. List selected Nodes and verify the ownership guard. Read `quarantineHealthEvent` using the existing parser, including its legacy single-event format.
+1. List selected Nodes, record each Node's UID, and verify the ownership guard. Read `quarantineHealthEvent` using the existing parser, including its legacy single-event format.
 2. For each retired type, select every matching tracked identity. Reject unexpected agents, components, versions or malformed annotation data. Never infer identity from condition text.
 3. Build healthy events from those identities. Preserve `nodeName`, `agent`, `componentClass`, `checkName`, `version`, `entitiesImpacted` and `errorCode`. Set `isHealthy=true`, `isFatal=false`, action `NONE` and `processingStrategy=EXECUTE_REMEDIATION`. Clear inherited force/skip overrides. Assign a new event ID and timestamp. Reuse the batch idempotency key on transport retries. Add audit metadata containing the retirement entry, input digest and Node UID.
-4. Publish through platform-connectors using the monitor API. Keep all normal transformations, persistence and downstream processing. Verify that configured overrides and deduplication permit recovery; a suppressed or altered recovery is a failure.
+4. Immediately before publishing each recovery event, re-read the Node and require the UID recorded in step 1. Fault-quarantine matches faults by agent, component, check, node name and version, with no Node UID, so a recovery built from a Node that was replaced under the same name could clear a fault on the replacement. Treat a mismatch as a recovery failure and publish nothing for that Node. Then publish through platform-connectors using the monitor API. Keep all normal transformations, persistence and downstream processing. Verify that configured overrides and deduplication permit recovery; a suppressed or altered recovery is a failure.
 5. Observe the condition and quarantine annotation through a Node informer with a bounded deadline. Require matching tracked identities to disappear and the condition writer to finish recovery to `False`. The writer clears matching messages and sets `False` when none remain. Other faults can keep the node quarantined.
 6. Re-read the Node before removing the obsolete condition. Require the same UID, ownership guard and no remaining tracked fault for that type. Report partial recovery as failure; never replace it with condition-only deletion.
 
