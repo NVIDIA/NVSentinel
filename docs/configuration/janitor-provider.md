@@ -482,7 +482,9 @@ When the provider creates the Job, it records the boot ID of the node. It passes
 
 Before any other action, the container compares this value with `/proc/sys/kernel/random/boot_id`. If the values are different, the node has already rebooted. Then the container exits without a reboot and without a syslog entry. This check prevents a second reboot when the kubelet starts the same pod again after the node boots. If the container cannot read either boot ID, it exits with an error and does not reboot the node.
 
-The generic provider also bounds when the Job may start a reboot. Janitor sends the attempt's start time plus its reboot timeout as an absolute deadline. The provider rejects an expired request and sets the Job's active deadline. If the boot ID still matches, the container checks the absolute deadline before logging or rebooting. A kubelet reconnect can therefore leave an expired pod runnable only long enough for the guard to deny the action. A reboot that already started can finish independently of the readiness timer.
+The generic provider also bounds when the Job may start a reboot. Janitor sends the attempt's start time plus its reboot timeout as an absolute deadline. The provider rejects an expired request and sets the Job's active deadline. If the boot ID still matches, the container checks the absolute deadline before logging or rebooting. A reboot that already started can finish independently of the readiness timer.
+
+Keep the clocks on the nodes that run Janitor, the Janitor Provider, and the reboot Jobs synchronized to a common time source. The container compares `REBOOT_DEADLINE_UNIX_SECONDS` with the target node's wall clock. A clock that lags Janitor's can allow a late reboot if the pod is still runnable. A clock that is ahead can reject a reboot before the attempt expires. The Job's active deadline limits its runtime from Job start. The container check relies on synchronized clocks to enforce Janitor's absolute cutoff.
 
 For callers that omit the deadline, the generic provider uses 30 minutes from receipt. Upgrade both Janitor and janitor-provider to apply the configured Janitor timeout end to end.
 
