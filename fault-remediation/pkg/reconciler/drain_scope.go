@@ -22,6 +22,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -29,6 +31,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // drainScopeMismatchError is the error_type of fault_remediation_processing_errors_total for an event whose
@@ -53,19 +56,43 @@ func drainCoversAction(decision *protos.DrainDecision, groupConfig *common.Equiv
 		groupConfig.ImpactedEntityScopeValue == drained.GetEntityValue()
 }
 
-// checkDrainCoversAction returns ErrDrainDoesNotCoverAction when the event's partial drain does not cover
-// its action. The caller then retries the event without creating a CR or recording a decision, so a fix to
-// the configuration lets the event continue.
-func checkDrainCoversAction(ctx context.Context, span oteltrace.Span, healthEventWithStatus *events.HealthEventDoc,
-	groupConfig *common.EquivalenceGroupConfig) error {
-	decision := healthEventWithStatus.HealthEventStatus.GetDrainDecision()
-	if drainCoversAction(decision, groupConfig) {
-		return nil
+// tryRejectUncoveredEvent returns (result, err, true) when the event's partial drain does not cover its
+// action. The event is retried with ErrDrainDoesNotCoverAction and gets no CR and no decision, so a fix to
+// the configuration lets it continue. If the node was deleted, no fix can help, so the event is closed like
+// the other events of a deleted node. Otherwise it returns (zero, nil, false).
+func (r *FaultRemediationReconciler) tryRejectUncoveredEvent(
+	ctx context.Context,
+	span oteltrace.Span,
+	healthEventWithStatus *events.HealthEventDoc,
+	groupConfig *common.EquivalenceGroupConfig,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error, bool) {
+	if drainCoversAction(healthEventWithStatus.HealthEventStatus.GetDrainDecision(), groupConfig) {
+		return ctrl.Result{}, nil, false
 	}
 
 	nodeName := healthEventWithStatus.HealthEvent.GetNodeName()
+
+	if _, _, err := r.annotationManager.GetRemediationState(ctx, nodeName); apierrors.IsNotFound(err) {
+		slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+
+		res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+
+		return res, err, true
+	}
+
+	return ctrl.Result{}, recordDrainScopeMismatch(ctx, span, healthEventWithStatus, groupConfig), true
+}
+
+// recordDrainScopeMismatch logs and counts an event whose partial drain does not cover its action, and
+// returns ErrDrainDoesNotCoverAction.
+func recordDrainScopeMismatch(ctx context.Context, span oteltrace.Span, healthEventWithStatus *events.HealthEventDoc,
+	groupConfig *common.EquivalenceGroupConfig) error {
+	nodeName := healthEventWithStatus.HealthEvent.GetNodeName()
 	action := model.GetEffectiveActionName(healthEventWithStatus.HealthEvent)
-	drained := decision.GetScope()
+	drained := healthEventWithStatus.HealthEventStatus.GetDrainDecision().GetScope()
 
 	err := fmt.Errorf("%w: event %s drained only %s %s, and action %s acts on %s",
 		ErrDrainDoesNotCoverAction, healthEventWithStatus.ID, drained.GetEntityType(), drained.GetEntityValue(),
