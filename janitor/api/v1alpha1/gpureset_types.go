@@ -52,6 +52,8 @@ const (
 	// the node is gone or when it stopped no service. A remediation that has to know whether the reset
 	// worked reads this condition, not Complete.
 	Succeeded GPUResetConditionType = "Succeeded"
+	// ManualMode is true while the GPUReset waits because janitor runs in manual mode.
+	ManualMode GPUResetConditionType = "ManualMode"
 )
 
 const (
@@ -59,6 +61,9 @@ const (
 	ReasonResetPending       GPUResetReason = "Pending"
 	ReasonReadyForReset      GPUResetReason = "ReadyForReset"
 	ReasonResourceContention GPUResetReason = "ResourceContention"
+	// Manual mode reasons
+	ReasonOutsideActorRequired GPUResetReason = "OutsideActorRequired"
+	ReasonManualModeDisabled   GPUResetReason = "ManualModeDisabled"
 
 	// In-progress reasons
 	ReasonSkipped                    GPUResetReason = "Skipped"
@@ -88,6 +93,8 @@ const (
 	ReasonRestoreTimeoutExceeded         GPUResetReason = "RestoreTimeoutExceeded"
 	ReasonInternalError                  GPUResetReason = "InternalError"
 	ReasonGPUAlreadyUnderMaintenance     GPUResetReason = "GPUAlreadyUnderMaintenance"
+	// ReasonServiceManagerNotFound means that no pod of the service manager runs in its namespace on any node.
+	ReasonServiceManagerNotFound GPUResetReason = "ServiceManagerNotFound"
 )
 
 // GPUSelector allows specifying GPUs by different identifier types.

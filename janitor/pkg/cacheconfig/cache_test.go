@@ -57,6 +57,23 @@ func TestBuild_GPUResetEnabled_ScopesPodCache(t *testing.T) {
 	assert.NotNil(t, podCache.Transform)
 }
 
+func TestBuild_ServiceManagerNamespace_ScopesPodCache(t *testing.T) {
+	options, err := Build(&config.Config{
+		GPUReset: config.GPUResetControllerConfig{
+			Enabled: true,
+			ServiceManager: gpuservices.Manager{
+				Name:      "gpu-operator",
+				Namespace: "nvidia-gpu-operator",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	podCache := cacheForObject(t, options, &corev1.Pod{})
+	assert.Len(t, podCache.Namespaces, 1)
+	require.Contains(t, podCache.Namespaces, "nvidia-gpu-operator")
+}
+
 func TestBuild_RegistryManagers_PodCacheKeepsEveryAppPod(t *testing.T) {
 	for name, spec := range gpuservices.Registry {
 		t.Run(name, func(t *testing.T) {
