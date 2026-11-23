@@ -2864,6 +2864,33 @@ var _ = Describe("GPUReset Controller", func() {
 			}
 		})
 
+		It("should not hold a GPUReset whose teardown started before manual mode was turned on", func() {
+			manualMode := false
+			reconciler.Config.ManualMode = &manualMode
+			createNodeWithOperandPods(devicePluginDeployLabels(), devicePluginOperandPodLabels())
+			createReset()
+
+			By("Reconciling until the teardown starts")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).NotTo(BeNil())
+			}, "20s", "100ms").Should(Succeed())
+			Expect(getConditionReason(v1alpha1.ServicesTornDown)).To(Equal(string(v1alpha1.ReasonTearingDownServices)))
+
+			By("Turning manual mode on and reconciling until the reset is complete")
+			manualMode = true
+			reconcileUntil(v1alpha1.Complete)
+			Expect(getConditionReason(v1alpha1.Complete)).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+			Expect(meta.FindStatusCondition(getReset().Status.Conditions, string(v1alpha1.ManualMode))).To(BeNil())
+			for label := range devicePluginDeployLabels() {
+				Expect(getNodeLabels()).To(HaveKeyWithValue(label, "true"))
+			}
+		})
+
 		Context("with the GPU clients", func() {
 			const clientsNamespace = "gpu-clients"
 

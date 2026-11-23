@@ -2020,6 +2020,8 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 		return v1alpha1.ResetPending
 	case v1alpha1.ReasonOutsideActorRequired:
 		return v1alpha1.ResetPending
+	case v1alpha1.ReasonManualModeDisabled:
+		return v1alpha1.ResetPending
 
 	// InProgress
 	case v1alpha1.ReasonSkipped:
