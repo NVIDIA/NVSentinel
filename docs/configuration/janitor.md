@@ -270,6 +270,11 @@ Handles `GPUReset` CRs. For each GPU reset, the controller does these steps:
 
 Name of the built-in GPU services manager. Use `gpu-operator` for the NVIDIA GPU Operator.
 
+### serviceManager.namespace
+Namespace where the operands of the built-in GPU services manager run. Empty uses the built-in namespace, `gpu-operator`. Set it when the GPU Operator runs in another namespace, for example `nvidia-gpu-operator`. It applies only with `serviceManager.name` and no `serviceManager.spec`; a custom spec sets `spec.namespace`, and janitor refuses to start when both are set.
+
+If no pod of any operand of the service manager exists in this namespace, on any node, the GPUReset waits before it changes a node label. A pod in any phase counts, so the check confirms the namespace, not that the operands are up. A GPU Operator upgrade can remove every operand pod for a short time, so the GPUReset fails with the reason `ServiceManagerNotFound` only when no pod appears within `gpuReset.timeout`. This catches a wrong namespace, which otherwise finds no operands and resets the GPU while they still hold it.
+
 #### GPU Operator modes
 
 The `gpu-operator` service manager supports both GPU Operator modes: device plugin and DRA. You do not set the mode. The controller finds the GPU Operator operands that run on each node.
@@ -308,7 +313,7 @@ If a label stays held for that long, these things occur:
 
 The deletion of a GPUReset waits in the same way.
 
-When no operand pod runs on the node, the controller skips the teardown and the restore. The `ServicesTornDown` and `ServicesRestored` conditions then have the reason `Skipped`.
+When no operand pod runs on the node, the controller skips the teardown and the restore. The `ServicesTornDown` and `ServicesRestored` conditions then have the reason `Skipped`. When no operand pod exists on any node, the GPUReset waits and then fails with the reason `ServiceManagerNotFound`, as described under `serviceManager.namespace`.
 
 Before the controller creates the reset Job, it verifies that no pod of a stopped operand runs on the node.
 

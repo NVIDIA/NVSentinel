@@ -41,10 +41,7 @@ func Build(cfg *config.Config) (cache.Options, error) {
 	}
 
 	if cfg.GPUReset.Enabled {
-		serviceManager, err := gpuservices.NewManager(
-			cfg.GPUReset.ServiceManager.Name,
-			cfg.GPUReset.ServiceManager.Spec,
-		)
+		serviceManager, err := gpuservices.ResolveManager(cfg.GPUReset.ServiceManager)
 		if err != nil {
 			return cache.Options{}, fmt.Errorf("resolve GPU service manager for Pod cache: %w", err)
 		}

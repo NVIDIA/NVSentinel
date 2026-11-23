@@ -93,6 +93,8 @@ const (
 	ReasonRestoreTimeoutExceeded         GPUResetReason = "RestoreTimeoutExceeded"
 	ReasonInternalError                  GPUResetReason = "InternalError"
 	ReasonGPUAlreadyUnderMaintenance     GPUResetReason = "GPUAlreadyUnderMaintenance"
+	// ReasonServiceManagerNotFound means that no pod of the service manager runs in its namespace on any node.
+	ReasonServiceManagerNotFound GPUResetReason = "ServiceManagerNotFound"
 )
 
 // GPUSelector allows specifying GPUs by different identifier types.
