@@ -810,3 +810,69 @@ func TestClassify_NameMovedToUnrecordedDevice_SkipsNameKeyedRow(t *testing.T) {
 
 	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
 }
+
+// TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded covers
+// the BlueField side of the rejected-row path: the stale rows here
+// are all-SYS, so before the row was rejected a BlueField DPU reached
+// the DPU exclusion through the all-SYS branch and came out as
+// management. Rejecting the row must not turn the same DPU into a
+// storage NIC. An ordinary NIC on the same path keeps the NUMA
+// default (storage).
+func TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_7":  {"SYS", "SYS"},
+			"mlx5_8":  {"SYS", "SYS"},
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_8":  "0000:42:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names a BlueField-3 DPU at
+	// 0000:55:00.0 and mlx5_8 a ConnectX-7 at 0000:56:00.0. The file
+	// records neither address, so both name-keyed rows are rejected.
+	// Both devices sit on GPU NUMA node 1.
+	reader := &sysfs.MockReader{
+		ReadIBDeviceNUMAFunc: func(device string) (int, error) {
+			return 1, nil
+		},
+		ReadPCIAddressFunc: func(device string) (string, error) {
+			switch device {
+			case "mlx5_7":
+				return "0000:55:00.0", nil
+			case "mlx5_8":
+				return "0000:56:00.0", nil
+			default:
+				return "", nil
+			}
+		},
+		ReadIBDeviceFieldFunc: func(device, field string) (string, error) {
+			if field != "hca_type" {
+				return "", nil
+			}
+
+			switch device {
+			case "mlx5_7":
+				return "MT41692", nil
+			case "mlx5_8":
+				return "MT4129", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleManagement, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
+}
