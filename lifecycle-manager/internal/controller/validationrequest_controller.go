@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -446,7 +447,14 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	// Only start new TestGroups if we don't have failed TestGroups
 	if !hasFailedTestGroups {
 		if err := r.startPendingTestGroups(ctx, validationRequest); err != nil {
-			return ctrl.Result{}, err
+			// Finished attempts must still be persisted and cleaned up, since their provider objects may be the
+			// reason a new one cannot be created (for example an object count quota).
+			if updateErr := r.Status().Update(ctx, validationRequest); updateErr != nil {
+				return ctrl.Result{}, errors.Join(err,
+					fmt.Errorf("update ValidationRequest %q status after start failure: %w", validationRequest.Name, updateErr))
+			}
+
+			return ctrl.Result{}, errors.Join(err, r.cleanupFinishedTestGroupObjects(ctx, validationRequest))
 		}
 	}
 
@@ -491,11 +499,11 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 }
 
 /*
-The reconcileDelete function for ValidationRequest will ensure that any running TestGroup will have its test provider
-resource cleaned up prior to finalizer removal and ValidationRequest deletion. Additionally, the given request will
-be removed from the validation-session for the given node (and uncordoned or untainted if it was the last request in
-the session). If the ValidationRequest was running, the active-validation-request annotation will also be removed for
-the given node.
+The reconcileDelete function for ValidationRequest will ensure that any running TestGroup, and any finished attempt
+whose resource still exists, will have its test provider resource cleaned up prior to finalizer removal and
+ValidationRequest deletion. Additionally, the given request will be removed from the validation-session for the given
+node (and uncordoned or untainted if it was the last request in the session). If the ValidationRequest was running,
+the active-validation-request annotation will also be removed for the given node.
 
 Note that this function will not wait for any existing TestGroup resource to be fully deleted prior to removing the
 finalizer for current ValidationRequest. If we want to change this behavior in the future, we should check
@@ -517,6 +525,12 @@ func (r *ValidationRequestReconciler) reconcileDelete(ctx context.Context,
 				}
 			}
 		}
+	}
+
+	// A finished attempt keeps its provider object when the earlier cleanup failed, so the nodes stay claimed until
+	// that delete is accepted too.
+	if err := r.cleanupFinishedTestGroupObjects(ctx, validationRequest); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.releaseNodesFromDeletedRequest(ctx, validationRequest); err != nil {

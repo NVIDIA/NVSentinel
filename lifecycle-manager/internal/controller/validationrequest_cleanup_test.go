@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -116,6 +117,102 @@ var _ = Describe("ValidationRequest provider cleanup", func() {
 
 		_, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cleans up a finished attempt when the next TestGroup cannot be created", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName, nodeName := "vr-cleanup-quota-"+suffix, "node-cleanup-quota-"+suffix
+
+		var firstObject types.NamespacedName
+
+		// Model an object count quota of one: a create is rejected while the first provider object still exists.
+		intercepted := interceptor.NewClient(k8sClient.(client.WithWatch), interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if u, ok := obj.(*unstructured.Unstructured); ok && firstObject.Name != "" {
+					existing := &unstructured.Unstructured{}
+					existing.SetGroupVersionKind(u.GroupVersionKind())
+
+					if err := c.Get(ctx, firstObject, existing); err == nil {
+						return fmt.Errorf("injected quota exceeded")
+					}
+				}
+
+				return c.Create(ctx, obj, opts...)
+			},
+		})
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: twoTestConfig(false, false), client: intercepted, nodeNames: []string{nodeName},
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		objectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
+		firstObject = types.NamespacedName{Name: objectName, Namespace: testNamespace}
+		Expect(updateObjectStatus(ctx, objectName, testSuccessCondType)).To(Succeed())
+
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).To(MatchError(ContainSubstring("injected quota exceeded")))
+
+		provider := &unstructured.Unstructured{}
+		provider.SetGroupVersionKind(testJobGVK)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, firstObject, provider))).To(BeTrue())
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(vr.Status.TestGroups[0].Attempts[0].Phase).To(Equal(v1alpha1.PhaseSucceeded))
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(vr.Status.TestGroups[1].Phase).To(Equal(v1alpha1.PhaseRunning))
+	})
+
+	It("deletes a finished attempt's provider object before releasing a deleted request", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName, nodeName := "vr-cleanup-deleted-"+suffix, "node-cleanup-deleted-"+suffix
+		testConfig := defaultTestConfig()
+		providerConfig := testConfig.Validation.Spec.Providers["test-provider"]
+		providerConfig.TimeoutSeconds = 0
+		testConfig.Validation.Spec.Providers["test-provider"] = providerConfig
+
+		failDelete := false
+		intercepted := interceptor.NewClient(k8sClient.(client.WithWatch), interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok && failDelete {
+					return fmt.Errorf("injected provider deletion failure")
+				}
+
+				return c.Delete(ctx, obj, opts...)
+			},
+		})
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: testConfig, client: intercepted, nodeNames: []string{nodeName},
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		objectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
+
+		failDelete = true
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).To(HaveOccurred())
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+		Expect(vr.Status.TestGroups[0].Attempts[0].Phase).To(Equal(v1alpha1.PhaseFailed))
+		Expect(k8sClient.Delete(ctx, &vr)).To(Succeed())
+
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).To(HaveOccurred(), "the request must not be released while the delete fails")
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &vr)).To(Succeed())
+
+		node := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		Expect(node.Annotations).To(HaveKeyWithValue(annotationActiveValidationRequest, vrName))
+
+		failDelete = false
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		provider := &unstructured.Unstructured{}
+		provider.SetGroupVersionKind(testJobGVK)
+		key := types.NamespacedName{Name: objectName, Namespace: testNamespace}
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, provider))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, req.NamespacedName, &vr))).To(BeTrue())
 	})
 
 	It("keeps the node claim until the provider delete of a timed-out attempt is accepted", func() {
