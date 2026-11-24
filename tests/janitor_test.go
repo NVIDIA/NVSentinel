@@ -52,6 +52,9 @@ func TestJanitorDuplicateRebootDetection(t *testing.T) {
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected node: %s", nodeName)
 
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, nodeName, true), "failed to cordon node")
+
 		return ctx
 	})
 
@@ -94,6 +97,10 @@ func TestJanitorDuplicateRebootDetection(t *testing.T) {
 		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK); err != nil {
 			t.Logf("teardown: failed to delete RebootNode CRs: %v", err)
 		}
+		if err := helpers.SetNodeCordon(ctx, client, nodeName, false); err != nil {
+			t.Logf("teardown: failed to uncordon node: %v", err)
+		}
+
 		return ctx
 	})
 
@@ -118,6 +125,9 @@ func TestJanitorDuplicateTerminateNodeDetection(t *testing.T) {
 		nodeName, err = helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected node: %s", nodeName)
+
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, nodeName, true), "failed to cordon node")
 
 		return ctx
 	})
@@ -162,6 +172,10 @@ func TestJanitorDuplicateTerminateNodeDetection(t *testing.T) {
 		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.TerminateNodeGVK); err != nil {
 			t.Logf("teardown: failed to delete TerminateNode CRs: %v", err)
 		}
+		if err := helpers.SetNodeCordon(ctx, client, nodeName, false); err != nil {
+			t.Logf("teardown: failed to uncordon node: %v", err)
+		}
+
 		return ctx
 	})
 
@@ -187,6 +201,9 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		nodeName, err = helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected node: %s", nodeName)
+
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, nodeName, true), "failed to cordon node")
 
 		return ctx
 	})
@@ -236,6 +253,10 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.GPUResetGVK); err != nil {
 			t.Logf("teardown: failed to delete GPUReset CRs: %v", err)
 		}
+		if err := helpers.SetNodeCordon(ctx, client, nodeName, false); err != nil {
+			t.Logf("teardown: failed to uncordon node: %v", err)
+		}
+
 		return ctx
 	})
 
@@ -263,6 +284,9 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 		nodeName, err = helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected node: %s", nodeName)
+
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, nodeName, true), "failed to cordon node")
 
 		return ctx
 	})
@@ -308,6 +332,10 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.GPUResetGVK); err != nil {
 			t.Logf("teardown: failed to delete GPUReset CRs: %v", err)
 		}
+		if err := helpers.SetNodeCordon(ctx, client, nodeName, false); err != nil {
+			t.Logf("teardown: failed to uncordon node: %v", err)
+		}
+
 		return ctx
 	})
 
@@ -374,6 +402,9 @@ func TestJanitorRebootWithTLSAuth(t *testing.T) {
 		selectedNodeName = nodes[0]
 		t.Logf("Selected node for TLS auth test: %s", selectedNodeName)
 
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, selectedNodeName, true), "failed to cordon node")
+
 		return ctx
 	})
 
@@ -413,6 +444,10 @@ func TestJanitorRebootWithTLSAuth(t *testing.T) {
 			t.Logf("failed to delete RebootNode CRs: %v", err)
 		}
 
+		if err := helpers.SetNodeCordon(ctx, client, selectedNodeName, false); err != nil {
+			t.Logf("teardown: failed to uncordon node: %v", err)
+		}
+
 		return ctx
 	})
 
@@ -432,6 +467,14 @@ func TestJanitorNodeLocking(t *testing.T) {
 		nodeName, err := helpers.GetRealNodeName(ctx, client)
 		require.NoError(t, err, "failed to get real node")
 		t.Logf("Selected real node for Janitor node-level locking test: %s", nodeName)
+
+		// Janitor refuses maintenance on a node that is neither cordoned nor quarantined.
+		require.NoError(t, helpers.SetNodeCordon(ctx, client, nodeName, true), "failed to cordon node")
+		defer func() {
+			if err := helpers.SetNodeCordon(ctx, client, nodeName, false); err != nil {
+				t.Logf("failed to uncordon node: %v", err)
+			}
+		}()
 
 		// Create a RebootNode and GPUReset targeting the same node
 		rebootNodeCRName := fmt.Sprintf("reboot-%s", nodeName)
