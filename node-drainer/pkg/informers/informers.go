@@ -744,15 +744,18 @@ func (i *Informers) unrecordedExtendedResource(pod *v1.Pod, entityType model.Par
 	}
 
 	return unrecordedAllocation(claim.Status.Allocation.Devices.Results, resourceByRequest, entityType,
-		deviceAnnotation), nil
+		deviceAnnotation)
 }
 
 // unrecordedAllocation describes the first device of the entity type in the results of a generated claim that the
 // device annotation has no entry for, or returns "". A device belongs to the entity type when its driver is a driver
 // of the entity type, or when the pod requested it under a resource name of the entity type. An entity type with only
 // DRA entries has no resource names.
+//
+// The drain selects pods only by the names of the entity type, so it cannot select a pod for a device of a driver that
+// the entity type does not list. Such a device fails the drain instead of passing it with no pod selected.
 func unrecordedAllocation(results []resourcev1.DeviceRequestAllocationResult, resourceByRequest map[string]string,
-	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) string {
+	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) (string, error) {
 	resourceNames := entityType.ResourceNames()
 	drivers := entityType.Drivers()
 
@@ -762,13 +765,22 @@ func unrecordedAllocation(results []resourcev1.DeviceRequestAllocationResult, re
 			continue
 		}
 
-		inEntityType := slices.Contains(drivers, result.Driver) || slices.Contains(resourceNames, resourceName)
-		if inEntityType && !hasAnnotationEntry(deviceAnnotation, result.Driver) {
-			return fmt.Sprintf("resource %s through DRA driver %s", resourceName, result.Driver)
+		driverListed := slices.Contains(drivers, result.Driver)
+		if !driverListed && !slices.Contains(resourceNames, resourceName) {
+			continue
+		}
+
+		if !driverListed {
+			return "", fmt.Errorf("resource %s is served by DRA driver %s, which the entity type does not list; "+
+				"add the driver to global.partialRemediationEntityTypes", resourceName, result.Driver)
+		}
+
+		if !hasAnnotationEntry(deviceAnnotation, result.Driver) {
+			return fmt.Sprintf("resource %s through DRA driver %s", resourceName, result.Driver), nil
 		}
 	}
 
-	return ""
+	return "", nil
 }
 
 func hasAnnotationEntry(deviceAnnotation model.DeviceAnnotation, name string) bool {
