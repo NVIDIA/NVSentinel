@@ -42,8 +42,9 @@ tests:
           path: spec.template.spec.containers[?(@.name == "metrics")].args[0]
           pattern: '\.nvsentinel\.svc'
 
-  # mongod runs with tls.mode requireTLS, so the Percona sidecar must present a
-  # client certificate or every connection is rejected (#2488).
+  # mongod has a CA file and doesn't allow connections without a certificate,
+  # so the Percona sidecar must present a client cert or every connection is
+  # rejected (#2488).
   - it: Percona exporter presents the member certificate from the ssl volume
     template: charts/psmdb-db/templates/cluster.yaml
     set:

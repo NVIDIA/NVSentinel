@@ -448,7 +448,7 @@ psmdb-db:
                 secretKeyRef:
                   name: internal-mongodb-users
                   key: MONGODB_CLUSTER_MONITOR_PASSWORD
-            # tls.mode requireTLS makes mongod reject clients without a
+            # mongod has a CA file and doesn't allow connections without a
             # certificate, so present the member's own certificate from the
             # operator's "ssl" volume (secret <cluster>-ssl), mounted below.
             - name: MONGODB_URI
