@@ -488,6 +488,14 @@ To let the configured processing strategy act on probe-hang health events, do th
 
 Recovery matches the active event. When a remediable connectivity failure replaces a remote `STORE_ONLY` probe hang, the clearing event uses `EXECUTE_REMEDIATION`. Thus, the original unhealthy event and its clearing event do not always use the same strategy.
 
+### nvswitchStoreOnly
+
+This value puts NVSwitch health events in dry-run mode. While it is `true` (the default), the GPU Health Monitor emits every health event whose impacted entity is an NVSwitch with `processingStrategy=STORE_ONLY`, whichever DCGM watch reported it. NVSentinel persists these health events and exports them as metrics, but it excludes them from the remediation pipeline.
+
+When you set it to `false`, NVSwitch health events use the same processing strategy as GPU health events from the same check: the configured processing strategy, or `STORE_ONLY` for a check that another observe-only setting covers.
+
+On NVL72 systems, the NVSwitches are in separate switch trays, and DCGM on a compute node enumerates none. This setting has no effect there.
+
 ### probeDeadlineSeconds
 
 This value is the number of seconds that one DCGM probe can run before a watchdog thread reports the stalled operation. The blocked probe cannot stop the watchdog thread. The value has these effects in each mode:
