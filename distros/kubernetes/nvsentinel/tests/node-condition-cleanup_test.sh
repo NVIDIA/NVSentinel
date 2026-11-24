@@ -30,17 +30,20 @@ trap 'rm -rf "$STUB_DIR"' EXIT
 # Stub kubectl: three nodes, each carrying the deprecated condition. A patch fails for the nodes
 # listed in FAIL_NODES (space separated); with PATCH_ERR=notfound the failure is a NotFound
 # (node deleted mid-run). A get fails for the nodes in GET_FAIL_NODES, with GET_ERR=notfound for
-# a NotFound and a Forbidden error otherwise.
+# a NotFound (silent success under --ignore-not-found, as in kubectl) and a Forbidden error
+# otherwise. With GET_WARN set, a successful get also writes a server warning to stderr. NODES
+# overrides the node list.
 cat > "$STUB_DIR/kubectl" <<'STUB'
 #!/bin/bash
 case "$1" in
 get)
   if [ "$2" = "nodes" ]; then
-    echo "node-a node-b node-c"
+    echo "${NODES:-node-a node-b node-c}"
   else
     for n in $GET_FAIL_NODES; do
       if [ "$3" = "$n" ]; then
         if [ "$GET_ERR" = "notfound" ]; then
+          case " $* " in *" --ignore-not-found "*) exit 0 ;; esac
           echo "Error from server (NotFound): nodes \"$n\" not found" >&2
         else
           echo "Error from server (Forbidden): nodes \"$n\" is forbidden" >&2
@@ -48,6 +51,9 @@ get)
         exit 1
       fi
     done
+    if [ -n "$GET_WARN" ]; then
+      echo "Warning: v1 Node is deprecated" >&2
+    fi
     echo '{"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Old","status":"True"}]}}'
   fi
   ;;
@@ -69,7 +75,8 @@ chmod +x "$STUB_DIR/kubectl"
 
 run_cleanup() {
   PATH="$STUB_DIR:$PATH" DEPRECATED_CONDITIONS="Old" FAIL_NODES="$1" GET_FAIL_NODES="${2:-}" \
-    GET_ERR="${GET_ERR:-}" PATCH_ERR="${PATCH_ERR:-}" bash "$SCRIPT"
+    GET_ERR="${GET_ERR:-}" GET_WARN="${GET_WARN:-}" \
+    NODES="${NODES:-}" PATCH_ERR="${PATCH_ERR:-}" bash "$SCRIPT"
 }
 
 status=0
@@ -124,6 +131,24 @@ status=0
 output=$(run_cleanup "" "node-b") || status=$?
 if [ "$status" -eq 0 ] || ! grep -q "1 of 3 nodes failed" <<< "$output"; then
   echo "FAIL: expected exit 1 and '1 of 3 nodes failed' when a get is forbidden (status $status)"
+  echo "$output"
+  exit 1
+fi
+
+# A warning on stderr from a successful get must not be mixed into the node JSON.
+status=0
+output=$(GET_WARN=1 run_cleanup "") || status=$?
+if [ "$status" -ne 0 ] || [ "$(grep -c "removed 1 condition" <<< "$output")" -ne 3 ]; then
+  echo "FAIL: expected all three nodes cleaned when get emits a warning (status $status)"
+  echo "$output"
+  exit 1
+fi
+
+# A node whose name contains "notfound" must not turn a Forbidden patch into a skip.
+status=0
+output=$(NODES="worker-notfound" run_cleanup "worker-notfound") || status=$?
+if [ "$status" -eq 0 ] || ! grep -q "1 of 1 nodes failed" <<< "$output"; then
+  echo "FAIL: expected exit 1 when patching 'worker-notfound' is forbidden (status $status)"
   echo "$output"
   exit 1
 fi

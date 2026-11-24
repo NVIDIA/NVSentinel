@@ -35,16 +35,16 @@ process_node() {
   
   while true; do
     # Fetch current conditions (refetch on each retry to resolve conflicts)
-    local current_conditions node_json get_output
-    if ! node_json=$(kubectl get node "$node" -o json 2>&1); then
-      get_output="$node_json"
-      # A node deleted since the listing has nothing left to clean up.
-      if echo "$get_output" | grep -qi "notfound\|not found"; then
-        echo "- $node: deleted before cleanup, skipping"
-        return 0
-      fi
-      echo "⚠ $node: get failed - $get_output"
+    local current_conditions node_json
+    # Only stdout is the node JSON; warnings and errors on stderr go straight to the job log.
+    if ! node_json=$(kubectl get node "$node" -o json --ignore-not-found); then
+      echo "⚠ $node: get failed"
       return 1
+    fi
+    # A node deleted since the listing has nothing left to clean up.
+    if [ -z "$node_json" ]; then
+      echo "- $node: deleted before cleanup, skipping"
+      return 0
     fi
     if ! current_conditions=$(echo "$node_json" | jq -c '.status.conditions // []' 2>&1); then
       echo "⚠ $node: could not parse node JSON - $current_conditions"
@@ -98,7 +98,7 @@ process_node() {
     fi
     
     # The node was deleted between the get and the patch: nothing left to clean up.
-    if echo "$patch_output" | grep -qi "notfound\|not found"; then
+    if echo "$patch_output" | grep -q "^Error from server (NotFound):"; then
       echo "- $node: deleted before patch, skipping"
       return 0
     fi
