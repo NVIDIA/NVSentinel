@@ -494,6 +494,8 @@ This value puts NVSwitch health events in dry-run mode. While it is `true` (the 
 
 When you set it to `false`, NVSwitch health events use the same processing strategy as GPU health events from the same check: the configured processing strategy, or `STORE_ONLY` for a check that another observe-only setting covers.
 
+A fatal NVSwitch health event then sets the node condition of its check, as a GPU health event does. The default fault-quarantine rules for the GPU Health Monitor match only `componentClass == 'GPU'`, so they do not cordon a node for an NVSwitch health event. To quarantine on NVSwitch faults, add a rule that matches `componentClass == 'NVSWITCH'`.
+
 On NVL72 systems, the NVSwitches are in separate switch trays, and DCGM on a compute node enumerates none. This setting has no effect there.
 
 ### probeDeadlineSeconds
