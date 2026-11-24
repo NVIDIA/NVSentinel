@@ -21,6 +21,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ type mockDatabaseConfig struct {
 type mockDataStore struct {
 	documents map[string]map[string]any
 	mu        sync.RWMutex
+	updates   atomic.Int32
 }
 
 func newMockDataStore() *mockDataStore {
@@ -89,6 +91,7 @@ func (m *mockDataStore) storeEvent(nodeName string, event map[string]any) {
 }
 
 func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
+	m.updates.Add(1)
 	// Mock implementation - just return success
 	return &sdkclient.UpdateResult{
 		MatchedCount:  1,
@@ -2695,6 +2698,113 @@ func TestReconciler_CustomDrainDeletedNode_CancelsEventAndDeletesItsCR(t *testin
 		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 500*time.Millisecond, "the DrainRequest CR of the cancelled event should be deleted")
+}
+
+// deleteFailingDynamicClient fails every Delete, as a transient API server error would.
+type deleteFailingDynamicClient struct{ dynamic.Interface }
+
+func (c deleteFailingDynamicClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return deleteFailingResource{c.Interface.Resource(gvr)}
+}
+
+type deleteFailingResource struct {
+	dynamic.NamespaceableResourceInterface
+}
+
+func (r deleteFailingResource) Namespace(namespace string) dynamic.ResourceInterface {
+	return deleteFailingNamespacedResource{r.NamespaceableResourceInterface.Namespace(namespace)}
+}
+
+type deleteFailingNamespacedResource struct{ dynamic.ResourceInterface }
+
+func (deleteFailingNamespacedResource) Delete(context.Context, string, metav1.DeleteOptions, ...string) error {
+	return fmt.Errorf("injected DrainRequest delete failure")
+}
+
+// newCustomDrainReconciler builds a second reconciler on the cluster of setup, with its own dynamic client.
+func newCustomDrainReconciler(t *testing.T, setup *testSetup, customDrainConfig config.CustomDrainConfig,
+	dynamicClient dynamic.Interface) *reconciler.Reconciler {
+	t.Helper()
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
+	require.NoError(t, err)
+
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+	r, err := reconciler.NewReconciler(config.ReconcilerConfig{
+		TomlConfig: config.TomlConfig{
+			EvictionTimeoutInSeconds:      config.Duration{Duration: 30 * time.Second},
+			SystemNamespaces:              "kube-*",
+			DeleteAfterTimeoutMinutes:     5,
+			NotReadyTimeoutMinutes:        2,
+			CustomDrain:                   customDrainConfig,
+			PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
+		},
+		DatabaseConfig: &mockDatabaseConfig{
+			connectionURI: "mongodb://localhost:27017", databaseName: "test_db", collectionName: "test_collection",
+		},
+		TokenConfig:  sdkclient.TokenConfig{ClientName: "test-client", TokenDatabase: "test_db", TokenCollection: "tokens"},
+		StateManager: statemanager.NewStateManager(setup.client),
+	}, false, setup.client, setup.informersInstance, setup.mockDB, nil, dynamicClient, restMapper)
+	require.NoError(t, err)
+
+	return r
+}
+
+// A DrainRequest that cannot be deleted keeps its event retryable: the event of the deleted node is
+// not marked Cancelled until its DrainRequest is gone.
+func TestReconciler_CustomDrainDeletedNode_FailedCRDeletionIsRetried(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	nodeName := "custom-drain-retried-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "default")
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
+
+	gvr := schema.GroupVersionResource{Group: "drain.example.com", Version: "v1alpha1", Resource: "drainrequests"}
+	crName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+	crExists := func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return err == nil
+	}
+
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.ErrorContains(t, err, "waiting for custom drain CR to complete")
+	require.Eventually(t, crExists, 10*time.Second, 500*time.Millisecond, "DrainRequest CR should be created")
+
+	require.NoError(t, setup.client.CoreV1().Nodes().Delete(setup.ctx, nodeName, metav1.DeleteOptions{}))
+	require.Eventually(t, func() bool {
+		_, err := setup.informersInstance.GetNode(nodeName)
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 100*time.Millisecond, "the node cache should drop the deleted node")
+
+	failing := newCustomDrainReconciler(t, setup, customDrainCfg, deleteFailingDynamicClient{setup.dynamicClient})
+	updatesBefore := setup.mockDB.updates.Load()
+
+	err = failing.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.ErrorContains(t, err, "injected DrainRequest delete failure", "a failed deletion keeps the event retryable")
+	require.Equal(t, updatesBefore, setup.mockDB.updates.Load(), "the event is not marked Cancelled yet")
+	require.True(t, crExists())
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.NoError(t, err)
+	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the retry marks the event Cancelled")
+	require.Eventually(t, func() bool { return !crExists() }, 10*time.Second, 500*time.Millisecond,
+		"the retry deletes the DrainRequest CR")
 }
 
 // In dry run node-drainer must not hand the node to the external drain controller, so the

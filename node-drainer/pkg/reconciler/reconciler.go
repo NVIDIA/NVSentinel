@@ -626,12 +626,19 @@ func (r *Reconciler) executeTerminalAction(ctx context.Context, action *evaluato
 	case evaluator.ActionCancel:
 		r.clearEventStatus(eventID, nodeName)
 
+		// A deleted node's DrainRequest can no longer complete. It is deleted before the event
+		// turns terminal, so a failed deletion is retried with the event.
+		if action.NodeDeleted {
+			if err := r.deleteCustomDrainCR(ctx, nodeName, event); err != nil {
+				return err
+			}
+		}
+
 		if err := r.executeCancelStatus(ctx, healthEvent, event, database, action.Status); err != nil {
 			return err
 		}
 
 		if action.NodeDeleted {
-			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
 			r.queueManager.ClearNodeDraining(nodeName)
 		}
 
@@ -1579,8 +1586,14 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 }
 
 func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName string, event datastore.Event) {
+	_ = r.deleteCustomDrainCR(ctx, nodeName, event)
+}
+
+// deleteCustomDrainCR deletes the event's DrainRequest when custom drain is enabled. A missing
+// DrainRequest is not an error, so a failed deletion can be retried.
+func (r *Reconciler) deleteCustomDrainCR(ctx context.Context, nodeName string, event datastore.Event) error {
 	if !r.Config.TomlConfig.CustomDrain.Enabled {
-		return
+		return nil
 	}
 
 	ctx, span := tracing.StartSpan(ctx, "node_drainer.delete_custom_drain_cr")
@@ -1593,7 +1606,7 @@ func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName 
 			"error", err)
 		tracing.RecordError(span, err)
 
-		return
+		return fmt.Errorf("extract document ID for custom drain CR deletion on node %s: %w", nodeName, err)
 	}
 
 	crName := customdrain.GenerateCRName(nodeName, eventID)
@@ -1608,11 +1621,15 @@ func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName 
 			attribute.String("node_drainer.error.type", "custom_drain_cr_deletion_error"),
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
-	} else {
-		slog.InfoContext(ctx, "Deleted custom drain CR",
-			"node", nodeName,
-			"crName", crName)
+
+		return fmt.Errorf("delete custom drain CR %s: %w", crName, err)
 	}
+
+	slog.InfoContext(ctx, "Deleted custom drain CR",
+		"node", nodeName,
+		"crName", crName)
+
+	return nil
 }
 
 func (r *Reconciler) handleCustomDrainCRCreationError(

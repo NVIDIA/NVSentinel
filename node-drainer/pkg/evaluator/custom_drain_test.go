@@ -277,6 +277,48 @@ func TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode(t *testing.T) 
 	}
 }
 
+// slowAPIInformers misses the node in the cache, and its API server read never answers.
+type slowAPIInformers struct {
+	nodeSelectorInformers
+	sawDeadline bool
+}
+
+// NodeDeleted waits for the caller's deadline, as a request to a server that does not answer does.
+func (i *slowAPIInformers) NodeDeleted(ctx context.Context, _ string) (bool, error) {
+	_, i.sawDeadline = ctx.Deadline()
+	<-ctx.Done()
+
+	return false, ctx.Err()
+}
+
+// TestEvaluateEventWithDatabase_DeletionLookupTimesOut_KeepsTheUsualPath bounds the API server read
+// of a node missing from the cache: a server that does not answer delays the event once, and the
+// event keeps waiting instead of being cancelled.
+func TestEvaluateEventWithDatabase_DeletionLookupTimesOut_KeepsTheUsualPath(t *testing.T) {
+	previous := nodeDeletedLookupTimeout
+	nodeDeletedLookupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { nodeDeletedLookupTimeout = previous })
+
+	podInformers := &slowAPIInformers{}
+	cfg := config.TomlConfig{
+		SystemNamespaces: "kube-*",
+		UserNamespaces:   []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+	}
+	built, err := NewNodeDrainEvaluator(cfg, podInformers, nil)
+	require.NoError(t, err)
+
+	event := quarantinedEvent("silent-api-node")
+	event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
+
+	start := time.Now()
+	result, err := built.EvaluateEventWithDatabase(t.Context(), event, nil, nil, (&decisionRecorder{}).record)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 5*time.Second)
+	require.True(t, podInformers.sawDeadline, "the API server read has its own deadline")
+	require.Equal(t, ActionWait, result.Action)
+	require.False(t, result.NodeDeleted)
+}
+
 // TestEvaluateEventWithDatabase_RecordedDecision_DeletedNodeIsCancelled ends an event whose drain
 // started before its node was deleted. A custom drain would otherwise wait for a DrainRequest
 // that no plugin can complete for a missing node, and a built-in drain for a label it cannot write.

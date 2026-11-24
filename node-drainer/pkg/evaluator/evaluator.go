@@ -356,6 +356,11 @@ func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName 
 	return matches, nil
 }
 
+// nodeDeletedLookupTimeout bounds the API server read of a node missing from the cache. It is well
+// under the queue's requeue backoff (queue.DefaultRequeueBackoffBase), so a server that does not
+// answer delays the event once, and the event keeps its usual path.
+var nodeDeletedLookupTimeout = 5 * time.Second
+
 // nodeDeleted reports whether the event's node was deleted. Every step after this one needs the
 // node: the already-drained check reads it, a DrainRequest waits for a plugin that cannot drain a
 // missing node, and the state label write fails. Each would retry the event forever. A node
@@ -366,7 +371,10 @@ func (e *NodeDrainEvaluator) nodeDeleted(ctx context.Context, nodeName string) b
 		return false
 	}
 
-	deleted, err := e.informers.NodeDeleted(ctx, nodeName)
+	lookupCtx, cancel := context.WithTimeout(ctx, nodeDeletedLookupTimeout)
+	defer cancel()
+
+	deleted, err := e.informers.NodeDeleted(lookupCtx, nodeName)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to check whether the node was deleted",
 			"node", nodeName,
