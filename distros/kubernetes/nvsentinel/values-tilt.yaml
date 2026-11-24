@@ -216,8 +216,8 @@ mongodb-store:
   psmdb:
     helperImages:
       kubectl:
-        repository: docker.io/lachlanevenson/k8s-kubectl
-        tag: "v1.25.4"
+        repository: docker.io/alpine/kubectl
+        tag: "1.37.2"
         pullPolicy: IfNotPresent
       mongosh:
         repository: ghcr.io/rtsp/docker-mongosh

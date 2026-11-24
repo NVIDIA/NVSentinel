@@ -672,9 +672,14 @@ nodeConditionCleanup:
   deprecatedConditions: []
   # - "OldConditionType1"
   # - "OldConditionType2"
+  # The hook runs files/node-condition-cleanup.sh with /bin/bash as UID 65534,
+  # with a read-only root filesystem and no capabilities. The script needs bash,
+  # kubectl, jq, awk, grep, wc, tr and sleep. alpine/k8s is Alpine with kubectl,
+  # bash and jq, published for amd64 and arm64. The smaller alpine/kubectl that
+  # the mongodb-store helpers use has neither bash nor jq.
   image:
-    repository: docker.io/bitnamilegacy/kubectl
-    tag: "1.30.6"
+    repository: docker.io/alpine/k8s
+    tag: "1.37.2"
     pullPolicy: IfNotPresent
   resources:
     limits:

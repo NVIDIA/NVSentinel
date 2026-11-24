@@ -352,9 +352,15 @@ nodeConditionCleanup:
   deprecatedConditions: []
   # - "OldConditionType1"
   # - "OldConditionType2"
+  image:
+    repository: docker.io/alpine/k8s
+    tag: "1.37.2"
+    pullPolicy: IfNotPresent
 ```
 
 The hook runs as a Helm `post-upgrade` job. Thus, with Helm, it acts on an upgrade, not on a new installation. With Argo CD, the hook runs after every sync (`argocd.argoproj.io/hook: PostSync`), including the first sync. While `deprecatedConditions` is empty, the hook does nothing. List only the conditions that you are sure are retired. If you delete a live condition, the node loses its current health state until the monitor writes the condition again.
+
+If you mirror images into a private registry, change `image`. The hook runs its script with `/bin/bash`, so a replacement image needs `bash`, `kubectl`, `jq`, `awk`, `grep`, `wc`, `tr` and `sleep`, and images for every node architecture you run. The hook runs as UID 65534 with a read-only root filesystem and all capabilities dropped.
 
 ### PodMonitor
 

@@ -280,3 +280,22 @@ staged upgrade Percona requires.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+securityContext for the kubectl helper containers of the create-mongodb-database
+Job. The helper image sets no user, so without this they would run as root.
+1001 is the user the earlier Bitnami kubectl image ran as. The scripts write no
+files, so the root filesystem stays read-only.
+*/}}
+{{- define "mongodb-store.kubectlSecurityContext" -}}
+runAsUser: 1001
+runAsGroup: 1001
+runAsNonRoot: true
+readOnlyRootFilesystem: true
+allowPrivilegeEscalation: false
+capabilities:
+  drop:
+    - ALL
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}

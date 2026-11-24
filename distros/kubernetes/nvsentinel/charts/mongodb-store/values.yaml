@@ -106,10 +106,14 @@ networkPolicy:
 mongodb:
   # Helper images for MongoDB operations
   helperImages:
-    # kubectl image for Kubernetes operations in init containers
+    # kubectl image for the init containers below and the create-mongodb-database
+    # Job. Their scripts run under `sh -c` and use kubectl, head, base64, tr, cut,
+    # sed, grep and sleep, and write to /tmp. alpine/kubectl is Alpine with
+    # kubectl and busybox, published for amd64 and arm64. The image sets no
+    # user, so the containers set runAsUser themselves.
     kubectl:
-      repository: docker.io/bitnamilegacy/kubectl
-      tag: "1.30.6"
+      repository: docker.io/alpine/kubectl
+      tag: "1.37.2"
       pullPolicy: IfNotPresent
     # mongosh image for MongoDB shell operations
     mongosh:
@@ -204,6 +208,16 @@ mongodb:
     - name: create-mongodb-credentials
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
       command:
         - sh
         - -c
@@ -243,6 +257,16 @@ mongodb:
     - name: create-certmanager-resources
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
       command:
         - sh
         - -c
@@ -478,9 +502,10 @@ psmdb-db:
 
 psmdb:
   helperImages:
+    # Same image and requirements as mongodb.helperImages.kubectl.
     kubectl:
-      repository: docker.io/lachlanevenson/k8s-kubectl
-      tag: "v1.25.4"
+      repository: docker.io/alpine/kubectl
+      tag: "1.37.2"
       pullPolicy: IfNotPresent
     mongosh:
       repository: ghcr.io/rtsp/docker-mongosh

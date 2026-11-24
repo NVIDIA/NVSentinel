@@ -100,6 +100,8 @@ Its local variables are set inside the define, which cannot see the caller's.
       - name: create-mongodb-secrets
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
         imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        securityContext:
+          {{- include "mongodb-store.kubectlSecurityContext" . | nindent 10 }}
         command:
         - sh
         - -c
@@ -165,6 +167,8 @@ Its local variables are set inside the define, which cannot see the caller's.
       - name: validate-client-cert-ca
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
         imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        securityContext:
+          {{- include "mongodb-store.kubectlSecurityContext" . | nindent 10 }}
         command:
         - sh
         - -c
@@ -222,6 +226,8 @@ Its local variables are set inside the define, which cannot see the caller's.
       - name: wait-for-mongodb-users
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
         imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        securityContext:
+          {{- include "mongodb-store.kubectlSecurityContext" . | nindent 10 }}
         command:
         - sh
         - -c
@@ -242,6 +248,8 @@ Its local variables are set inside the define, which cannot see the caller's.
       - name: validate-deployed-crversion
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
         imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        securityContext:
+          {{- include "mongodb-store.kubectlSecurityContext" . | nindent 10 }}
         command:
         - sh
         - -c
@@ -321,6 +329,8 @@ Its local variables are set inside the define, which cannot see the caller's.
       - name: wait-for-mongodb-secret
         image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
         imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        securityContext:
+          {{- include "mongodb-store.kubectlSecurityContext" . | nindent 10 }}
         command:
         - sh
         - -c

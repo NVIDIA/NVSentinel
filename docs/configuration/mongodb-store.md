@@ -704,8 +704,18 @@ mongodb-store:
   mongodb:
     helperImages:
       kubectl:
-        repository: docker.io/bitnamilegacy/kubectl
-        tag: "1.30.6"
+        repository: docker.io/alpine/kubectl
+        tag: "1.37.2"
+        pullPolicy: IfNotPresent
+      mongosh:
+        repository: ghcr.io/rtsp/docker-mongosh
+        tag: "2.5.2"
+        pullPolicy: IfNotPresent
+  psmdb:
+    helperImages:
+      kubectl:
+        repository: docker.io/alpine/kubectl
+        tag: "1.37.2"
         pullPolicy: IfNotPresent
       mongosh:
         repository: ghcr.io/rtsp/docker-mongosh
@@ -713,10 +723,19 @@ mongodb-store:
         pullPolicy: IfNotPresent
 ```
 
+`mongodb.helperImages` applies to the Bitnami backend and `psmdb.helperImages` to the Percona backend.
+
 #### Parameters
 
 ##### kubectl
-Image for Kubernetes operations in init containers (secret creation, certificate management).
+Image for Kubernetes operations in init containers (secret creation, certificate management). It runs the Bitnami MongoDB init containers `create-mongodb-credentials` and `create-certmanager-resources`, and the init containers of the `create-mongodb-database` Job.
+
+If you mirror images into a private registry, change this value. A replacement image needs:
+
+- `kubectl` and a POSIX `sh` with `head`, `base64`, `tr`, `cut`, `sed`, `grep` and `sleep` (busybox applets are enough).
+- Images for every node architecture you run.
+
+These containers run as UID and GID 1001 with all capabilities dropped. The `create-mongodb-database` Job containers also run with a read-only root filesystem. The Bitnami init containers write temporary files to `/tmp`.
 
 ##### mongosh
 Image for MongoDB shell operations and database initialization.
