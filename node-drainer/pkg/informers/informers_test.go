@@ -845,12 +845,21 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			wantGPUOnlyPods: 1,
 		},
 		{
-			// An entry for another driver does not record the device of the driver that serves the limit.
-			name:            "annotated pod whose GPU limit another DRA driver serves fails partial drain without that driver entry",
+			// The drain selects pods only by the names of the entity type, so it cannot select a pod for a device of
+			// a driver that the entity type does not list. An entry for another driver does not record it either.
+			name:            "annotated pod whose GPU limit an unlisted DRA driver serves fails partial drain",
 			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
 			gpuLimit:        true,
 			gpuLimitByDRA:   "extended-other-driver-allocated",
-			wantPartialErr:  "is requesting resource nvidia.com/gpu through DRA driver other.example.com but its device annotation has no entry for it",
+			wantPartialErr:  "resource nvidia.com/gpu is served by DRA driver other.example.com, which the entity type does not list",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose GPU limit an unlisted DRA driver serves fails partial drain with that driver entry",
+			annotation:      `{"devices":{"other.example.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-other-driver-allocated",
+			wantPartialErr:  "resource nvidia.com/gpu is served by DRA driver other.example.com, which the entity type does not list",
 			wantGPUOnlyPods: 1,
 		},
 		{
