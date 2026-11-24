@@ -101,6 +101,36 @@ func TestHealthEventsCleaner_Integration_DeletesExpiredEventsAndOwnChanges(t *te
 
 	require.Equal(t, 6, count(t, `SELECT count(*) FROM datastore_changelog WHERE table_name = 'health_events'`))
 
+	var expiredIDs []string
+
+	idRows, err := db.QueryContext(ctx, `SELECT id::text FROM health_events WHERE node_name LIKE 'expired-%' ORDER BY id`)
+	require.NoError(t, err)
+
+	for idRows.Next() {
+		var id string
+		require.NoError(t, idRows.Scan(&id))
+		expiredIDs = append(expiredIDs, id)
+	}
+
+	require.NoError(t, idRows.Err())
+	require.NoError(t, idRows.Close())
+	require.Len(t, expiredIDs, 3)
+
+	// DELETE history the cleaner did not write: one for an event it does not delete, and one
+	// for another table that carries the id of an event it does delete. Both must stay.
+	changelogRow := func(t *testing.T, table, recordID string) int64 {
+		t.Helper()
+
+		var id int64
+		require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO datastore_changelog (table_name, record_id, operation, old_values)
+ VALUES ($1, $2::uuid, 'DELETE', '{}'::jsonb) RETURNING id`, table, recordID).Scan(&id))
+
+		return id
+	}
+
+	unrelated := changelogRow(t, "health_events", "00000000-0000-4000-8000-000000000001")
+	otherTable := changelogRow(t, "maintenance_events", expiredIDs[0])
+
 	cleaner := &healthEventsCleaner{db: db, config: healthEventsCleanupConfig{720 * time.Hour, time.Hour, 2, 10}}
 
 	n, err := cleaner.run(ctx)
@@ -123,7 +153,26 @@ func TestHealthEventsCleaner_Integration_DeletesExpiredEventsAndOwnChanges(t *te
 	require.Equal(t, []string{"boundary-kept", "fresh-kept"}, kept)
 
 	// The deletes wrote changelog rows in their transaction; the cleaner removed them before commit.
-	require.Zero(t, count(t, `SELECT count(*) FROM datastore_changelog WHERE operation = 'DELETE'`))
+	var owned int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM datastore_changelog
+ WHERE table_name = 'health_events' AND operation = 'DELETE' AND record_id = ANY($1::uuid[])`,
+		pq.Array(expiredIDs)).Scan(&owned))
+	require.Zero(t, owned)
+
+	var deleteHistory []int64
+
+	historyRows, err := db.QueryContext(ctx, `SELECT id FROM datastore_changelog WHERE operation = 'DELETE' ORDER BY id`)
+	require.NoError(t, err)
+
+	for historyRows.Next() {
+		var id int64
+		require.NoError(t, historyRows.Scan(&id))
+		deleteHistory = append(deleteHistory, id)
+	}
+
+	require.NoError(t, historyRows.Err())
+	require.NoError(t, historyRows.Close())
+	require.Equal(t, []int64{unrelated, otherTable}, deleteHistory, "DELETE history the cleaner did not write stays")
 	// The earlier history of the expired events is the changelog retention's to remove (#2170).
 	require.Equal(t, 5, count(t, `SELECT count(*) FROM datastore_changelog WHERE operation = 'INSERT'`))
 	require.Equal(t, 1, count(t, `SELECT count(*) FROM datastore_changelog WHERE operation = 'UPDATE'`))

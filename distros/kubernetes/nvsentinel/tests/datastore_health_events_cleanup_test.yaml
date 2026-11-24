@@ -77,6 +77,44 @@ tests:
       - notExists:
           path: data.DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE
 
+  - it: passes an explicit zero batch limit through, so the store rejects it instead of using the default
+    set:
+      global.datastore:
+        provider: postgresql
+        connection:
+          host: postgres.example.com
+          port: 5432
+          database: nvsentinel
+          username: nvsentinel
+        healthEventsCleanup:
+          retention: 720h
+          batchSize: 0
+          maxBatches: 0
+    asserts:
+      - equal:
+          path: data.DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE
+          value: "0"
+      - equal:
+          path: data.DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES
+          value: "0"
+
+  - it: leaves absent batch limits to the store defaults
+    set:
+      global.datastore:
+        provider: postgresql
+        connection:
+          host: postgres.example.com
+          port: 5432
+          database: nvsentinel
+          username: nvsentinel
+        healthEventsCleanup:
+          retention: 720h
+    asserts:
+      - notExists:
+          path: data.DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE
+      - notExists:
+          path: data.DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES
+
   - it: does not render the settings for MongoDB, which uses collectionExpirySeconds
     set:
       global.datastore:

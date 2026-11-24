@@ -121,10 +121,11 @@ data:
   {{- if .interval }}
   DATASTORE_HEALTH_EVENTS_CLEANUP_INTERVAL: {{ .interval | quote }}
   {{- end }}
-  {{- if .batchSize }}
+  {{- /* Presence, not truthiness: an explicit 0 reaches the store, which rejects it. */}}
+  {{- if hasKey . "batchSize" }}
   DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE: {{ .batchSize | quote }}
   {{- end }}
-  {{- if .maxBatches }}
+  {{- if hasKey . "maxBatches" }}
   DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES: {{ .maxBatches | quote }}
   {{- end }}
   {{- end }}
