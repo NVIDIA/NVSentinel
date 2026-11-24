@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -508,9 +509,9 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 	slog.InfoContext(ctx, "Sending reboot signal to node", "node", node.Name)
 
 	rsp, rebootErr := cspClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
-		NodeName:                     node.Name,
-		CrName:                       rebootNode.Name,
-		ExecutionDeadlineUnixSeconds: rebootNode.Status.StartTime.Add(r.getRebootTimeout()).Unix(),
+		NodeName:          node.Name,
+		CrName:            rebootNode.Name,
+		ExecutionDeadline: timestamppb.New(rebootNode.Status.StartTime.Add(r.getRebootTimeout())),
 	})
 	if rebootErr == nil {
 		rebootNode.SetCondition(metav1.Condition{

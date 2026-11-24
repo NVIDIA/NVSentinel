@@ -121,7 +121,7 @@ func (c *rebootRequestRecorder) SendRebootSignal(
 
 func TestSendRebootSignal_UsesAttemptStartForDeadline(t *testing.T) {
 	const timeout = 8 * time.Minute
-	start := metav1.NewTime(time.Now().Add(-time.Minute))
+	start := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 123456789, time.UTC))
 	reconciler := &RebootNodeReconciler{Config: &config.RebootNodeControllerConfig{Timeout: timeout}}
 	csp := &rebootRequestRecorder{}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}
@@ -132,7 +132,9 @@ func TestSendRebootSignal_UsesAttemptStartForDeadline(t *testing.T) {
 
 	reconciler.sendRebootSignalAndSetCondition(t.Context(), csp, reboot, node)
 	require.NotNil(t, csp.request)
-	assert.Equal(t, start.Add(timeout).Unix(), csp.request.GetExecutionDeadlineUnixSeconds())
+	deadline := csp.request.GetExecutionDeadline()
+	require.NoError(t, deadline.CheckValid())
+	assert.Equal(t, start.Add(timeout), deadline.AsTime())
 }
 
 var _ = Describe("RebootNode Controller", func() {

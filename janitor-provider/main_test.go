@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -92,11 +93,24 @@ func TestSendRebootSignal_ForwardsDeadlineToGenericProvider(t *testing.T) {
 		cspClient: generic.NewClientWithK8s(client, generic.Config{RebootJobNamespace: namespace}),
 	}
 	_, err := provider.SendRebootSignal(t.Context(), &cspv1alpha1.SendRebootSignalRequest{
-		NodeName:                     node.Name,
-		ExecutionDeadlineUnixSeconds: time.Now().Add(-time.Minute).Unix(),
+		NodeName:          node.Name,
+		ExecutionDeadline: timestamppb.New(time.Now().Add(-time.Minute)),
 	})
 	require.ErrorContains(t, err, "reboot deadline has expired")
 	jobs, err := client.BatchV1().Jobs(namespace).List(t.Context(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items)
+}
+
+func TestSendRebootSignal_RejectsMalformedDeadline(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &janitorProviderServer{k8sClient: client}
+
+	_, err := provider.SendRebootSignal(t.Context(), &cspv1alpha1.SendRebootSignalRequest{
+		NodeName:          "worker-1",
+		ExecutionDeadline: &timestamppb.Timestamp{Nanos: -1},
+	})
+
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Empty(t, client.Actions())
 }

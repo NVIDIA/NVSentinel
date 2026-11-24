@@ -70,7 +70,9 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	ctx := context.Background()
 	node := newNode("worker-1", "boot-id-abc", true)
 
+	earliestDeadline := time.Now().Add(defaultRebootWindow).Unix()
 	ref, err := client.SendRebootSignal(ctx, node, "")
+	latestDeadline := time.Now().Add(defaultRebootWindow).Unix()
 	require.NoError(t, err)
 	assert.Equal(t, model.ResetSignalRequestRef("boot-id-abc"), ref)
 
@@ -91,7 +93,15 @@ func TestSendRebootSignal_CreatesJob(t *testing.T) {
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "busybox:1.37", container.Image)
 	assert.Equal(t, guardedCommand("chroot /host reboot"), container.Command)
-	assert.Contains(t, container.Env, corev1.EnvVar{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"})
+	require.Len(t, container.Env, 2)
+	deadline, err := strconv.ParseInt(container.Env[1].Value, 10, 64)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, deadline, earliestDeadline)
+	assert.LessOrEqual(t, deadline, latestDeadline)
+	assert.Equal(t, []corev1.EnvVar{
+		{Name: preRebootBootIDEnvVar, Value: "boot-id-abc"},
+		{Name: rebootDeadlineEnvVar, Value: strconv.FormatInt(deadline, 10)},
+	}, container.Env)
 	require.NotNil(t, container.SecurityContext)
 	assert.True(t, *container.SecurityContext.Privileged)
 
