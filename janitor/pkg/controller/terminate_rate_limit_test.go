@@ -95,3 +95,36 @@ func TestTerminateRateLimit_WaitsAtLeastASecond(t *testing.T) {
 	require.False(t, ok)
 	require.Equal(t, minimumRateLimitWait, wait)
 }
+
+func TestTerminateRateLimit_TheHoldCoversTheSignalFromWhenItWasSent(t *testing.T) {
+	limit := newTerminateRateLimit(1, time.Minute)
+
+	_, ok := limit.reserve("a", rateLimitTestNow, nil)
+	require.True(t, ok)
+
+	// The provider took 50s to accept a's signal, and the status does not show it yet.
+	limit.recordSent("a", rateLimitTestNow.Add(50*time.Second))
+
+	wait, ok := limit.reserve("b", rateLimitTestNow.Add(61*time.Second), nil)
+	require.False(t, ok, "a's signal, sent at 50s, is still in the window")
+	require.Equal(t, 49*time.Second, wait)
+
+	_, ok = limit.reserve("b", rateLimitTestNow.Add(111*time.Second), nil)
+	require.True(t, ok)
+}
+
+func TestTerminateRateLimit_AFailedResendKeepsTheSentSignal(t *testing.T) {
+	limit := newTerminateRateLimit(1, time.Minute)
+
+	_, ok := limit.reserve("a", rateLimitTestNow, nil)
+	require.True(t, ok)
+	limit.recordSent("a", rateLimitTestNow.Add(time.Second))
+
+	// a's status update was lost: a resends, and the resend fails.
+	_, ok = limit.reserve("a", rateLimitTestNow.Add(10*time.Second), nil)
+	require.True(t, ok)
+	limit.release("a")
+
+	_, ok = limit.reserve("b", rateLimitTestNow.Add(20*time.Second), nil)
+	require.False(t, ok, "a's first signal was sent and still counts")
+}

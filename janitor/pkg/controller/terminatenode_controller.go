@@ -452,6 +452,9 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 						LastTransitionTime: metav1.Now(),
 					}
 
+					// The hold of this signal lasts as long as its recorded time stays in the window.
+					r.recordTerminateSignal(terminateNode.Name, signalSentCondition.LastTransitionTime.Time)
+
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
 				} else {
@@ -572,6 +575,12 @@ func (r *TerminateNodeReconciler) reserveTerminateSignal(
 func (r *TerminateNodeReconciler) releaseTerminateSignal(name string) {
 	if limit := r.terminateRateLimit(); limit != nil {
 		limit.release(name)
+	}
+}
+
+func (r *TerminateNodeReconciler) recordTerminateSignal(name string, sentAt time.Time) {
+	if limit := r.terminateRateLimit(); limit != nil {
+		limit.recordSent(name, sentAt)
 	}
 }
 
