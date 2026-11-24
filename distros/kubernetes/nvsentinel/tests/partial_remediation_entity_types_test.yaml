@@ -160,3 +160,48 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: global.partialRemediationEntityTypes.ACCEL_SERIAL.devices[0].deviceClasses has an empty name.
+
+  - it: fails for a resource name under two entity types
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_SERIAL:
+        devices:
+          - resourceNames: ["nvidia.com/gpu"]
+    asserts:
+      - failedTemplate:
+          errorMessage: Device name nvidia.com/gpu is listed under both GPU_SERIAL and GPU_UUID. The pod device annotation does not record the entity type, so a device name can belong to only one entity type.
+
+  - it: fails for a driver under two entity types
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_SERIAL:
+        devices:
+          - driver: gpu.nvidia.com
+            deviceClasses: ["gpu-serial.example.com"]
+            entityValueAttribute: serial
+    asserts:
+      - failedTemplate:
+          errorMessage: Device name gpu.nvidia.com is listed under both GPU_SERIAL and GPU_UUID. The pod device annotation does not record the entity type, so a device name can belong to only one entity type.
+
+  - it: fails for a DeviceClass under two entity types
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_SERIAL:
+        devices:
+          - driver: serial.example.com
+            deviceClasses: ["gpu.nvidia.com"]
+            entityValueAttribute: serial
+    asserts:
+      - failedTemplate:
+          errorMessage: DeviceClass gpu.nvidia.com is listed under both GPU_SERIAL and GPU_UUID. The pod device annotation does not record the entity type, so a DeviceClass can belong to only one entity type.
+
+  - it: accepts a name repeated in one entity type
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.ACCEL_SERIAL:
+        devices:
+          - resourceNames: ["example.com/accel"]
+          - resourceNames: ["example.com/accel"]
+    asserts:
+      - hasDocuments:
+          count: 0

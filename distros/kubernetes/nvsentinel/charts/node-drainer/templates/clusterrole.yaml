@@ -69,6 +69,8 @@ rules:
   - resourceclaims
   verbs:
   - get
+  - list
+  - watch
 {{- if .Values.customDrain.enabled }}
 - apiGroups:
   - {{ .Values.customDrain.apiGroup | quote }}

@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	resourcev1listers "k8s.io/client-go/listers/resource/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
@@ -57,6 +58,8 @@ const (
 type Informers struct {
 	podInformer            cache.SharedIndexInformer
 	nodeInformer           cache.SharedIndexInformer
+	claimInformer          cache.SharedIndexInformer
+	claimLister            resourcev1listers.ResourceClaimLister
 	eventBroadcaster       record.EventBroadcaster
 	eventRecorder          record.EventRecorder
 	clientset              kubernetes.Interface
@@ -69,7 +72,7 @@ type Informers struct {
 // PodFilter narrows an action to pods assigned to its drain mode.
 type PodFilter func(*v1.Pod) bool
 
-// NewInformers creates the pod and node informers used to observe drainable workloads.
+// NewInformers creates the pod, node and ResourceClaim informers used to observe drainable workloads.
 // The pod cache retains only the labels named by podLabelKeys. The node cache retains
 // the fields in nodeFields. Build it with NodeFields, and add each Node rule with
 // AddNodeExpression. entityTypes names the devices that partial drains and drainGPUPods
@@ -107,6 +110,13 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
 	}
 
+	// Partial drains read the DRA claims of pods to find their devices, so they read them from a cache instead of
+	// calling the API server for each pod on each pass.
+	claims := informerFactory.Resource().V1().ResourceClaims()
+	if err := claims.Informer().SetTransform(resourceClaimTransform); err != nil {
+		return nil, fmt.Errorf("failed to set ResourceClaim informer transform: %w", err)
+	}
+
 	eventBroadcaster := record.NewBroadcaster()
 
 	dryRunMode := []string{}
@@ -118,6 +128,8 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		clientset:        clientset,
 		podInformer:      podInformer,
 		nodeInformer:     nodeInformer,
+		claimInformer:    claims.Informer(),
+		claimLister:      claims.Lister(),
 		eventBroadcaster: eventBroadcaster,
 		eventRecorder: eventBroadcaster.NewRecorder(
 			scheme.Scheme,
@@ -214,11 +226,75 @@ func drainEligiblePodCacheObject(pod *v1.Pod, podLabelKeys ...string) *v1.Pod {
 			ResourceClaims:                pod.Spec.ResourceClaims,
 		},
 		Status: v1.PodStatus{
-			Phase:                 pod.Status.Phase,
-			Conditions:            trimPodReadyConditions(pod.Status.Conditions),
-			ResourceClaimStatuses: pod.Status.ResourceClaimStatuses,
+			Phase:                       pod.Status.Phase,
+			Conditions:                  trimPodReadyConditions(pod.Status.Conditions),
+			ResourceClaimStatuses:       pod.Status.ResourceClaimStatuses,
+			ExtendedResourceClaimStatus: pod.Status.ExtendedResourceClaimStatus,
 		},
 	}
+}
+
+// resourceClaimTransform retains only the fields that drains read from a ResourceClaim.
+func resourceClaimTransform(obj any) (any, error) {
+	claim, ok := obj.(*resourcev1.ResourceClaim)
+	if !ok {
+		return obj, nil
+	}
+
+	return drainResourceClaimCacheObject(claim), nil
+}
+
+// drainResourceClaimCacheObject retains the identity of a claim, the DeviceClasses of its requests, and the drivers
+// of its allocation. Keep this contract in sync with the cached claim reads in this package (claimDeviceClasses and
+// claimDrivers). Cached claims are pruned, so never update one.
+func drainResourceClaimCacheObject(claim *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
+	return &resourcev1.ResourceClaim{
+		TypeMeta: claim.TypeMeta,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            claim.Name,
+			Namespace:       claim.Namespace,
+			UID:             claim.UID,
+			ResourceVersion: claim.ResourceVersion,
+		},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{
+			Requests: trimClaimRequests(claim.Spec.Devices.Requests),
+		}},
+		Status: resourcev1.ResourceClaimStatus{Allocation: trimClaimAllocation(claim.Status.Allocation)},
+	}
+}
+
+func trimClaimRequests(requests []resourcev1.DeviceRequest) []resourcev1.DeviceRequest {
+	cached := make([]resourcev1.DeviceRequest, len(requests))
+
+	for idx, request := range requests {
+		if request.Exactly != nil {
+			cached[idx].Exactly = &resourcev1.ExactDeviceRequest{DeviceClassName: request.Exactly.DeviceClassName}
+		}
+
+		if len(request.FirstAvailable) > 0 {
+			cached[idx].FirstAvailable = make([]resourcev1.DeviceSubRequest, len(request.FirstAvailable))
+			for subIdx, subRequest := range request.FirstAvailable {
+				cached[idx].FirstAvailable[subIdx].DeviceClassName = subRequest.DeviceClassName
+			}
+		}
+	}
+
+	return cached
+}
+
+// trimClaimAllocation keeps a nil allocation nil, because an allocated claim and a claim that is not allocated yet
+// are read differently.
+func trimClaimAllocation(allocation *resourcev1.AllocationResult) *resourcev1.AllocationResult {
+	if allocation == nil {
+		return nil
+	}
+
+	results := make([]resourcev1.DeviceRequestAllocationResult, len(allocation.Devices.Results))
+	for idx, result := range allocation.Devices.Results {
+		results[idx].Driver = result.Driver
+	}
+
+	return &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{Results: results}}
 }
 
 func trimContainers(containers []v1.Container) []v1.Container {
@@ -229,6 +305,8 @@ func trimContainers(containers []v1.Container) []v1.Container {
 			limits[resourceName] = quantity.DeepCopy()
 		}
 
+		// The name links a container to its entry in status.extendedResourceClaimStatus.
+		cached[idx].Name = container.Name
 		cached[idx].Resources.Limits = limits
 	}
 
@@ -385,7 +463,7 @@ func isDaemonSetOwned(ownerReferences []metav1.OwnerReference) bool {
 }
 
 func (i *Informers) HasSynced() bool {
-	return i.podInformer.HasSynced() && i.nodeInformer.HasSynced()
+	return i.podInformer.HasSynced() && i.nodeInformer.HasSynced() && i.claimInformer.HasSynced()
 }
 
 func NodeIndexFunc(obj any) ([]string, error) {
@@ -423,6 +501,7 @@ func (i *Informers) Run(ctx context.Context) error {
 
 	go i.podInformer.Run(ctx.Done())
 	go i.nodeInformer.Run(ctx.Done())
+	go i.claimInformer.Run(ctx.Done())
 	go func() {
 		<-ctx.Done()
 		i.eventBroadcaster.Shutdown()
@@ -578,8 +657,11 @@ func (i *Informers) checkAnnotationRecordsRequests(ctx context.Context, pod *v1.
 		return fmt.Errorf("pod %s is requesting devices but is missing device annotation; "+
 			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)", pod.Name)
 	default:
+		// The mapper may not have seen the pod yet, or it may not support the device at all. Either way the pod
+		// could use the failed device, so the drain waits.
 		return fmt.Errorf("pod %s is requesting %s but its device annotation has no entry for it; "+
-			"the drain waits for the metadata-collector pod device mapper to record it", pod.Name, unrecorded)
+			"the partial drain waits until the metadata-collector pod device mapper records the device, "+
+			"and a device that the mapper does not support keeps it waiting", pod.Name, unrecorded)
 	}
 }
 
@@ -589,10 +671,8 @@ func (i *Informers) checkAnnotationRecordsRequests(ctx context.Context, pod *v1.
 // names the annotation uses.
 func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) (string, error) {
-	for _, resourceName := range entityType.ResourceNames() {
-		if !hasAnnotationEntry(deviceAnnotation, resourceName) && isPodRequestingResource(pod, resourceName) {
-			return "resource " + resourceName, nil
-		}
+	if unrecorded := unrecordedResourceName(pod, entityType, deviceAnnotation); unrecorded != "" {
+		return unrecorded, nil
 	}
 
 	// Reading a claim is an API call, so skip it when the annotation has an entry for every driver.
@@ -614,6 +694,27 @@ func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 	return "", nil
 }
 
+// unrecordedResourceName describes the first resource name of the entity type that the pod requests in its
+// container limits and the device annotation has no entry for, or returns "".
+func unrecordedResourceName(pod *v1.Pod, entityType model.PartialRemediationEntityType,
+	deviceAnnotation model.DeviceAnnotation) string {
+	for _, resourceName := range entityType.ResourceNames() {
+		byDevicePlugin, byDRA := resourceRequestSources(pod, resourceName)
+		if byDevicePlugin && !hasAnnotationEntry(deviceAnnotation, resourceName) {
+			return "resource " + resourceName
+		}
+
+		// A DRA driver can serve a resource name through a claim that the scheduler generates
+		// (status.extendedResourceClaimStatus). The kubelet reports those devices as DRA devices, so the mapper
+		// records them under the driver name, not the resource name.
+		if byDRA && !hasAnyAnnotationEntry(deviceAnnotation, entityType.Drivers()) {
+			return "resource " + resourceName + " through a DRA driver"
+		}
+	}
+
+	return ""
+}
+
 func hasAnnotationEntry(deviceAnnotation model.DeviceAnnotation, name string) bool {
 	_, ok := deviceAnnotation.Devices[name]
 	return ok
@@ -629,11 +730,43 @@ func hasAnnotationEntries(deviceAnnotation model.DeviceAnnotation, names []strin
 	return true
 }
 
-func isPodRequestingResource(pod *v1.Pod, resourceName string) bool {
+func hasAnyAnnotationEntry(deviceAnnotation model.DeviceAnnotation, names []string) bool {
+	return slices.ContainsFunc(names, func(name string) bool { return hasAnnotationEntry(deviceAnnotation, name) })
+}
+
+// resourceRequestSources reports whether a container of the pod gets the resource from a device plugin, and
+// whether a container gets it from a DRA driver through the claim that the scheduler generates for it.
+func resourceRequestSources(pod *v1.Pod, resourceName string) (byDevicePlugin, byDRA bool) {
 	resourceNames := []string{resourceName}
 
-	return areContainersRequestingDevice(pod.Spec.Containers, resourceNames) ||
-		areContainersRequestingDevice(pod.Spec.InitContainers, resourceNames)
+	for _, containers := range [][]v1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
+		for _, container := range containers {
+			if !areContainersRequestingDevice([]v1.Container{container}, resourceNames) {
+				continue
+			}
+
+			if isResourceServedByDRA(pod, container.Name, resourceName) {
+				byDRA = true
+			} else {
+				byDevicePlugin = true
+			}
+		}
+	}
+
+	return byDevicePlugin, byDRA
+}
+
+// isResourceServedByDRA reports whether status.extendedResourceClaimStatus maps the resource of the container to
+// a DRA request. The scheduler writes it only when a DRA driver serves the resource name.
+func isResourceServedByDRA(pod *v1.Pod, containerName, resourceName string) bool {
+	status := pod.Status.ExtendedResourceClaimStatus
+	if status == nil {
+		return false
+	}
+
+	return slices.ContainsFunc(status.RequestMappings, func(mapping v1.ContainerExtendedResourceRequest) bool {
+		return mapping.ContainerName == containerName && mapping.ResourceName == resourceName
+	})
 }
 
 // isPodRequestingDevices reports whether a pod requests any of the devices through container limits or DRA claims.
@@ -732,7 +865,7 @@ func claimDrivers(claim *resourcev1.ResourceClaim, entityType model.PartialRemed
 // getPodResourceClaim returns the ResourceClaim a pod claim uses, or nil when the pod needs no
 // claim for it. A claim generated from a ResourceClaimTemplate is bound to the pod in status.resourceClaimStatuses
 // before the pod is scheduled, so the template itself is never read and deleting it does not affect the lookup.
-func (i *Informers) getPodResourceClaim(ctx context.Context, pod *v1.Pod,
+func (i *Informers) getPodResourceClaim(_ context.Context, pod *v1.Pod,
 	podClaim v1.PodResourceClaim) (*resourcev1.ResourceClaim, error) {
 	claimName := podClaim.ResourceClaimName
 	if claimName == nil {
@@ -754,9 +887,11 @@ func (i *Informers) getPodResourceClaim(ctx context.Context, pod *v1.Pod,
 		return nil, fmt.Errorf("no ResourceClaim is bound to claim %s of pod %s/%s", podClaim.Name, pod.Namespace, pod.Name)
 	}
 
-	claim, err := i.clientset.ResourceV1().ResourceClaims(pod.Namespace).Get(ctx, *claimName, metav1.GetOptions{})
+	// A claim is created and allocated before its pod starts, so the cache has it. A claim that is not in the cache
+	// fails the drain, which is retried.
+	claim, err := i.claimLister.ResourceClaims(pod.Namespace).Get(*claimName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s: %w", pod.Namespace, *claimName, err)
+		return nil, fmt.Errorf("failed to get ResourceClaim %s/%s from the cache: %w", pod.Namespace, *claimName, err)
 	}
 
 	return claim, nil

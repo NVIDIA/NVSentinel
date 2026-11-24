@@ -21,7 +21,7 @@ tests:
   - it: fails without global.partialRemediationEntityTypes
     asserts:
       - failedTemplate:
-          errorMessage: global.partialRemediationEntityTypes is required. The chart default holds the GPU_UUID entry.
+          errorMessage: global.partialRemediationEntityTypes is missing. The chart default holds the GPU_UUID entry. An upgrade with --reuse-values keeps the values of the previous chart, which has no such key, so upgrade with --reset-then-reuse-values.
 
   - it: renders an empty map as an empty table
     set:

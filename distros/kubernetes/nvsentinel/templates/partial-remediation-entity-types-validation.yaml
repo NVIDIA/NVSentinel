@@ -20,6 +20,10 @@
 {{- fail "global.partialRemediationEntityTypes must be a map from entity type to its devices and scopedActions" }}
 {{- end }}
 {{- $actionOwner := dict }}
+{{- /* The pod device annotation lists devices under resource names and driver names, without the entity
+type, so a device name or DeviceClass can belong to only one entity type. */}}
+{{- $nameOwner := dict }}
+{{- $deviceClassOwner := dict }}
 {{- range $name := keys $types | sortAlpha }}
 {{- if eq $name "" }}
 {{- fail "global.partialRemediationEntityTypes has an entity type with an empty name" }}
@@ -45,6 +49,22 @@
 {{- if has "" (index $device $field | default list) }}
 {{- fail (printf "%s.devices[%d].%s has an empty name." $path $i $field) }}
 {{- end }}
+{{- end }}
+{{- $deviceNames := $device.resourceNames | default list }}
+{{- if $device.driver }}
+{{- $deviceNames = append $deviceNames $device.driver }}
+{{- end }}
+{{- range $deviceName := $deviceNames }}
+{{- if and (hasKey $nameOwner $deviceName) (ne (index $nameOwner $deviceName) $name) }}
+{{- fail (printf "Device name %s is listed under both %s and %s. The pod device annotation does not record the entity type, so a device name can belong to only one entity type." $deviceName (index $nameOwner $deviceName) $name) }}
+{{- end }}
+{{- $_ := set $nameOwner $deviceName $name }}
+{{- end }}
+{{- range $deviceClass := $device.deviceClasses | default list }}
+{{- if and (hasKey $deviceClassOwner $deviceClass) (ne (index $deviceClassOwner $deviceClass) $name) }}
+{{- fail (printf "DeviceClass %s is listed under both %s and %s. The pod device annotation does not record the entity type, so a DeviceClass can belong to only one entity type." $deviceClass (index $deviceClassOwner $deviceClass) $name) }}
+{{- end }}
+{{- $_ := set $deviceClassOwner $deviceClass $name }}
 {{- end }}
 {{- end }}
 {{- range $action := $entityType.scopedActions | default list }}
