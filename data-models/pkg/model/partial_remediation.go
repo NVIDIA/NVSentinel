@@ -95,7 +95,50 @@ func (t PartialRemediationEntityTypes) Validate() error {
 		}
 	}
 
+	errs = append(errs, t.validateUniqueDeviceNames()...)
+
 	return errors.Join(errs...)
+}
+
+// validateUniqueDeviceNames reports a device name or DeviceClass that more than one entity type lists. The pod
+// device annotation lists devices under resource names and driver names, without the entity type. A drain of a
+// second entity type would compare its entity values with the devices of the first, evict no pod, and succeed.
+func (t PartialRemediationEntityTypes) validateUniqueDeviceNames() []error {
+	var errs []error
+
+	nameOwner := map[string]string{}
+	deviceClassOwner := map[string]string{}
+
+	for _, name := range t.sortedNames() {
+		entityType := t[name]
+		errs = append(errs, claimNames(nameOwner, name, entityType.AnnotationKeys(), "device name")...)
+		errs = append(errs, claimNames(deviceClassOwner, name, entityType.DeviceClasses(), "DeviceClass")...)
+	}
+
+	return errs
+}
+
+// claimNames records entityType as the owner of each name, and reports a name that another entity type owns.
+func claimNames(owner map[string]string, entityType string, names []string, kind string) []error {
+	var errs []error
+
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+
+		if previous, ok := owner[name]; ok && previous != entityType {
+			errs = append(errs, fmt.Errorf("%s %s is listed under both %s and %s; the pod device annotation does "+
+				"not record the entity type, so a %s can belong to only one entity type", kind, name, previous,
+				entityType, kind))
+
+			continue
+		}
+
+		owner[name] = entityType
+	}
+
+	return errs
 }
 
 func (d PartialRemediationDevice) validate() error {

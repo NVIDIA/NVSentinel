@@ -1,0 +1,156 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# global.initContainerImage backs every permission-fixing init container. The
+# subchart suites set the value themselves, so only the umbrella sees its
+# default. These cases pin that default to a maintained multi-arch image (not
+# the frozen bitnamilegacy/os-shell) and pin the commands and users that image
+# has to support:
+#   - fix-state-permissions (nic-health-monitor): chown -R as root, read-only
+#     root filesystem, only CHOWN
+#   - fix-audit-log-permissions: chown and chmod as root
+#   - fix-cert-permissions: sh, cp, chmod, ls as the reading container's user
+suite: init container image
+release:
+  namespace: nvsentinel
+tests:
+  - it: uses the maintained default image for the NIC state ownership fix
+    template: charts/nic-health-monitor/templates/daemonset.yaml
+    set:
+      global.nicHealthMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-state-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[0].command
+          value:
+            - sh
+            - -c
+            - chown -R 65532:65532 /var/run/nic_health_monitor
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.capabilities.add
+          value: ["CHOWN"]
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65532
+
+  - it: uses the maintained default image for the audit log permissions
+    template: templates/daemonset.yaml
+    set:
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-audit-log-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 0
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: (?m)^chown 65532:65532 /var/log/nvsentinel$
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: (?m)^chmod 770 /var/log/nvsentinel$
+
+  - it: uses the maintained default image for the audit log permissions in a module
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-audit-log-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+
+  - it: uses the maintained default image for the platform-connector certificate copy
+    template: templates/daemonset.yaml
+    set:
+      global.datastore.provider: postgresql
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-cert-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+
+  - it: uses the maintained default image for the platform-connector server certificate copy
+    template: templates/platform-connector-deployment-deployment.yaml
+    set:
+      platformConnector.deployment.enabled: true
+      global.datastore.provider: postgresql
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-cert-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 65532
+
+  - it: copies a module's PostgreSQL client certificate as UID/GID 1001 with the default image
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.datastore.provider: postgresql
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: fix-cert-permissions
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 1001
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsGroup
+          value: 1001
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: (?m)^cp /etc/ssl/client-certs-original/tls.key /etc/ssl/client-certs-fixed/$
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: (?m)^chmod 600 /etc/ssl/client-certs-fixed/tls.key$
+
+  - it: lets an operator point every init container at a mirrored image
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.auditLogging.enabled: true
+      global.datastore.provider: postgresql
+      global.initContainerImage.repository: registry.example.com/mirror/alpine
+      global.initContainerImage.tag: "3.24.4"
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: registry.example.com/mirror/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: registry.example.com/mirror/alpine:3.24.4

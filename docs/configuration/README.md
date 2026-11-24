@@ -22,18 +22,19 @@ This value sets the shell image for the helper init containers that NVSentinel m
 
 - `fix-audit-log-permissions` sets the ownership of the audit log directory.
 - `fix-cert-permissions` copies the PostgreSQL client certificates with the permissions that the client needs.
+- `fix-state-permissions` hands the NIC health monitor's state directory to UID 65532.
 
-A module runs these init containers only when [audit logging](../audit-logging.md) is enabled or when a client certificate is mounted.
+A module runs the first two init containers only when [audit logging](../audit-logging.md) is enabled or when a client certificate is mounted. The NIC health monitor always runs `fix-state-permissions`.
 
 ```yaml
 global:
   initContainerImage:
-    repository: docker.io/bitnamilegacy/os-shell
-    tag: "12-debian-12-r30"
+    repository: public.ecr.aws/docker/library/alpine
+    tag: "3.24.4"
     pullPolicy: IfNotPresent
 ```
 
-If you mirror images into a private registry, change this value.
+If you mirror images into a private registry, change this value. A replacement image needs a POSIX `sh` with `chown`, `chmod`, `cp` and `ls` (busybox applets are enough), and images for every node architecture you run. `fix-state-permissions` runs with a read-only root filesystem and only the `CHOWN` capability.
 
 ### Dry Run Mode
 

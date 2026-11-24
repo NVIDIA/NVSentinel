@@ -24,8 +24,8 @@ tests:
   - it: must not add any Linux capability to the monitor (SYS_ADMIN regression guard)
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - isKind:
@@ -39,8 +39,8 @@ tests:
   - it: must run the monitor as non-root
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - equal:
@@ -56,8 +56,8 @@ tests:
   - it: must limit the state-permissions init container to CHOWN
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - equal:
@@ -73,11 +73,53 @@ tests:
           path: spec.template.spec.initContainers[0].securityContext.allowPrivilegeEscalation
           value: false
 
+  # The monitor writes its state as 65532 into a root-created hostPath, so the
+  # init container has to chown it first. It does so as root, with a read-only
+  # root filesystem and only CHOWN, which the init image has to cope with.
+  - it: must hand the state directory to the monitor user before it starts
+    set:
+      global.metricsPort: 2112
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
+      global.initContainerImage.pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: public.ecr.aws/docker/library/alpine:3.24.4
+      - equal:
+          path: spec.template.spec.initContainers[0].command
+          value:
+            - sh
+            - -c
+            - chown -R 65532:65532 /var/run/nic_health_monitor
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 0
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          value:
+            - name: nic-state-vol
+              mountPath: /var/run/nic_health_monitor
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: nic-state-vol
+            mountPath: /var/run/nic_health_monitor
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: nic-state-vol
+            mountPath: /var/run/nic_health_monitor
+            readOnly: true
+
   - it: must keep the hardened security context
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - equal:
@@ -93,8 +135,8 @@ tests:
   - it: must keep termination grace above the publish-drain budget
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - equal:
@@ -104,8 +146,8 @@ tests:
   - it: must mount host sysfs and procfs read-only
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
     asserts:
       - contains:
@@ -124,8 +166,8 @@ tests:
   - it: must present the platform-connector token when auth is enabled
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
       global.platformConnectorAuth.enabled: true
       # Set explicitly: the chart has no built-in fallback for these, so the
@@ -157,8 +199,8 @@ tests:
   - it: must not present the platform-connector token when auth is disabled
     set:
       global.metricsPort: 2112
-      global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-      global.initContainerImage.tag: "12-debian-12-r30"
+      global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+      global.initContainerImage.tag: "3.24.4"
       global.initContainerImage.pullPolicy: IfNotPresent
       global.platformConnectorAuth.enabled: false
     asserts:

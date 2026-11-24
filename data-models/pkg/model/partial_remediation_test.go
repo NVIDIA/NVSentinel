@@ -101,8 +101,8 @@ func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 			wantErr: []string{"devices[0]: resourceNames has an empty name"},
 		},
 		{
-			name: "empty scoped action",
-			types: PartialRemediationEntityTypes{"ACCEL_SERIAL": accelEntityType("")},
+			name:    "empty scoped action",
+			types:   PartialRemediationEntityTypes{"ACCEL_SERIAL": accelEntityType("")},
 			wantErr: []string{"entity type ACCEL_SERIAL has an empty scoped action"},
 		},
 		{
@@ -112,6 +112,49 @@ func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 				"ACCEL_SERIAL":    accelEntityType("COMPONENT_RESET"),
 			},
 			wantErr: []string{"action COMPONENT_RESET is scoped to both ACCEL_SERIAL and GPU_UUID"},
+		},
+		{
+			name: "resource name under two entity types",
+			types: PartialRemediationEntityTypes{
+				GPUUUIDEntityType: gpuEntityType(),
+				"GPU_SERIAL":      {Devices: []PartialRemediationDevice{{ResourceNames: []string{"nvidia.com/gpu"}}}},
+			},
+			wantErr: []string{"device name nvidia.com/gpu is listed under both GPU_SERIAL and GPU_UUID"},
+		},
+		{
+			name: "driver under two entity types",
+			types: PartialRemediationEntityTypes{
+				GPUUUIDEntityType: gpuEntityType(),
+				"GPU_SERIAL": {Devices: []PartialRemediationDevice{{
+					Driver: GPUDRADriverName, DeviceClasses: []string{"gpu-serial.example.com"}, EntityValueAttribute: "serial",
+				}}},
+			},
+			wantErr: []string{"device name gpu.nvidia.com is listed under both GPU_SERIAL and GPU_UUID"},
+		},
+		{
+			name: "DeviceClass under two entity types",
+			types: PartialRemediationEntityTypes{
+				"ACCEL_SERIAL": accelEntityType(),
+				"NIC_SERIAL": {Devices: []PartialRemediationDevice{{
+					Driver: "nic.example.com", DeviceClasses: []string{"accel.example.com"}, EntityValueAttribute: "serial",
+				}}},
+			},
+			wantErr: []string{"DeviceClass accel.example.com is listed under both ACCEL_SERIAL and NIC_SERIAL"},
+		},
+		{
+			name: "resource name of one entity type as the driver of another",
+			types: PartialRemediationEntityTypes{
+				"ACCEL_SERIAL": accelEntityType(),
+				"NIC_SERIAL":   {Devices: []PartialRemediationDevice{{ResourceNames: []string{"accel.example.com"}}}},
+			},
+			wantErr: []string{"device name accel.example.com is listed under both ACCEL_SERIAL and NIC_SERIAL"},
+		},
+		{
+			name: "name repeated in one entity type",
+			types: PartialRemediationEntityTypes{"ACCEL_SERIAL": {Devices: []PartialRemediationDevice{
+				{ResourceNames: []string{"example.com/accel"}},
+				{ResourceNames: []string{"example.com/accel"}},
+			}}},
 		},
 		{
 			name: "reports every error",
