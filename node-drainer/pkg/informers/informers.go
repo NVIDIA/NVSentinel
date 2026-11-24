@@ -244,9 +244,9 @@ func resourceClaimTransform(obj any) (any, error) {
 	return drainResourceClaimCacheObject(claim), nil
 }
 
-// drainResourceClaimCacheObject retains the identity of a claim, the DeviceClasses of its requests, and the drivers
-// of its allocation. Keep this contract in sync with the cached claim reads in this package (claimDeviceClasses and
-// claimDrivers). Cached claims are pruned, so never update one.
+// drainResourceClaimCacheObject retains the identity of a claim, the DeviceClasses of its requests, and the request
+// and driver of each allocation result. Keep this contract in sync with the cached claim reads in this package
+// (claimDeviceClasses, claimDrivers and unrecordedExtendedResource). Cached claims are pruned, so never update one.
 func drainResourceClaimCacheObject(claim *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
 	return &resourcev1.ResourceClaim{
 		TypeMeta: claim.TypeMeta,
@@ -291,6 +291,7 @@ func trimClaimAllocation(allocation *resourcev1.AllocationResult) *resourcev1.Al
 
 	results := make([]resourcev1.DeviceRequestAllocationResult, len(allocation.Devices.Results))
 	for idx, result := range allocation.Devices.Results {
+		results[idx].Request = result.Request
 		results[idx].Driver = result.Driver
 	}
 
@@ -675,6 +676,11 @@ func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 		return unrecorded, nil
 	}
 
+	unrecorded, err := i.unrecordedExtendedResource(pod, entityType, deviceAnnotation)
+	if err != nil || unrecorded != "" {
+		return unrecorded, err
+	}
+
 	// Reading a claim is an API call, so skip it when the annotation has an entry for every driver.
 	if len(pod.Spec.ResourceClaims) == 0 || hasAnnotationEntries(deviceAnnotation, entityType.Drivers()) {
 		return "", nil
@@ -694,25 +700,65 @@ func (i *Informers) unrecordedRequest(ctx context.Context, pod *v1.Pod,
 	return "", nil
 }
 
-// unrecordedResourceName describes the first resource name of the entity type that the pod requests in its
-// container limits and the device annotation has no entry for, or returns "".
+// unrecordedResourceName describes the first resource name of the entity type that a device plugin serves to the
+// pod and the device annotation has no entry for, or returns "". A limit that a DRA driver serves is checked by
+// unrecordedExtendedResource.
 func unrecordedResourceName(pod *v1.Pod, entityType model.PartialRemediationEntityType,
 	deviceAnnotation model.DeviceAnnotation) string {
 	for _, resourceName := range entityType.ResourceNames() {
-		byDevicePlugin, byDRA := resourceRequestSources(pod, resourceName)
+		byDevicePlugin, _ := resourceRequestSources(pod, resourceName)
 		if byDevicePlugin && !hasAnnotationEntry(deviceAnnotation, resourceName) {
 			return "resource " + resourceName
-		}
-
-		// A DRA driver can serve a resource name through a claim that the scheduler generates
-		// (status.extendedResourceClaimStatus). The kubelet reports those devices as DRA devices, so the mapper
-		// records them under the driver name, not the resource name.
-		if byDRA && !hasAnyAnnotationEntry(deviceAnnotation, entityType.Drivers()) {
-			return "resource " + resourceName + " through a DRA driver"
 		}
 	}
 
 	return ""
+}
+
+// unrecordedExtendedResource describes the first resource name of the entity type that a DRA driver serves to the
+// pod and the device annotation has no entry for, or returns "". The scheduler serves such a limit through a claim
+// that it generates (status.extendedResourceClaimStatus). The kubelet reports those devices as DRA devices, so the
+// mapper records them under the name of the driver that the claim allocated, not under the resource name.
+func (i *Informers) unrecordedExtendedResource(pod *v1.Pod, entityType model.PartialRemediationEntityType,
+	deviceAnnotation model.DeviceAnnotation) (string, error) {
+	status := pod.Status.ExtendedResourceClaimStatus
+	if status == nil {
+		return "", nil
+	}
+
+	resourceNames := entityType.ResourceNames()
+	resourceByRequest := map[string]string{}
+
+	for _, mapping := range status.RequestMappings {
+		if slices.Contains(resourceNames, mapping.ResourceName) {
+			resourceByRequest[mapping.RequestName] = mapping.ResourceName
+		}
+	}
+
+	if len(resourceByRequest) == 0 {
+		return "", nil
+	}
+
+	claim, err := i.claimLister.ResourceClaims(pod.Namespace).Get(status.ResourceClaimName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ResourceClaim %s/%s from the cache: %w", pod.Namespace,
+			status.ResourceClaimName, err)
+	}
+
+	// A claim is allocated before its pod is bound to a node, so the cache has not caught up with this claim yet.
+	// The drain fails and is retried.
+	if claim.Status.Allocation == nil {
+		return "", fmt.Errorf("ResourceClaim %s/%s is not allocated yet", pod.Namespace, status.ResourceClaimName)
+	}
+
+	for _, result := range claim.Status.Allocation.Devices.Results {
+		resourceName, ok := resourceByRequest[result.Request]
+		if ok && !hasAnnotationEntry(deviceAnnotation, result.Driver) {
+			return fmt.Sprintf("resource %s through DRA driver %s", resourceName, result.Driver), nil
+		}
+	}
+
+	return "", nil
 }
 
 func hasAnnotationEntry(deviceAnnotation model.DeviceAnnotation, name string) bool {
@@ -728,10 +774,6 @@ func hasAnnotationEntries(deviceAnnotation model.DeviceAnnotation, names []strin
 	}
 
 	return true
-}
-
-func hasAnyAnnotationEntry(deviceAnnotation model.DeviceAnnotation, names []string) bool {
-	return slices.ContainsFunc(names, func(name string) bool { return hasAnnotationEntry(deviceAnnotation, name) })
 }
 
 // resourceRequestSources reports whether a container of the pod gets the resource from a device plugin, and

@@ -253,8 +253,8 @@ func TestResourceClaimTransform_FullClaim_RetainsDrainFieldsOnly(t *testing.T) {
 		Status: resourcev1.ResourceClaimStatus{
 			Allocation: &resourcev1.AllocationResult{
 				Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{
-					{Driver: "gpu.nvidia.com"},
-					{Driver: "nic.example.com"},
+					{Request: "gpu", Driver: "gpu.nvidia.com"},
+					{Request: "fallback/nic", Driver: "nic.example.com"},
 				}},
 			},
 		},
@@ -701,6 +701,25 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 				Request: "device", Driver: "gpu.nvidia.com", Pool: "node-0", Device: "gpu-0",
 			},
 		},
+		// Claims that the scheduler generates for a GPU limit that a DRA driver serves.
+		"extended-gpu-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "container-0-request-0", Driver: "gpu.nvidia.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
+		"extended-other-driver-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "container-0-request-0", Driver: "other.example.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
 	} {
 		claim, err := client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName},
@@ -725,7 +744,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		name            string
 		annotation      string
 		gpuLimit        bool
-		gpuLimitByDRA   bool // a DRA driver serves the GPU limit (status.extendedResourceClaimStatus)
+		gpuLimitByDRA   string // the claim through which a DRA driver serves the GPU limit (status.extendedResourceClaimStatus)
 		claim           v1.PodResourceClaim
 		boundClaim      string
 		wantPartialErr  string
@@ -813,7 +832,7 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			name:            "annotated pod whose GPU limit a DRA driver serves is drained through the driver entry",
 			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
 			gpuLimit:        true,
-			gpuLimitByDRA:   true,
+			gpuLimitByDRA:   "extended-gpu-allocated",
 			wantPartialPods: 1,
 			wantGPUOnlyPods: 1,
 		},
@@ -821,8 +840,25 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			name:            "annotated pod whose GPU limit a DRA driver serves fails partial drain without a driver entry",
 			annotation:      `{"devices":{"example.com/other":["X-1"]}}`,
 			gpuLimit:        true,
-			gpuLimitByDRA:   true,
-			wantPartialErr:  "is requesting resource nvidia.com/gpu through a DRA driver but its device annotation has no entry for it",
+			gpuLimitByDRA:   "extended-gpu-allocated",
+			wantPartialErr:  "is requesting resource nvidia.com/gpu through DRA driver gpu.nvidia.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			// An entry for another driver does not record the device of the driver that serves the limit.
+			name:            "annotated pod whose GPU limit another DRA driver serves fails partial drain without that driver entry",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-other-driver-allocated",
+			wantPartialErr:  "is requesting resource nvidia.com/gpu through DRA driver other.example.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose generated claim is missing fails closed",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "missing-extended-claim",
+			wantPartialErr:  "not found",
 			wantGPUOnlyPods: 1,
 		},
 		{
@@ -881,16 +917,16 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			created.Status.ResourceClaimStatuses = []v1.PodResourceClaimStatus{claimStatus}
 		}
 
-		if tt.gpuLimitByDRA {
+		if tt.gpuLimitByDRA != "" {
 			created.Status.ExtendedResourceClaimStatus = &v1.PodExtendedResourceClaimStatus{
 				RequestMappings: []v1.ContainerExtendedResourceRequest{{
 					ContainerName: "workload", ResourceName: "nvidia.com/gpu", RequestName: "container-0-request-0",
 				}},
-				ResourceClaimName: fmt.Sprintf("pod-%d-extended-resources", idx),
+				ResourceClaimName: tt.gpuLimitByDRA,
 			}
 		}
 
-		if tt.boundClaim != "" || tt.gpuLimitByDRA {
+		if tt.boundClaim != "" || tt.gpuLimitByDRA != "" {
 			_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
 			require.NoError(t, err)
 		}
