@@ -25,6 +25,7 @@ import (
 	"text/template"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -252,7 +253,12 @@ func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 		Kind:    c.config.Kind,
 	}
 
-	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	mapping, err := c.restMapper.RESTMappingWithContext(ctx, gvk.GroupKind(), gvk.Version)
+	if meta.IsNoMatchError(err) {
+		// The API server no longer serves the kind, so no DrainRequest is left to delete.
+		return nil
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
 	}

@@ -2700,24 +2700,35 @@ func TestReconciler_CustomDrainDeletedNode_CancelsEventAndDeletesItsCR(t *testin
 	}, 10*time.Second, 500*time.Millisecond, "the DrainRequest CR of the cancelled event should be deleted")
 }
 
-// deleteFailingDynamicClient fails every Delete, as a transient API server error would.
-type deleteFailingDynamicClient struct{ dynamic.Interface }
+// deleteFailingDynamicClient fails every Delete, as a transient API server error would, and
+// records whether the Delete had a deadline.
+type deleteFailingDynamicClient struct {
+	dynamic.Interface
+	sawDeadline *atomic.Bool
+}
 
 func (c deleteFailingDynamicClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
-	return deleteFailingResource{c.Interface.Resource(gvr)}
+	return deleteFailingResource{c.Interface.Resource(gvr), c.sawDeadline}
 }
 
 type deleteFailingResource struct {
 	dynamic.NamespaceableResourceInterface
+	sawDeadline *atomic.Bool
 }
 
 func (r deleteFailingResource) Namespace(namespace string) dynamic.ResourceInterface {
-	return deleteFailingNamespacedResource{r.NamespaceableResourceInterface.Namespace(namespace)}
+	return deleteFailingNamespacedResource{r.NamespaceableResourceInterface.Namespace(namespace), r.sawDeadline}
 }
 
-type deleteFailingNamespacedResource struct{ dynamic.ResourceInterface }
+type deleteFailingNamespacedResource struct {
+	dynamic.ResourceInterface
+	sawDeadline *atomic.Bool
+}
 
-func (deleteFailingNamespacedResource) Delete(context.Context, string, metav1.DeleteOptions, ...string) error {
+func (r deleteFailingNamespacedResource) Delete(ctx context.Context, _ string, _ metav1.DeleteOptions, _ ...string) error {
+	_, hasDeadline := ctx.Deadline()
+	r.sawDeadline.Store(hasDeadline)
+
 	return fmt.Errorf("injected DrainRequest delete failure")
 }
 
@@ -2792,11 +2803,14 @@ func TestReconciler_CustomDrainDeletedNode_FailedCRDeletionIsRetried(t *testing.
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 100*time.Millisecond, "the node cache should drop the deleted node")
 
-	failing := newCustomDrainReconciler(t, setup, customDrainCfg, deleteFailingDynamicClient{setup.dynamicClient})
+	var sawDeadline atomic.Bool
+
+	failing := newCustomDrainReconciler(t, setup, customDrainCfg, deleteFailingDynamicClient{setup.dynamicClient, &sawDeadline})
 	updatesBefore := setup.mockDB.updates.Load()
 
 	err = failing.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.ErrorContains(t, err, "injected DrainRequest delete failure", "a failed deletion keeps the event retryable")
+	require.True(t, sawDeadline.Load(), "the cleanup has its own deadline")
 	require.Equal(t, updatesBefore, setup.mockDB.updates.Load(), "the event is not marked Cancelled yet")
 	require.True(t, crExists())
 

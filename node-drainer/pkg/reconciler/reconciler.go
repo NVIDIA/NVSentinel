@@ -627,9 +627,14 @@ func (r *Reconciler) executeTerminalAction(ctx context.Context, action *evaluato
 		r.clearEventStatus(eventID, nodeName)
 
 		// A deleted node's DrainRequest can no longer complete. It is deleted before the event
-		// turns terminal, so a failed deletion is retried with the event.
+		// turns terminal, so a failed or timed-out deletion is retried with the event.
 		if action.NodeDeleted {
-			if err := r.deleteCustomDrainCR(ctx, nodeName, event); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(ctx, deletedNodeCleanupTimeout)
+			err := r.deleteCustomDrainCR(cleanupCtx, nodeName, event)
+
+			cancel()
+
+			if err != nil {
 				return err
 			}
 		}
@@ -1584,6 +1589,10 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 
 	return fmt.Errorf("waiting for custom drain CR to complete: %s", crName)
 }
+
+// deletedNodeCleanupTimeout bounds the DrainRequest cleanup of a deleted node's event, so an API
+// server that does not answer fails the cleanup instead of holding the worker.
+const deletedNodeCleanupTimeout = 10 * time.Second
 
 func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName string, event datastore.Event) {
 	_ = r.deleteCustomDrainCR(ctx, nodeName, event)
