@@ -65,6 +65,14 @@ type Classifier struct {
 	// device name. Each slice has one entry per GPU in `gpus[]` order.
 	topology map[string][]string
 
+	// topologyByPCI is the same matrix keyed by PCI address, built
+	// from the file's nic_topology_pci_addresses map. IB device names
+	// can be renamed after the collector writes the file, and the old
+	// name then belongs to a different device, so classify prefers
+	// this index whenever the file carries it. Empty for files written
+	// by older collectors, which keep the name-keyed behaviour.
+	topologyByPCI map[string][]string
+
 	// defaultRouteDevice is the IB device name (e.g., "mlx5_8") whose
 	// associated net interface carries the host's default IP route. If
 	// non-empty, classify() treats it as Management. Resolved once at
@@ -126,6 +134,8 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 		cachedCards: make(map[string]string),
 	}
 
+	c.topologyByPCI = buildPCIIndex(meta.NICTopology, meta.NICTopologyPCIAddresses)
+
 	c.populateGPUNUMASet(meta.GPUs)
 
 	if len(c.gpuNUMASet) == 0 {
@@ -146,6 +156,7 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 		"gpu_count", len(meta.GPUs),
 		"gpu_numa_nodes", formatIntSet(c.gpuNUMASet),
 		"nic_topology_entries", len(c.topology),
+		"nic_topology_pci_entries", len(c.topologyByPCI),
 		"default_route_device", c.defaultRouteDevice,
 	)
 
@@ -196,6 +207,48 @@ func (c *Classifier) populateGPUNUMASet(gpus []model.GPUInfo) {
 
 		c.gpuNUMASet[g.NUMANode] = struct{}{}
 	}
+}
+
+// buildPCIIndex inverts the file's name → PCI address map into a
+// PCI address → topology row index. Names with no row in the topology
+// matrix, and rows with no recorded address, do not appear in the
+// index; lookups for those devices keep the name-keyed behaviour.
+func buildPCIIndex(topology map[string][]string, pciAddresses map[string]string) map[string][]string {
+	byPCI := make(map[string][]string, len(pciAddresses))
+	for name, addr := range pciAddresses {
+		if levels, ok := topology[name]; ok {
+			byPCI[normalizePCIAddress(addr)] = levels
+		}
+	}
+
+	return byPCI
+}
+
+// normalizePCIAddress canonicalises a PCI address for comparison.
+// The collector and this monitor both read PCI_SLOT_NAME from the
+// same uevent file, but neither side depends on its exact casing.
+func normalizePCIAddress(addr string) string {
+	return strings.ToLower(strings.TrimSpace(addr))
+}
+
+// topologyLevelsFor returns the topology row for a device. When the
+// metadata file recorded PCI addresses for its rows, the row is
+// resolved through the device's own PCI address, so a rename after
+// collection cannot hand the device another device's row. The
+// name-keyed row is the fallback for files written by older
+// collectors, for devices the collector did not record, and for
+// sysfs read failures — in each case the behaviour is the one the
+// monitor had before PCI addresses were published.
+func (c *Classifier) topologyLevelsFor(device string) []string {
+	if len(c.topologyByPCI) > 0 {
+		if addr, err := c.reader.ReadPCIAddress(device); err == nil {
+			if levels, ok := c.topologyByPCI[normalizePCIAddress(addr)]; ok {
+				return levels
+			}
+		}
+	}
+
+	return c.topology[device]
 }
 
 // IsManagementNIC returns true when the device should be excluded from
@@ -272,7 +325,7 @@ func (c *Classifier) classify(device string) Role {
 
 	numaOnGPUSocket := c.nicOnGPUNUMA(device)
 
-	levels := c.topology[device]
+	levels := c.topologyLevelsFor(device)
 	hasCompute, hasStorage, allSYS := summarizeLevels(levels)
 
 	switch {

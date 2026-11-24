@@ -30,6 +30,17 @@ type GPUMetadata struct {
 	// level between GPUs[i] and "mlx5_0". Valid level strings are "X",
 	// "PIX", "PXB", "PHB", "NODE", "SYS", or "NV<n>" for NVLink bonds.
 	NICTopology map[string][]string `json:"nic_topology,omitempty"`
+
+	// NICTopologyPCIAddresses maps each NICTopology key (the IB device
+	// name at collection time) to the PCI address of the physical device
+	// that carried the name, in PCI_SLOT_NAME form (e.g., "0000:9a:00.0").
+	// IB device names are not stable: a device can be renamed after the
+	// collector runs (for example by a cloud agent's HPC plugin), and the
+	// old name then belongs to a different device. Consumers that read
+	// the file after such a rename must resolve rows through this map
+	// instead of trusting the name. The field is absent in files written
+	// by older collectors; consumers then fall back to the name keys.
+	NICTopologyPCIAddresses map[string]string `json:"nic_topology_pci_addresses,omitempty"`
 }
 
 type GPUInfo struct {
