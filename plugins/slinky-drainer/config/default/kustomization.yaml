@@ -9,6 +9,33 @@ resources:
 - ../manager
 - ../drain-template
 
+# The namespace where the Slinky workload pods run. To use a different
+# namespace, change sourceValue. The replacement sets the SLINKY_NAMESPACE
+# variable of the Deployment, which feeds the --slinky-namespace flag. It also
+# sets the namespace of the slinky-drainer-pods Role and RoleBinding, which the
+# namespace transformer above moves to nvsentinel. The flag and the pod
+# permissions therefore always use the same namespace. The namespace must exist
+# before you apply this kustomization. sourceValue needs kustomize v5.7.0 or
+# later, which kubectl v1.34 and later include.
+replacements:
+- sourceValue: slinky
+  targets:
+  - select:
+      kind: Deployment
+      name: slinky-drainer
+    fieldPaths:
+    - spec.template.spec.containers.[name=controller].env.[name=SLINKY_NAMESPACE].value
+  - select:
+      kind: Role
+      name: slinky-drainer-pods
+    fieldPaths:
+    - metadata.namespace
+  - select:
+      kind: RoleBinding
+      name: slinky-drainer-pods
+    fieldPaths:
+    - metadata.namespace
+
 labels:
 - includeSelectors: true
   pairs:
