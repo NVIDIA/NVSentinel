@@ -265,18 +265,23 @@ func normalizePCIAddress(addr string) string {
 // row — the BlueField DPU exclusion — which the rejected row's all-SYS
 // shape would have reached before the row was rejected.
 func (c *Classifier) topologyLevelsFor(device string) (levels []string, rowRejected bool) {
-	if len(c.topologyByPCI) > 0 {
-		if addr, err := c.reader.ReadPCIAddress(device); err == nil {
-			addr = normalizePCIAddress(addr)
+	if len(c.topologyByPCI) == 0 {
+		return c.topology[device], false
+	}
 
-			if levels, ok := c.topologyByPCI[addr]; ok {
-				return levels, false
-			}
+	addr, err := c.reader.ReadPCIAddress(device)
+	if err != nil {
+		return c.topology[device], false
+	}
 
-			if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
-				return nil, true
-			}
-		}
+	addr = normalizePCIAddress(addr)
+
+	if levels, ok := c.topologyByPCI[addr]; ok {
+		return levels, false
+	}
+
+	if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
+		return nil, true
 	}
 
 	return c.topology[device], false
@@ -367,21 +372,25 @@ func (c *Classifier) classify(device string) Role {
 	case allSYS:
 		return c.classifyNonCompute(device, numaOnGPUSocket, true)
 	default:
-		// A rejected stale row leaves no levels, but the BlueField
-		// exclusion is about the device, not its row: the all-SYS row
-		// this device lost would have reached it. Keep the exclusion
-		// for that case only — a device that never had a row keeps the
-		// NUMA default it has always had.
-		if rowRejected && numaOnGPUSocket && c.isBlueFieldDPU(device) {
-			return RoleManagement
-		}
+		return c.defaultRole(device, numaOnGPUSocket, rowRejected)
+	}
+}
 
-		if numaOnGPUSocket {
-			return RoleStorage
-		}
-
+// defaultRole handles the no-levels case: the NUMA default. A rejected
+// stale row still reaches the BlueField exclusion, because that check
+// is about the device, not its row — the all-SYS row this device lost
+// would have reached it. A device that never had a row keeps the NUMA
+// default it has always had.
+func (c *Classifier) defaultRole(device string, numaOnGPUSocket, rowRejected bool) Role {
+	if rowRejected && numaOnGPUSocket && c.isBlueFieldDPU(device) {
 		return RoleManagement
 	}
+
+	if numaOnGPUSocket {
+		return RoleStorage
+	}
+
+	return RoleManagement
 }
 
 // classifyNonCompute handles the shared logic for NICs that have NODE
