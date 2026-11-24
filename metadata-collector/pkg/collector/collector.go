@@ -44,7 +44,10 @@ type defaultNICTopoCollector struct {
 // while nvidia-smi runs. A rename moves every device name to another
 // device in well under a second, so one retry lands after it in
 // practice; the bound only guards against a name set that never
-// settles, where the last snapshot is published as best effort.
+// settles, where the matrix is published without PCI addresses —
+// pairing its rows with addresses from a snapshot taken while names
+// were still moving can bind a row to the wrong device for the life
+// of the file.
 const maxTopoCollectAttempts = 3
 
 func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
@@ -69,8 +72,10 @@ func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, 
 
 		if attempt >= maxTopoCollectAttempts {
 			slog.Warn("RDMA device names kept changing while nvidia-smi topo -m ran, "+
-				"publishing the last name-to-PCI-address snapshot as best effort",
+				"publishing the topology without PCI addresses",
 				"attempts", attempt)
+
+			matrix.NICPCIAddresses = nil
 
 			return matrix, nil
 		}
