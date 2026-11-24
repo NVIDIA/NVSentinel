@@ -26,8 +26,8 @@ import (
 )
 
 // Health events retention deletes the health_events rows older than the retention, as the
-// MongoDB TTL index does for the HealthEvents collection. Like the TTL, it keys on the insert
-// time only: an event still in progress when it expires is deleted too.
+// MongoDB TTL index does for the HealthEvents collection, by insert time. Unlike the TTL, it
+// keeps the events node-drainer still has to drain, so a node-drainer restart can resume them.
 
 const healthEventsCleanupLockKey int64 = 2026112401
 
@@ -48,16 +48,30 @@ const healthEventsCleanupPrerequisitesQuery = `SELECT
  WHERE i.indexrelid = to_regclass('idx_changelog_table_record')
  AND i.indrelid = to_regclass('datastore_changelog') AND i.indisvalid)`
 
-// A batch picks its rows from idx_health_events_created_id and deletes them by primary key, so
-// it reads only its own rows however large the expired backlog is. A join on the candidates
-// lets the planner hash every expired row for each batch.
+// healthEventsStillToDrain matches the events node-drainer's cold start requeues: a drain in
+// progress, or a quarantined event whose drain has not started. A quarantined event with no drain
+// status counts as not started. Older documents spell the keys nodeQuarantined and Status. Every
+// COALESCE falls back to an empty string, so the condition is never NULL.
+const healthEventsStillToDrain = `(COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
+  document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') = 'InProgress'
+ OR (COALESCE(document->'healtheventstatus'->>'nodequarantined',
+   document->'healtheventstatus'->>'nodeQuarantined', '') IN ('Quarantined', 'AlreadyQuarantined')
+  AND COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
+   document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') IN ('', 'NotStarted')))`
+
+// A batch picks its rows from idx_health_events_created_id, after the position the previous batch
+// of the run reached, and deletes them by primary key. It reads only its own rows and the kept
+// rows it passes, however large the expired backlog is, and a run passes each kept row once. A
+// join on the candidates lets the planner hash every expired row for each batch. The outer
+// condition is checked again against a row a concurrent writer updates.
 const healthEventsDeleteQuery = `DELETE FROM health_events
 WHERE id = ANY (ARRAY(
  SELECT id FROM health_events
- WHERE created_at < $1
+ WHERE created_at < $1 AND (created_at, id) > ($3, $4::uuid)
+ AND NOT ` + healthEventsStillToDrain + `
  ORDER BY created_at, id LIMIT $2
-))
-RETURNING id::text`
+)) AND NOT ` + healthEventsStillToDrain + `
+RETURNING id::text, created_at`
 
 // The health_events trigger logs every delete to the changelog with a copy of the row. No
 // consumer acts on a delete, and nothing cleans the changelog yet (#2170), so keeping those
@@ -228,15 +242,31 @@ func (c *healthEventsCleaner) run(ctx context.Context) (int64, error) {
 	return total, err
 }
 
+// healthEventsPosition is a (created_at, id) position in the order the batches walk.
+type healthEventsPosition struct {
+	createdAt time.Time
+	id        string
+}
+
+// healthEventsStart is before every event. The canonical text of a uuid sorts as PostgreSQL sorts
+// the uuid itself.
+var healthEventsStart = healthEventsPosition{id: "00000000-0000-0000-0000-000000000000"}
+
+func (p healthEventsPosition) before(other healthEventsPosition) bool {
+	return p.createdAt.Before(other.createdAt) || (p.createdAt.Equal(other.createdAt) && p.id < other.id)
+}
+
 func (c *healthEventsCleaner) deleteBatches(ctx context.Context, conn *sql.Conn, cutoff time.Time) (int64, error) {
 	var total int64
+
+	after := healthEventsStart
 
 	for range c.config.maxBatches {
 		if err := ctx.Err(); err != nil {
 			return total, fmt.Errorf("health events cleanup cancelled: %w", err)
 		}
 
-		deleted, err := c.deleteBatch(ctx, conn, cutoff)
+		deleted, reached, err := c.deleteBatch(ctx, conn, cutoff, after)
 		if err != nil {
 			return total, err
 		}
@@ -245,16 +275,21 @@ func (c *healthEventsCleaner) deleteBatches(ctx context.Context, conn *sql.Conn,
 		if deleted < int64(c.config.batchSize) {
 			return total, nil
 		}
+
+		after = reached
 	}
 
 	return total, nil
 }
 
-// deleteBatch deletes one batch of expired events and the changelog rows its deletes wrote.
-func (c *healthEventsCleaner) deleteBatch(ctx context.Context, conn *sql.Conn, cutoff time.Time) (int64, error) {
+// deleteBatch deletes one batch of expired events after the given position, and the changelog rows
+// its deletes wrote. It returns the position of the last event it deleted.
+func (c *healthEventsCleaner) deleteBatch(
+	ctx context.Context, conn *sql.Conn, cutoff time.Time, after healthEventsPosition,
+) (int64, healthEventsPosition, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin health events cleanup batch: %w", err)
+		return 0, after, fmt.Errorf("begin health events cleanup batch: %w", err)
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
@@ -262,46 +297,54 @@ func (c *healthEventsCleaner) deleteBatch(ctx context.Context, conn *sql.Conn, c
 		}
 	}()
 
-	ids, err := deleteExpiredHealthEvents(ctx, tx, cutoff, c.config.batchSize)
+	ids, reached, err := deleteExpiredHealthEvents(ctx, tx, cutoff, c.config.batchSize, after)
 	if err != nil {
-		return 0, err
+		return 0, after, err
 	}
 
 	if len(ids) == 0 {
-		return 0, nil
+		return 0, after, nil
 	}
 
 	if _, err := tx.ExecContext(ctx, healthEventsDeleteChangesQuery, pq.Array(ids)); err != nil {
-		return 0, fmt.Errorf("delete changelog rows of expired health events: %w", err)
+		return 0, after, fmt.Errorf("delete changelog rows of expired health events: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit health events cleanup batch: %w", err)
+		return 0, after, fmt.Errorf("commit health events cleanup batch: %w", err)
 	}
 
-	return int64(len(ids)), nil
+	return int64(len(ids)), reached, nil
 }
 
-func deleteExpiredHealthEvents(ctx context.Context, tx *sql.Tx, cutoff time.Time, limit int) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, healthEventsDeleteQuery, cutoff, limit)
+func deleteExpiredHealthEvents(
+	ctx context.Context, tx *sql.Tx, cutoff time.Time, limit int, after healthEventsPosition,
+) ([]string, healthEventsPosition, error) {
+	rows, err := tx.QueryContext(ctx, healthEventsDeleteQuery, cutoff, limit, after.createdAt, after.id)
 	if err != nil {
-		return nil, fmt.Errorf("delete expired health events: %w", err)
+		return nil, after, fmt.Errorf("delete expired health events: %w", err)
 	}
 
 	var ids []string
 
+	reached := after
+
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan expired health event id: %w", errors.Join(err, rows.Close()))
+		var deleted healthEventsPosition
+		if err := rows.Scan(&deleted.id, &deleted.createdAt); err != nil {
+			return nil, after, fmt.Errorf("scan expired health event: %w", errors.Join(err, rows.Close()))
 		}
 
-		ids = append(ids, id)
+		ids = append(ids, deleted.id)
+
+		if reached.before(deleted) {
+			reached = deleted
+		}
 	}
 
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("finish deleting expired health events: %w", err)
+		return nil, after, fmt.Errorf("finish deleting expired health events: %w", err)
 	}
 
-	return ids, nil
+	return ids, reached, nil
 }

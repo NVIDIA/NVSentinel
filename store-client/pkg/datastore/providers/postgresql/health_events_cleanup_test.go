@@ -17,7 +17,9 @@ package postgresql
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,22 +114,34 @@ func expectEventsCleanupUnlock(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"released"}).AddRow(true))
 }
 
-// expectEventsBatch expects one batch that deletes the given events and then their changelog rows.
-func expectEventsBatch(t *testing.T, mock sqlmock.Sqlmock, ids ...string) {
+// expectEventsBatch expects one batch that starts after the given position and deletes the events
+// at the given seconds after eventsCleanupTestNow-60d, with ids e<seconds>, and then their changelog
+// rows. It returns the position of the last event, where the next batch starts.
+func expectEventsBatch(t *testing.T, mock sqlmock.Sqlmock, after healthEventsPosition, seconds ...int) healthEventsPosition {
 	t.Helper()
 	mock.ExpectBegin()
 
-	rows := sqlmock.NewRows([]string{"id"})
-	for _, id := range ids {
-		rows.AddRow(id)
+	base := eventsCleanupTestNow.Add(-60 * 24 * time.Hour)
+	rows := sqlmock.NewRows([]string{"id", "created_at"})
+	ids := make([]string, 0, len(seconds))
+	reached := after
+
+	for _, second := range seconds {
+		event := healthEventsPosition{createdAt: base.Add(time.Duration(second) * time.Second), id: fmt.Sprintf("e%03d", second)}
+		rows.AddRow(event.id, event.createdAt)
+		ids = append(ids, event.id)
+
+		if reached.before(event) {
+			reached = event
+		}
 	}
 
 	mock.ExpectQuery(regexp.QuoteMeta(healthEventsDeleteQuery)).
-		WithArgs(eventsCleanupTestNow.Add(-720*time.Hour), 2).WillReturnRows(rows)
+		WithArgs(eventsCleanupTestNow.Add(-720*time.Hour), 2, after.createdAt, after.id).WillReturnRows(rows)
 
 	if len(ids) == 0 {
 		mock.ExpectRollback()
-		return
+		return after
 	}
 
 	encoded, err := pq.Array(ids).Value()
@@ -135,6 +149,8 @@ func expectEventsBatch(t *testing.T, mock sqlmock.Sqlmock, ids ...string) {
 	mock.ExpectExec(regexp.QuoteMeta(healthEventsDeleteChangesQuery)).WithArgs(encoded).
 		WillReturnResult(sqlmock.NewResult(0, int64(len(ids))))
 	mock.ExpectCommit()
+
+	return reached
 }
 
 func TestHealthEventsCleaner_Prerequisites_NoDelete(t *testing.T) {
@@ -174,21 +190,25 @@ func TestHealthEventsCleaner_Prerequisites_NoDelete(t *testing.T) {
 	}
 }
 
-func TestHealthEventsCleaner_Batches_StopOnShortBatchOrLimit(t *testing.T) {
-	for name, batches := range map[string][][]string{
+// The batches of a run continue from the last event the previous batch deleted, so a run passes
+// each kept event once. A batch's rows come back in no particular order.
+func TestHealthEventsCleaner_Batches_ContinueAfterTheLastEventAndStopOnShortBatchOrLimit(t *testing.T) {
+	for name, batches := range map[string][][]int{
 		"nothing expired":    {{}},
-		"one short batch":    {{"a"}},
-		"full then short":    {{"a", "b"}, {"c"}},
-		"stops at the limit": {{"a", "b"}, {"c", "d"}, {"e", "f"}},
+		"one short batch":    {{1}},
+		"full then short":    {{2, 1}, {5}},
+		"stops at the limit": {{1, 2}, {4, 3}, {9, 6}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, mock := newEventsCleanupTest(t)
 			expectEventsCleanupStart(mock, true)
 
 			var want int64
-			for _, ids := range batches {
-				expectEventsBatch(t, mock, ids...)
-				want += int64(len(ids))
+
+			after := healthEventsStart
+			for _, seconds := range batches {
+				after = expectEventsBatch(t, mock, after, seconds...)
+				want += int64(len(seconds))
 			}
 
 			expectEventsCleanupUnlock(mock)
@@ -215,9 +235,11 @@ func TestHealthEventsCleaner_TransactionErrors_RollbackAndEndRun(t *testing.T) {
 				case "event delete":
 					del.WillReturnError(sql.ErrConnDone)
 				case "rows":
-					del.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("a").RowError(0, sql.ErrConnDone))
+					del.WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+						AddRow("a", eventsCleanupTestNow).RowError(0, sql.ErrConnDone))
 				default:
-					del.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("a").AddRow("b"))
+					del.WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+						AddRow("a", eventsCleanupTestNow).AddRow("b", eventsCleanupTestNow))
 					changes := mock.ExpectExec(regexp.QuoteMeta(healthEventsDeleteChangesQuery))
 					if phase == "changelog delete" {
 						changes.WillReturnError(sql.ErrConnDone)
@@ -252,6 +274,18 @@ func TestHealthEventsCleaner_Cancellation_StopsBeforeBatch(t *testing.T) {
 	require.Zero(t, n)
 }
 
+func TestHealthEventsPosition_OrdersByInsertTimeThenID(t *testing.T) {
+	earlier := healthEventsPosition{createdAt: eventsCleanupTestNow, id: "ffffffff-0000-0000-0000-000000000000"}
+	later := healthEventsPosition{createdAt: eventsCleanupTestNow.Add(time.Microsecond), id: "00000000-0000-0000-0000-000000000001"}
+	sameTime := healthEventsPosition{createdAt: eventsCleanupTestNow, id: "ffffffff-0000-0000-0000-000000000001"}
+
+	require.True(t, healthEventsStart.before(earlier))
+	require.True(t, earlier.before(later))
+	require.True(t, earlier.before(sameTime))
+	require.False(t, sameTime.before(earlier))
+	require.False(t, earlier.before(earlier))
+}
+
 func mustConn(t *testing.T, db *sql.DB) *sql.Conn {
 	t.Helper()
 	conn, err := db.Conn(t.Context())
@@ -263,8 +297,11 @@ func mustConn(t *testing.T, db *sql.DB) *sql.Conn {
 
 func TestHealthEventsCleaner_DeleteSQL_ExpiresByInsertTimeAndDropsOwnChanges(t *testing.T) {
 	require.Contains(t, healthEventsDeleteQuery, "WHERE id = ANY (ARRAY(")
-	require.Contains(t, healthEventsDeleteQuery, "WHERE created_at < $1")
+	require.Contains(t, healthEventsDeleteQuery, "WHERE created_at < $1 AND (created_at, id) > ($3, $4::uuid)")
 	require.Contains(t, healthEventsDeleteQuery, "ORDER BY created_at, id LIMIT $2")
+	// Inside the candidates and again on the row deleted, as a concurrent writer may update it.
+	require.Equal(t, 2, strings.Count(healthEventsDeleteQuery, "AND NOT "+healthEventsStillToDrain))
+	require.NotContains(t, healthEventsStillToDrain, "= NULL")
 	require.Contains(t, healthEventsDeleteChangesQuery, "table_name = 'health_events'")
 	require.Contains(t, healthEventsDeleteChangesQuery, "operation = 'DELETE'")
 	require.Contains(t, healthEventsDeleteChangesQuery, "record_id = ANY($1::uuid[])")

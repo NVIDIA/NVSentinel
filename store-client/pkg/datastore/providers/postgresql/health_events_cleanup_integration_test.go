@@ -204,3 +204,84 @@ func TestHealthEventsCleaner_Integration_DeletesExpiredEventsAndOwnChanges(t *te
 	require.NoError(t, err)
 	require.Equal(t, int64(1), n)
 }
+
+// Events node-drainer still has to drain stay however old they are, in both key spellings, and a
+// run deletes past them in order: batches continue after the last event they deleted.
+func TestHealthEventsCleaner_Integration_KeepsEventsStillToDrain(t *testing.T) {
+	dsn := os.Getenv("NVSENTINEL_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set NVSENTINEL_TEST_POSTGRES_DSN to run PostgreSQL retention tests")
+	}
+
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		var err error
+		dsn, err = pq.ParseURL(dsn)
+		require.NoError(t, err)
+	}
+
+	admin, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	defer admin.Close()
+
+	schema := fmt.Sprintf("events_kept_%d", time.Now().UnixNano())
+	_, err = admin.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema))
+	require.NoError(t, err)
+
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := admin.ExecContext(cleanupCtx, "DROP SCHEMA "+pq.QuoteIdentifier(schema)+" CASCADE")
+		require.NoError(t, err)
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("postgres", dsn+" search_path="+schema+",public")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, createTables(ctx, db))
+
+	// Oldest first, so kept events sit ahead of and between the expired ones.
+	for i, event := range []struct{ node, document string }{
+		{"keep-in-progress", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"InProgress"}}}`},
+		{"delete-drained", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"Succeeded"}}}`},
+		{"keep-quarantined-not-started", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":""}}}`},
+		{"keep-legacy-keys", `{"healtheventstatus":{"nodeQuarantined":"AlreadyQuarantined","userpodsevictionstatus":{"Status":"NotStarted"}}}`},
+		{"keep-no-drain-status", `{"healtheventstatus":{"nodequarantined":"AlreadyQuarantined"}}`},
+		{"delete-never-quarantined", `{"healtheventstatus":{"userpodsevictionstatus":{"status":"NotStarted"}}}`},
+		{"delete-no-status", `{}`},
+		{"delete-cancelled", `{"healtheventstatus":{"nodequarantined":"AlreadyQuarantined","userpodsevictionstatus":{"status":"Cancelled"}}}`},
+	} {
+		_, err := db.ExecContext(ctx, `INSERT INTO health_events (node_name, document, created_at)
+ VALUES ($1, $2::jsonb, clock_timestamp() - interval '40 days' + make_interval(secs => $3))`, event.node, event.document, i)
+		require.NoError(t, err)
+	}
+
+	_, err = db.ExecContext(ctx, `INSERT INTO health_events (node_name, document) VALUES ('keep-fresh', '{}'::jsonb)`)
+	require.NoError(t, err)
+
+	cleaner := &healthEventsCleaner{db: db, config: healthEventsCleanupConfig{720 * time.Hour, time.Hour, 2, 10}}
+
+	n, err := cleaner.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), n, "two full batches of 2, then an empty one")
+
+	rows, err := db.QueryContext(ctx, `SELECT node_name FROM health_events ORDER BY created_at`)
+	require.NoError(t, err)
+
+	var kept []string
+
+	for rows.Next() {
+		var node string
+		require.NoError(t, rows.Scan(&node))
+		kept = append(kept, node)
+	}
+
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	require.Equal(t, []string{
+		"keep-in-progress", "keep-quarantined-not-started", "keep-legacy-keys", "keep-no-drain-status", "keep-fresh",
+	}, kept)
+}
