@@ -103,7 +103,7 @@ Checkpoint: about T+25m after generator completion
 ```
 
 | Variant               | Draining | Quarantined | Queue depth | Result                                            |
-|-----------------------|--:-------|--:----------|--:----------|---------------------------------------------------|
+|-----------------------|---------:|------------:|------------:|---------------------------------------------------|
 | Baseline              | 5/50     | 45/50       | 49,970     | Reproduces delayed drain start                    |
 | Priority queue        | 21/50    | 29/50       | 20,172      | Best `Quarantined -> draining` progress           |
 | Coalescing            | 16/50    | 30/50       | 31,125      | Reduces duplicate cost, but slower than priority  |

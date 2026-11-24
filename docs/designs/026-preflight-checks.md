@@ -533,8 +533,7 @@ Controller only touches ConfigMaps with `preflight-` prefix (enforced by code).
 
 For pods using Dynamic Resource Allocation (DRA), the webhook copies resource claim references to the init container.
 
-**Device claim detection:**
-Webhook checks pod's `spec.resourceClaims`, retrieves each ResourceClaim or ResourceClaimTemplate, and matches `deviceClassName` against configured lists for GPUs and network devices:
+**Device claim detection:** Webhook checks pod's `spec.resourceClaims`, retrieves each ResourceClaim or ResourceClaimTemplate, and matches `deviceClassName` against configured lists for GPUs and network devices:
 
 ```yaml
 # Helm values
@@ -601,14 +600,12 @@ NCCL tests require access to RDMA/InfiniBand devices for efficient GPU-to-GPU co
    - Network devices can also be exposed via DRA claims (DeviceClass names are cluster-specific)
    - Webhook matches claim `deviceClassName` against `networkDetection.deviceClasses`
 
-**Webhook behavior for NCCL checks:**
-If `nccl-loopback` or `nccl-allreduce` is enabled, webhook:
+**Webhook behavior for NCCL checks:** If `nccl-loopback` or `nccl-allreduce` is enabled, webhook:
 1. Copies all network device resources (extended resources using max count, or DRA claim references)
 2. For checks with `inheritUserEnv: true`, scans workload env vars and copies names matching `ncclEnvPatterns` (glob patterns from Helm config)
 3. For checks with `inheritUserVolumeMounts: true`, copies workload volume mounts matching `volumeMountPatterns`
 
-**NCCL topology file handling:**
-The init container image includes common topology files for major cloud platforms:
+**NCCL topology file handling:** The init container image includes common topology files for major cloud platforms:
 ```
 /opt/nvsentinel/nccl-topologies/
 ├── azure-ndv4.xml
