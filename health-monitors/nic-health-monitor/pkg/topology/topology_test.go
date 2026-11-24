@@ -877,6 +877,61 @@ func TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded(t *testing.T) {
 	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
 }
 
+// TestRoleOf_DeviceRenamedAfterCaching_ReclassifiesFromPCIAddress
+// covers the runtime half of issue #2521: in the other rename tests
+// the rename had already happened when the monitor started, so the
+// first classification was fresh. Here both devices are classified
+// and cached under their boot-time names first, and the names swap
+// while the monitor runs. RoleOf must not serve the role cached under
+// a name for the device that now holds it — each name classifies
+// again from the row of the PCI address behind it, as at startup.
+func TestRoleOf_DeviceRenamedAfterCaching_ReclassifiesFromPCIAddress(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	nicNUMA := map[string]int{"mlx5_7": 0, "mlx5_10": 1}
+	pciAddr := map[string]string{"mlx5_7": "0000:41:00.0", "mlx5_10": "0000:9a:00.0"}
+
+	reader := readerForTest(nicNUMA, pciAddr)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// Prime the cache under the boot-time names.
+	require.Equal(t, RoleCompute, c.RoleOf("mlx5_7"))
+	require.Equal(t, RoleStorage, c.RoleOf("mlx5_10"))
+
+	// The rename lands while the monitor runs: the two devices swap
+	// names, NUMA nodes included — sysfs answers by current name.
+	nicNUMA["mlx5_7"], nicNUMA["mlx5_10"] = 1, 0
+	pciAddr["mlx5_7"], pciAddr["mlx5_10"] = "0000:9a:00.0", "0000:41:00.0"
+
+	// mlx5_7 now names the NODE device and mlx5_10 the PXB device.
+	// The roles cached under the names belong to the other device and
+	// must not be served.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_10"))
+
+	// The fresh roles are cached under the new addresses: a repeat
+	// lookup with no further rename returns the same roles.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_10"))
+}
+
 // TestClassify_BlueFieldWithoutRowExcluded covers the rowless side of
 // the rejected-row exclusion: a BlueField DPU that never had a row in
 // the file is excluded just like one whose stale row was rejected.
