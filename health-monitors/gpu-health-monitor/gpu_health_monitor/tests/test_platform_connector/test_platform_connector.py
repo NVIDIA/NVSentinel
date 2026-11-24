@@ -315,6 +315,66 @@ class TestPlatformConnectors(unittest.TestCase):
                 finally:
                     os.unlink(temp_file_path)
 
+    def test_nvswitch_fault_published_while_opted_in_clears_only_when_opted_in(self) -> None:
+        """The clearing event after a restart uses the flag in force at that time.
+
+        Documents the recovery path for a flag set back to true while an
+        NVSwitch fault is active: only a restart with the flag false again emits
+        a clearing event that downstream components act on.
+        """
+        temp_file_path = metadata_file()
+
+        def run(nvswitch_store_only: bool, status, codes) -> list[platformconnector_pb2.HealthEvent]:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                config=platform_connector.PlatformConnectorConfig(
+                    socket_path=socket_path,
+                    node_name=node_name,
+                    dcgm_errors_info_dict={"SWITCH_ERROR": "CONTACT_SUPPORT"},
+                    state_file_path="statefile",
+                    metadata_path=temp_file_path,
+                    processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                    nvswitch_store_only=nvswitch_store_only,
+                ),
+                exit=Event(),
+            )
+            published: list[platformconnector_pb2.HealthEvent] = []
+
+            def capture_events(
+                events: list[platformconnector_pb2.HealthEvent],
+                delivery_timeout_seconds: float | None = None,
+            ) -> bool:
+                published.extend(events)
+                return True
+
+            processor.send_health_event_with_retries = capture_events
+            failures = [dcgmtypes.ErrorDetails(code=code, message=code) for code in codes]
+            processor.health_event_occurred(
+                {
+                    "DCGM_HEALTH_WATCH_PCIE": dcgmtypes.HealthDetails(
+                        status=status,
+                        entity_failures={(dcgm_fields.DCGM_FE_SWITCH, 0): failures} if failures else {},
+                    )
+                },
+                [],
+                [0],
+            )
+            return [event for event in published if event.componentClass == "NVSWITCH"]
+
+        try:
+            (fault,) = run(False, dcgmtypes.HealthStatus.FAIL, ["SWITCH_ERROR"])
+            assert not fault.isHealthy
+            assert fault.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+            (skipped_clear,) = run(True, dcgmtypes.HealthStatus.PASS, [])
+            assert skipped_clear.isHealthy
+            assert skipped_clear.processingStrategy == platformconnector_pb2.STORE_ONLY
+
+            (clear,) = run(False, dcgmtypes.HealthStatus.PASS, [])
+            assert clear.isHealthy
+            assert clear.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+        finally:
+            os.unlink(temp_file_path)
+
     def test_health_event_preserves_nvswitch_identity_and_recovery(self) -> None:
         temp_file_path = metadata_file()
         processor = platform_connector.PlatformConnectorEventProcessor(

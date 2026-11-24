@@ -24,12 +24,20 @@ tests:
           path: data["config.ini"]
           pattern: "(?s)\\[dcgm\\].*ProbeStoreOnly = true\\n.*NvswitchStoreOnly = true\\n"
 
-  - it: renders both flags when turned off
+  - it: renders probeStoreOnly on its own
     set:
       global.platformConnectorAuth.enabled: false
       dcgm.probeStoreOnly: false
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "(?s)\\[dcgm\\].*ProbeStoreOnly = false\\n.*NvswitchStoreOnly = true\\n"
+
+  - it: renders nvswitchStoreOnly on its own
+    set:
+      global.platformConnectorAuth.enabled: false
       dcgm.nvswitchStoreOnly: false
     asserts:
       - matchRegex:
           path: data["config.ini"]
-          pattern: "(?s)\\[dcgm\\].*ProbeStoreOnly = false\\n.*NvswitchStoreOnly = false\\n"
+          pattern: "(?s)\\[dcgm\\].*ProbeStoreOnly = true\\n.*NvswitchStoreOnly = false\\n"

@@ -496,6 +496,8 @@ When you set it to `false`, NVSwitch health events use the same processing strat
 
 A fatal NVSwitch health event then sets the node condition of its check, as a GPU health event does. The default fault-quarantine rules for the GPU Health Monitor match only `componentClass == 'GPU'`, so they do not cordon a node for an NVSwitch health event. To quarantine on NVSwitch faults, add a rule that matches `componentClass == 'NVSWITCH'`.
 
+Set it back to `true` only when no NVSwitch fault is active. Platform connectors and fault quarantine skip `STORE_ONLY` health events. Thus, a `STORE_ONLY` clearing event does not clear a node condition or a quarantine that an earlier NVSwitch fault created. If you set it back while a fault was active, set it to `false` again. The configuration change restarts the GPU Health Monitor, and the first poll that finds the NVSwitch healthy emits a clearing event that uses the configured strategy. Then set it to `true`.
+
 On NVL72 systems, the NVSwitches are in separate switch trays, and DCGM on a compute node enumerates none. This setting has no effect there.
 
 ### probeDeadlineSeconds
