@@ -22,7 +22,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -58,8 +57,10 @@ func drainCoversAction(decision *protos.DrainDecision, groupConfig *common.Equiv
 
 // tryRejectUncoveredEvent returns (result, err, true) when the event's partial drain does not cover its
 // action. The event is retried with ErrDrainDoesNotCoverAction and gets no CR and no decision, so a fix to
-// the configuration lets it continue. If the node was deleted, no fix can help, so the event is closed like
-// the other events of a deleted node. Otherwise it returns (zero, nil, false).
+// the configuration lets it continue while the quarantine holds the event. Once the node is deleted, or its
+// quarantine no longer holds the event, the event is closed without remediation, so that a later fix does
+// not create a CR for a node that is back in service. A CR of the same equivalence group that already covers
+// the event holds or closes it instead. Otherwise it returns (zero, nil, false).
 func (r *FaultRemediationReconciler) tryRejectUncoveredEvent(
 	ctx context.Context,
 	span oteltrace.Span,
@@ -75,10 +76,32 @@ func (r *FaultRemediationReconciler) tryRejectUncoveredEvent(
 
 	nodeName := healthEventWithStatus.HealthEvent.GetNodeName()
 
-	if _, _, err := r.annotationManager.GetRemediationState(ctx, nodeName); apierrors.IsNotFound(err) {
-		slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
+	// A deleted node has no active quarantine.
+	active, err := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to check the quarantine of node %s: %w", nodeName, err), true
+	}
+
+	if !active {
+		slog.WarnContext(ctx, "Quarantine no longer holds the event, closing it without remediation",
+			"node", nodeName, "event", healthEventWithStatus.ID)
 
 		res, err := r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+
+		return res, err, true
+	}
+
+	// A CR of the event's equivalence group may already cover it, for example a reboot that another event of the
+	// session started. That CR holds or closes the event, as for any other event. No CR is created here.
+	decision, err := r.checkExistingCRStatus(ctx, healthEventWithStatus.HealthEvent, healthEventWithStatus.CreatedAt,
+		groupConfig)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err), true
+	}
+
+	if !decision.shouldCreate {
+		res, err := r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
+			nodeName)
 
 		return res, err, true
 	}

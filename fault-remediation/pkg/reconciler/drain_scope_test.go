@@ -16,16 +16,22 @@ package reconciler
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -98,8 +104,86 @@ func componentResetDoc(eventID, nodeName, gpu string, decision *protos.DrainDeci
 	}
 }
 
-// A partial drain followed by an action it does not cover must not create a CR. The event stays
-// unprocessed and has no remediation decision, so the retry evaluates it again.
+// activeNodeReader returns the node with a quarantine annotation that holds the event.
+func activeNodeReader(t *testing.T, doc *events.HealthEventDoc) *MockNodeReader {
+	t.Helper()
+
+	return newMockNodeReader(quarantineAnnotationForTest(t, doc.HealthEvent))
+}
+
+// mismatchFixture builds a reconciler and store for an event whose partial drain of GPU-1 does not cover its
+// action. It counts created CRs and records the status writes.
+type mismatchFixture struct {
+	r           *FaultRemediationReconciler
+	client      *MockK8sClient
+	nodeReader  *MockNodeReader
+	store       *MockHealthEventStore
+	watcher     *MockChangeStreamWatcher
+	doc         *events.HealthEventDoc
+	token       datastore.EventWithToken
+	createCalls int
+	decisions   int
+	terminal    bool
+}
+
+func newMismatchFixture(t *testing.T, nodeName, gpu string, cfg *config.TomlConfig,
+	annotations *MockNodeAnnotationManager) *mismatchFixture {
+	t.Helper()
+
+	f := &mismatchFixture{
+		watcher: &MockChangeStreamWatcher{},
+		doc:     componentResetDoc("mismatch-event", nodeName, gpu, partialDrain("GPU-1")),
+		token: datastore.EventWithToken{
+			Event:       testRawHealthEvent("mismatch-event", nodeName, protos.RecommendedAction_COMPONENT_RESET),
+			ResumeToken: []byte("resume-token"),
+		},
+	}
+	f.client = &MockK8sClient{
+		configOverride:            cfg,
+		annotationManagerOverride: annotations,
+		createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+			*common.EquivalenceGroupConfig) (string, error) {
+			f.createCalls++
+			return "test-cr", nil
+		},
+	}
+	f.store = &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, _ string, status datastore.HealthEventStatus) error {
+			if status.RemediationDecision != nil {
+				f.decisions++
+			}
+			if status.FaultRemediated != nil && !*status.FaultRemediated {
+				f.terminal = true
+			}
+			return nil
+		},
+	}
+	f.nodeReader = activeNodeReader(t, f.doc)
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(context.Context, string, statemanager.NVSentinelStateLabelValue,
+			bool) (bool, error) {
+			return true, nil
+		},
+	}
+	f.r = NewFaultRemediationReconciler(nil, nil, nil,
+		ReconcilerConfig{RemediationClient: f.client, NodeReader: f.nodeReader, StateManager: stateManager}, false)
+
+	return f
+}
+
+func (f *mismatchFixture) handle(t *testing.T) (ctrl.Result, error) {
+	t.Helper()
+
+	return f.r.handleRemediationEvent(context.Background(), f.doc, f.token, f.watcher, f.store)
+}
+
+func (f *mismatchFixture) markProcessedCount() int {
+	_, count, _, _ := f.watcher.GetCallCounts()
+	return count
+}
+
+// A partial drain followed by an action it does not cover must not create a CR. While the quarantine holds the
+// event, the event stays unprocessed and has no remediation decision, so the retry evaluates it again.
 func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_RetriesWithoutCR(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -114,95 +198,128 @@ func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_RetriesWithoutCR(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nodeName := "scope-mismatch-node-" + tt.gpu
-			createCalls := 0
-			mockK8sClient := &MockK8sClient{
-				configOverride: tt.config,
-				// The node exists, so the event is retried.
-				annotationManagerOverride: &MockNodeAnnotationManager{},
-				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
-					*common.EquivalenceGroupConfig) (string, error) {
-					createCalls++
-					return "test-cr", nil
-				},
-			}
-			r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: mockK8sClient}, false)
-
-			writes := 0
-			mockStore := &MockHealthEventStore{
-				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
-					writes++
-					return nil
-				},
-			}
-			mockWatcher := &MockChangeStreamWatcher{}
-			doc := componentResetDoc("mismatch-event", nodeName, tt.gpu, partialDrain("GPU-1"))
-			eventWithToken := datastore.EventWithToken{
-				Event:       testRawHealthEvent("mismatch-event", nodeName, protos.RecommendedAction_COMPONENT_RESET),
-				ResumeToken: []byte("resume-token"),
-			}
+			f := newMismatchFixture(t, nodeName, tt.gpu, tt.config, &MockNodeAnnotationManager{})
 			before := getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName)
 
 			for range 2 {
-				_, err := r.handleRemediationEvent(context.Background(), doc, eventWithToken, mockWatcher, mockStore)
+				_, err := f.handle(t)
 				require.ErrorIs(t, err, ErrDrainDoesNotCoverAction)
 			}
 
-			assert.Zero(t, createCalls, "no CR may be created")
-			assert.Zero(t, writes, "no remediation decision or status may be written")
-			assert.Nil(t, doc.HealthEventStatus.GetRemediationDecision())
-			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
-			assert.Zero(t, markProcessedCount, "the event must stay unprocessed so that it is retried")
+			assert.Zero(t, f.createCalls, "no CR may be created")
+			assert.Zero(t, f.decisions, "no remediation decision may be recorded")
+			assert.False(t, f.terminal, "the event must not be closed")
+			assert.Nil(t, f.doc.HealthEventStatus.GetRemediationDecision())
+			assert.Zero(t, f.markProcessedCount(), "the event must stay unprocessed so that it is retried")
 			assert.Equal(t, before+2, getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName))
 		})
 	}
 }
 
-// A mismatched event on a deleted node cannot continue after a configuration fix, so it is closed like the
-// other events of a deleted node instead of being retried. It still gets no CR and no remediation decision.
-func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_DeletedNodeClosesEvent(t *testing.T) {
-	nodeName := "scope-mismatch-deleted-node"
-	createCalls := 0
-	mockK8sClient := &MockK8sClient{
-		annotationManagerOverride: &MockNodeAnnotationManager{getRemediationStateErr: nodeNotFoundErr(nodeName)},
-		createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
-			*common.EquivalenceGroupConfig) (string, error) {
-			createCalls++
-			return "test-cr", nil
-		},
-	}
-	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{RemediationClient: mockK8sClient}, false)
-
-	decisionRecorded := false
-	terminalWritten := false
-	mockStore := &MockHealthEventStore{
-		UpdateHealthEventStatusFn: func(_ context.Context, _ string, status datastore.HealthEventStatus) error {
-			if status.RemediationDecision != nil {
-				decisionRecorded = true
-			}
-			if status.FaultRemediated != nil && !*status.FaultRemediated {
-				terminalWritten = true
-			}
-			return nil
-		},
-	}
-	mockWatcher := &MockChangeStreamWatcher{}
+// A fix to the configuration lets a retried event continue: once the action covers the partial drain, the next
+// pass records the decision and creates the CR.
+func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_ConfigFixCreatesCR(t *testing.T) {
+	nodeName := "scope-mismatch-config-fix"
 	// The mock's default config maps COMPONENT_RESET to an action on the full node.
-	doc := componentResetDoc("mismatch-event", nodeName, "GPU-1", partialDrain("GPU-1"))
-	eventWithToken := datastore.EventWithToken{
-		Event:       testRawHealthEvent("mismatch-event", nodeName, protos.RecommendedAction_COMPONENT_RESET),
-		ResumeToken: []byte("resume-token"),
-	}
-	before := getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName)
+	f := newMismatchFixture(t, nodeName, "GPU-1", nil, &MockNodeAnnotationManager{})
 
-	result, err := r.handleRemediationEvent(context.Background(), doc, eventWithToken, mockWatcher, mockStore)
+	for range 2 {
+		_, err := f.handle(t)
+		require.ErrorIs(t, err, ErrDrainDoesNotCoverAction)
+	}
+
+	require.Zero(t, f.createCalls)
+
+	f.client.configOverride = scopedResetConfig()
+
+	_, err := f.handle(t)
 	require.NoError(t, err)
-	assert.True(t, result.IsZero())
-	assert.Zero(t, createCalls, "no CR may be created")
-	assert.False(t, decisionRecorded, "no remediation decision may be recorded")
-	assert.True(t, terminalWritten, "expected faultRemediated=false to be written")
-	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
-	assert.Equal(t, 1, markProcessedCount, "expected resume token to be marked processed")
-	assert.Equal(t, before, getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName))
+	assert.Equal(t, 1, f.createCalls, "the fixed configuration must create the CR")
+	assert.Equal(t, 1, f.decisions, "the fixed configuration must record the decision")
+	assert.Equal(t, 1, f.markProcessedCount())
+}
+
+// No configuration fix can help a mismatched event once its node is deleted or its quarantine no longer holds
+// it, and a fix must not create a CR for a node that is back in service. So the event is closed without a CR
+// and without a remediation decision, like the other events of a finished session.
+func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_InactiveQuarantineClosesEvent(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodeReader func(nodeName string) *MockNodeReader
+	}{
+		{
+			name: "node deleted",
+			nodeReader: func(nodeName string) *MockNodeReader {
+				return &MockNodeReader{getFn: func(context.Context, ctrlclient.ObjectKey, ctrlclient.Object) error {
+					return nodeNotFoundErr(nodeName)
+				}}
+			},
+		},
+		{
+			name:       "quarantine ended",
+			nodeReader: func(string) *MockNodeReader { return newMockNodeReader(nil) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := "scope-mismatch-inactive-" + strings.ReplaceAll(tt.name, " ", "-")
+			f := newMismatchFixture(t, nodeName, "GPU-1", nil, &MockNodeAnnotationManager{})
+			before := getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName)
+
+			// The quarantine still holds the event on the first pass, so the event is retried.
+			_, err := f.handle(t)
+			require.ErrorIs(t, err, ErrDrainDoesNotCoverAction)
+
+			*f.nodeReader = *tt.nodeReader(nodeName)
+
+			result, err := f.handle(t)
+			require.NoError(t, err)
+			assert.True(t, result.IsZero())
+			assert.Zero(t, f.createCalls, "no CR may be created")
+			assert.Zero(t, f.decisions, "no remediation decision may be recorded")
+			assert.True(t, f.terminal, "expected faultRemediated=false to be written")
+			assert.Equal(t, 1, f.markProcessedCount(), "expected resume token to be marked processed")
+			assert.Equal(t, before+1, getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName))
+		})
+	}
+}
+
+// A CR of the event's equivalence group that already covers it holds or closes the mismatched event, as it does
+// for any event. No CR is created and no mismatch is counted.
+func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_CoveringCRHandlesEvent(t *testing.T) {
+	tests := []struct {
+		name          string
+		crState       crstatus.CRState
+		wantProcessed int
+		wantRequeue   bool
+	}{
+		{name: "covering CR in progress holds the event", crState: crstatus.CRStateInProgress, wantRequeue: true},
+		{name: "covering CR succeeded closes the event", crState: crstatus.CRStateSucceeded, wantProcessed: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := "scope-mismatch-covering-" + strings.ReplaceAll(tt.name, " ", "-")
+			// The mock's default config maps COMPONENT_RESET to the restart group on the full node. Another event
+			// of the session created the restart CR after this event.
+			f := newMismatchFixture(t, nodeName, "GPU-1", nil, &MockNodeAnnotationManager{
+				existingCRs:       map[string]string{"restart": "restart-cr"},
+				existingCRCreated: time.Now(),
+			})
+			f.client.mockStatusChecker = &mockStatusChecker{stateByCR: map[string]crstatus.CRState{"restart-cr": tt.crState}}
+			f.doc.CreatedAt = time.Now().Add(-time.Hour)
+			before := getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName)
+
+			result, err := f.handle(t)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRequeue, !result.IsZero())
+			assert.Zero(t, f.createCalls, "no CR may be created")
+			assert.Zero(t, f.decisions, "no remediation decision may be recorded")
+			assert.Equal(t, tt.wantProcessed, f.markProcessedCount())
+			assert.Equal(t, before, getCounterVecValue(t, metrics.ProcessingErrors, drainScopeMismatchError, nodeName))
+		})
+	}
 }
 
 // The check does not stop events that it covers. Each event reaches the CR check, which finds the node
