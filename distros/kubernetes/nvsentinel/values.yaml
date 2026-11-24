@@ -16,9 +16,15 @@ global:
   dryRun: false
   image:
     tag: "main"
+  # Shell image for the small init containers that fix file ownership and
+  # permissions: nic-health-monitor's state directory (chown -R as root with
+  # only CHOWN and a read-only root filesystem), the audit log directory
+  # (chown/chmod as root) and the PostgreSQL client certificate copy (sh, cp,
+  # chmod, ls as a non-root user). Any multi-arch image with a POSIX shell and
+  # those tools works; busybox applets are enough.
   initContainerImage:
-    repository: docker.io/bitnamilegacy/os-shell
-    tag: "12-debian-12-r30"
+    repository: public.ecr.aws/docker/library/alpine
+    tag: "3.24.4"
     pullPolicy: IfNotPresent
   metricsPort: 2112
   # IPv4 bind address for the GPU health monitor metrics server. Set to "::"
