@@ -83,3 +83,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 071 | [Configuration — Device Scope for Partial Drains and Scoped Remediation (proposed)](071-device-scope-from-configuration.md) |
 | 072 | [Architecture — Run the Pod Device Mapper Apart from NVIDIA Discovery (proposed)](072-pod-device-mapper-daemonset.md) |
 | 073 | [Fault Quarantine — Circuit Breaker Limits for Node Groups and Failure Domains (proposed)](073-fault-quarantine-breaker-node-groups.md) |
+| 076 | [Health Monitors — Integration with NVHV (proposed)](076-integration-with-nvhv.md) |

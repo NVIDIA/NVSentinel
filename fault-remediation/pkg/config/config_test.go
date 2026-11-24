@@ -21,6 +21,9 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 func TestTomlConfig_Validate(t *testing.T) {
@@ -40,12 +43,77 @@ func TestTomlConfig_Validate(t *testing.T) {
 		}
 	}
 
+	accelEntityTypes := modeltest.GPUEntityTypes()
+	accelEntityTypes["ACCEL_SERIAL"] = model.PartialRemediationEntityType{
+		Devices: []model.PartialRemediationDevice{{
+			Driver: "accel.example.com", DeviceClasses: []string{"accel.example.com"}, EntityValueAttribute: "serial",
+		}},
+		ScopedActions: []string{"accel-reset"},
+	}
+
 	tests := []struct {
 		name        string
 		config      TomlConfig
 		expectError bool
 		errorSubstr string
+		// noEntityTypes keeps PartialRemediationEntityTypes unset. Other cases get the chart default.
+		noEntityTypes bool
 	}{
+		{
+			name: "missing partialRemediationEntityTypes should be rejected",
+			config: TomlConfig{
+				Template:           Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{},
+			},
+			noEntityTypes: true,
+			expectError:   true,
+			errorSubstr:   "partialRemediationEntityTypes is missing",
+		},
+		{
+			name: "invalid partialRemediationEntityTypes should be rejected",
+			config: TomlConfig{
+				Template:           Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{},
+				PartialRemediationEntityTypes: model.PartialRemediationEntityTypes{
+					"ACCEL_SERIAL": {ScopedActions: []string{"accel-reset"}},
+				},
+			},
+			expectError: true,
+			errorSubstr: "invalid partialRemediationEntityTypes: entity type ACCEL_SERIAL",
+		},
+		{
+			name: "ImpactedEntityScope can name a configured entity type other than GPU_UUID",
+			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{
+					"accel-reset": {
+						TemplateFileName:    "template-a.yaml",
+						Scope:               "Cluster",
+						EquivalenceGroup:    "accel-reset",
+						ImpactedEntityScope: "ACCEL_SERIAL",
+					},
+				},
+				PartialRemediationEntityTypes: accelEntityTypes,
+			},
+			expectError: false,
+		},
+		{
+			name: "GPU_UUID scope is rejected when the entity type is not configured",
+			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
+				RemediationActions: map[string]MaintenanceResource{
+					"COMPONENT_RESET": {
+						TemplateFileName:    "template-a.yaml",
+						Scope:               "Cluster",
+						EquivalenceGroup:    "reset",
+						ImpactedEntityScope: "GPU_UUID",
+					},
+				},
+				PartialRemediationEntityTypes: model.PartialRemediationEntityTypes{},
+			},
+			expectError: true,
+			errorSubstr: "cannot use ImpactedEntityScope 'GPU_UUID': the entity type is not in partialRemediationEntityTypes",
+		},
 		{
 			name: "empty template mountPath should be rejected",
 			config: TomlConfig{
@@ -230,7 +298,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorSubstr: "does not support partial draining",
+			errorSubstr: "the entity type is not in partialRemediationEntityTypes",
 		},
 		{
 			name: "SupersedingEquivalenceGroup cannot have an ImpactedEntityScope",
@@ -328,6 +396,10 @@ func TestTomlConfig_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.PartialRemediationEntityTypes == nil && !tt.noEntityTypes {
+				tt.config.PartialRemediationEntityTypes = modeltest.GPUEntityTypes()
+			}
+
 			err := tt.config.Validate()
 
 			if tt.expectError {
