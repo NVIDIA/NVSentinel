@@ -259,23 +259,27 @@ func normalizePCIAddress(addr string) string {
 // row belongs to the device that used to hold it. Returning that row
 // would classify this device by another device's topology, and
 // RoleOf would cache the wrong role under the name. The lookup
-// reports no row instead, and classify uses the NUMA default.
-func (c *Classifier) topologyLevelsFor(device string) []string {
+// reports no row instead, and classify uses the NUMA default. The
+// second return value reports this rejection, so classify can still
+// apply the checks that are about the device itself rather than its
+// row — the BlueField DPU exclusion — which the rejected row's all-SYS
+// shape would have reached before the row was rejected.
+func (c *Classifier) topologyLevelsFor(device string) (levels []string, rowRejected bool) {
 	if len(c.topologyByPCI) > 0 {
 		if addr, err := c.reader.ReadPCIAddress(device); err == nil {
 			addr = normalizePCIAddress(addr)
 
 			if levels, ok := c.topologyByPCI[addr]; ok {
-				return levels
+				return levels, false
 			}
 
 			if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
-				return nil
+				return nil, true
 			}
 		}
 	}
 
-	return c.topology[device]
+	return c.topology[device], false
 }
 
 // IsManagementNIC returns true when the device should be excluded from
@@ -352,7 +356,7 @@ func (c *Classifier) classify(device string) Role {
 
 	numaOnGPUSocket := c.nicOnGPUNUMA(device)
 
-	levels := c.topologyLevelsFor(device)
+	levels, rowRejected := c.topologyLevelsFor(device)
 	hasCompute, hasStorage, allSYS := summarizeLevels(levels)
 
 	switch {
@@ -363,6 +367,15 @@ func (c *Classifier) classify(device string) Role {
 	case allSYS:
 		return c.classifyNonCompute(device, numaOnGPUSocket, true)
 	default:
+		// A rejected stale row leaves no levels, but the BlueField
+		// exclusion is about the device, not its row: the all-SYS row
+		// this device lost would have reached it. Keep the exclusion
+		// for that case only — a device that never had a row keeps the
+		// NUMA default it has always had.
+		if rowRejected && numaOnGPUSocket && c.isBlueFieldDPU(device) {
+			return RoleManagement
+		}
+
 		if numaOnGPUSocket {
 			return RoleStorage
 		}
