@@ -25,7 +25,9 @@ import (
 )
 
 type EquivalenceGroupConfig struct {
-	EffectiveEquivalenceGroup    string
+	EffectiveEquivalenceGroup string
+	// ImpactedEntityScope is the entity type that the action repairs, or empty for an action on the full node.
+	ImpactedEntityScope          string
 	ImpactedEntityScopeValue     string
 	SupersedingEquivalenceGroups []string
 }
@@ -95,6 +97,7 @@ func GetGroupConfigForEvent(remediationActions map[string]config.MaintenanceReso
 
 	return &EquivalenceGroupConfig{
 		EffectiveEquivalenceGroup:    equivalenceGroupName,
+		ImpactedEntityScope:          actionConfig.ImpactedEntityScope,
 		ImpactedEntityScopeValue:     impactedEntityScopeValue,
 		SupersedingEquivalenceGroups: actionConfig.SupersedingEquivalenceGroups,
 	}, nil
