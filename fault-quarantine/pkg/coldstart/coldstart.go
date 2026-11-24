@@ -130,7 +130,8 @@ func logBreakerStoppedRecovery(ctx context.Context, progress *recoveryProgress) 
 	}
 
 	slog.ErrorContext(ctx, "Circuit breaker TRIPPED during cold-start recovery; stopping the scan. "+
-		"Unrecovered events stay unresolved and retry on the next startup", attrs...)
+		"Unrecovered events stay unresolved and retry after the breaker is reset: patch the "+
+		"circuit-breaker ConfigMap status to CLOSED and restart (docs/runbooks/circuit-breaker.md)", attrs...)
 }
 
 // WithRecoveryContext marks event processing as cold-start replay. Consumers
