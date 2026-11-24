@@ -235,6 +235,7 @@ func TestEvaluateEventWithDatabase_NodeSelector_DeletedNodeIsCancelled(t *testin
 	require.NoError(t, err)
 	require.Equal(t, ActionCancel, result.Action)
 	require.Equal(t, model.Cancelled, result.Status)
+	require.True(t, result.NodeDeleted)
 	require.Nil(t, result.DrainDecision)
 	require.Empty(t, recorder.decisions)
 	require.Zero(t, client.existsCalls)
@@ -265,6 +266,8 @@ func TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode(t *testing.T) 
 			require.Empty(t, recorder.decisions)
 			require.Zero(t, client.existsCalls)
 
+			require.Equal(t, tt.deleted, result.NodeDeleted)
+
 			if tt.deleted {
 				require.Equal(t, model.Cancelled, result.Status)
 			} else {
@@ -274,8 +277,60 @@ func TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode(t *testing.T) 
 	}
 }
 
+// TestEvaluateEventWithDatabase_RecordedDecision_DeletedNodeIsCancelled ends an event whose drain
+// started before its node was deleted. A custom drain would otherwise wait for a DrainRequest
+// that no plugin can complete for a missing node, and a built-in drain for a label it cannot write.
+func TestEvaluateEventWithDatabase_RecordedDecision_DeletedNodeIsCancelled(t *testing.T) {
+	for _, method := range []string{model.DrainMethodCustom, model.DrainMethodBuiltIn} {
+		t.Run(method, func(t *testing.T) {
+			podInformers := &nodeSelectorInformers{deleted: map[string]bool{"gone-node": true}}
+			cfg := config.TomlConfig{
+				SystemNamespaces: "kube-*",
+				UserNamespaces:   []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+			}
+
+			var client *countingCustomDrainClient
+			var drainClient CustomDrainClientInterface
+
+			if method == model.DrainMethodCustom {
+				cfg.UserNamespaces = nil
+				cfg.CustomDrain = config.CustomDrainConfig{
+					Enabled:               true,
+					TemplateMountPath:     "/etc/drain-template",
+					TemplateFileName:      "drain-template.yaml",
+					Namespace:             "nvsentinel",
+					ApiGroup:              "nvsentinel.nvidia.com",
+					Version:               "v1alpha1",
+					Kind:                  "DrainRequest",
+					StatusConditionType:   "DrainComplete",
+					StatusConditionStatus: "True",
+				}
+				// The DrainRequest exists and never completes.
+				client = &countingCustomDrainClient{nodeHasCR: true, eventCRExists: true}
+				drainClient = client
+			}
+
+			built, err := NewNodeDrainEvaluator(cfg, podInformers, drainClient)
+			require.NoError(t, err)
+
+			result, err := built.EvaluateEventWithDatabase(t.Context(),
+				eventWithDrainDecision("gone-node", method, ""), nil, nil, (&decisionRecorder{}).record)
+			require.NoError(t, err)
+			require.Equal(t, ActionCancel, result.Action)
+			require.Equal(t, model.Cancelled, result.Status)
+			require.True(t, result.NodeDeleted)
+			require.Zero(t, podInformers.podChecks)
+
+			if client != nil {
+				require.Zero(t, client.existsCalls)
+			}
+		})
+	}
+}
+
 // TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain
-// pins the pre-selector behaviour, including that the node cache is never read.
+// pins the pre-selector behaviour: the drain path never reads the node, so a node missing
+// from the cache but still on the API server goes to custom drain as before.
 func TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain(t *testing.T) {
 	evaluator, client := newNodeSelectorEvaluator(t, "", nil)
 	evaluator.config.UserNamespaces = nil
@@ -872,7 +927,7 @@ func (s *completedDrainStore) FindHealthEventsByQuery(context.Context,
 func TestEvaluateEventWithDatabase_ScopedActionWithoutEntity_ReturnsErrorForRetry(t *testing.T) {
 	evaluator := &NodeDrainEvaluator{config: config.TomlConfig{
 		PartialDrainEnabled: true, PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
-	}}
+	}, informers: &nodeSelectorInformers{nodes: map[string]*v1.Node{"node-1": labelledNode("node-1", nil)}}}
 	event := quarantinedEvent("node-1")
 	event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
 	event.HealthEvent.EntitiesImpacted = []*protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}}

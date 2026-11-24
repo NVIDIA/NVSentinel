@@ -94,6 +94,10 @@ type DrainActionResult struct {
 	// AlreadyDrained result carries a decision with only Scope set. A nil Scope is a drain of
 	// the full node.
 	DrainDecision *protos.DrainDecision
+	// NodeDeleted marks the cancellation of an event whose node was deleted. A DrainRequest the
+	// event created can no longer complete, so the cancellation also deletes it and ends the
+	// node's drain.
+	NodeDeleted bool
 	// drainedByOtherCR marks an AlreadyDrained result that comes from the CR of another event.
 	// This event records only the drain scope, not a method. A result from the CR of this
 	// event still records the method.

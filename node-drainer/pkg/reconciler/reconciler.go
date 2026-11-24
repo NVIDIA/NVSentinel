@@ -625,7 +625,17 @@ func (r *Reconciler) executeTerminalAction(ctx context.Context, action *evaluato
 
 	case evaluator.ActionCancel:
 		r.clearEventStatus(eventID, nodeName)
-		return r.executeCancelStatus(ctx, healthEvent, event, database, action.Status)
+
+		if err := r.executeCancelStatus(ctx, healthEvent, event, database, action.Status); err != nil {
+			return err
+		}
+
+		if action.NodeDeleted {
+			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
+			r.queueManager.ClearNodeDraining(nodeName)
+		}
+
+		return nil
 
 	case evaluator.ActionWait, evaluator.ActionCreateCR, evaluator.ActionEvictImmediate, evaluator.ActionEvictWithTimeout,
 		evaluator.ActionCheckCompletion:

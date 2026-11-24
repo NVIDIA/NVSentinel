@@ -132,6 +132,10 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
 
+	if e.nodeDeleted(ctx, nodeName) {
+		return deletedNodeResult(ctx, nodeName), nil
+	}
+
 	// The event has no entity for its scoped action. Return the error so the queue retries the event with
 	// backoff: a fix to scopedActions lets the drain continue. A terminal Failed status would end the drain.
 	partialDrainEntity, err := e.eventDrainScope(healthEvent)
@@ -173,8 +177,7 @@ func (e *NodeDrainEvaluator) eventDrainScope(healthEvent model.HealthEventWithSt
 // A method already stored on the event is kept, so a label change during the drain
 // cannot switch it. The bool is true when this pass chose the method and it still
 // needs to be stored. The wait result means "not yet": the node is missing, or a
-// stored method cannot be carried out with the current configuration. A cancel
-// result ends the event of a deleted node.
+// stored method cannot be carried out with the current configuration.
 func (e *NodeDrainEvaluator) selectDrainMethod(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	partialDrainEntity *protos.Entity) (*protos.DrainDecision, bool, *DrainActionResult) {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -326,7 +329,6 @@ func (e *NodeDrainEvaluator) evaluateRecordedDrainMethod(ctx context.Context, de
 // rather than the built-in eviction path. When customDrain.nodeSelector is set the answer
 // depends on the node's labels, and a node the informer cannot resolve yields a retry
 // result instead of a decision: guessing either path would drain the node the wrong way.
-// A node that was deleted yields a cancellation, as there is nothing left to drain.
 func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName string) (bool, *DrainActionResult) {
 	if !e.config.CustomDrain.Enabled || e.customDrainClient == nil {
 		return false, nil
@@ -338,10 +340,6 @@ func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName 
 
 	node, err := e.informers.GetNode(nodeName)
 	if err != nil {
-		if e.nodeDeleted(ctx, nodeName, err) {
-			return false, deletedNodeResult(ctx, nodeName)
-		}
-
 		slog.ErrorContext(ctx, "Failed to get node to evaluate customDrain.nodeSelector, retrying",
 			"node", nodeName,
 			"error", err)
@@ -358,11 +356,13 @@ func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName 
 	return matches, nil
 }
 
-// nodeDeleted reports whether a failed node lookup means the node was deleted. A node missing
-// from the informer cache is checked with the API server, so one the cache has not caught up with
-// is not taken for deleted.
-func (e *NodeDrainEvaluator) nodeDeleted(ctx context.Context, nodeName string, lookupErr error) bool {
-	if !apierrors.IsNotFound(lookupErr) {
+// nodeDeleted reports whether the event's node was deleted. Every step after this one needs the
+// node: the already-drained check reads it, a DrainRequest waits for a plugin that cannot drain a
+// missing node, and the state label write fails. Each would retry the event forever. A node
+// missing from the informer cache is checked with the API server, so one the cache has not caught
+// up with is not taken for deleted, and a failed check keeps the event on its usual path.
+func (e *NodeDrainEvaluator) nodeDeleted(ctx context.Context, nodeName string) bool {
+	if _, err := e.informers.GetNode(nodeName); err == nil || !apierrors.IsNotFound(err) {
 		return false
 	}
 
@@ -379,13 +379,14 @@ func (e *NodeDrainEvaluator) nodeDeleted(ctx context.Context, nodeName string, l
 }
 
 // deletedNodeResult cancels the event of a deleted node. Its pods went with it, so there is
-// nothing left to drain, and waiting for the node would retry the event forever.
+// nothing left to drain.
 func deletedNodeResult(ctx context.Context, nodeName string) *DrainActionResult {
 	slog.InfoContext(ctx, "Cancelling event for a node that no longer exists", "node", nodeName)
 
 	return &DrainActionResult{
-		Action: ActionCancel,
-		Status: model.Cancelled,
+		Action:      ActionCancel,
+		Status:      model.Cancelled,
+		NodeDeleted: true,
 	}
 }
 
@@ -401,10 +402,6 @@ func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statu
 	isDrained, hasQuarantineAnnotation, err := e.isNodeAlreadyDrained(ctx, healthEvent.HealthEvent.Id, partialDrainEntity,
 		nodeName, healthEventStore)
 	if err != nil {
-		if e.nodeDeleted(ctx, nodeName, err) {
-			return deletedNodeResult(ctx, nodeName)
-		}
-
 		slog.ErrorContext(ctx, "Failed to check if node is already drained",
 			"node", nodeName,
 			"error", err)
