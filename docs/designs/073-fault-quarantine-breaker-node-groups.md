@@ -75,7 +75,7 @@ The scope is small:
 
 - Node groups change when a breaker trips. They do not change what a trip stops. A trip of any breaker still stops the event stream for all nodes, and the reset does not change. There is one ordered event stream with one resume position, so a trip that holds only the events of its own group is a larger change. It is in [Future work](#future-work).
 - Fault-quarantine rule sets do not change.
-- The design fails closed. If fault-quarantine cannot find the node group of a node, it stops, as it does today when a breaker check fails. It does not use other limits for the node.
+- The design fails closed. If a rule error stops the placement of a node, fault-quarantine does not quarantine that node until it has a placement. It continues with the other nodes. It does not use other limits for the node.
 
 ### User journeys
 
@@ -90,7 +90,8 @@ The scope is small:
 ### Configuration
 
 ```yaml
-circuitBreaker:                 # the cluster breaker. No change
+# The cluster breaker. No change to the keys. With node groups, each of its bounds counts only the nodes that match no group.
+circuitBreaker:
   enabled: true
   percentage: 50
   maxNodes: 10
@@ -130,13 +131,15 @@ A node group is the one place in fault-quarantine that defines a node type. ADR-
 - fault-quarantine evaluates the rules with `commons/pkg/celrule` ([#2299](https://github.com/NVIDIA/NVSentinel/pull/2299)), with the same `node` variable as the `Node` rules of its rule sets. The node informer places each node when the node is added or changes.
 - The node cache keeps the label and annotation keys that the group rules read, and the `topologyKey` label of each group.
 - When fault-quarantine starts a quarantine, the log names the breaker that counts the node. A gauge reports the node count of each breaker.
-- Match on labels that a node cannot change for itself. A node that can change its own labels can move itself to a group with other limits.
+- Match on labels that a node cannot change for itself. A node that can change its own labels can move itself to a group with other limits. It can also cause a rule error for itself, and fault-quarantine then does not quarantine the node.
 
-Errors follow ADR-064, with one difference:
+Errors follow ADR-064, with two differences. Startup is stricter, and fault-quarantine does not try a skipped event again:
 
-- An error in a group before the winner stops the placement of the node. The node does not fall through to a later group or to the cluster breaker, because those can have weaker limits.
-- Startup fails for a rule that does not compile. Startup also fails for a rule that reads a label or an annotation with no test for the key. ADR-064 logs a warning for such a rule, because its components can try again. After the node informer has synced, startup places every node, and it fails if a rule fails for a node. The log names the group, the rule, and the node.
-- The difference: node-drainer and fault-remediation try a failed decision again. The live event stream of fault-quarantine has no retry for one event. Thus, if a rule fails for a node at run time, fault-quarantine handles it as it handles a failed breaker check today. The stream stops until the pod restarts. A metric counts the rule errors of each group.
+- An error in a group before the winner stops the placement of the node. The node does not fall through to a later group or to the cluster breaker, because those can have weaker limits. The node then has no placement until a change of the node, or a restart with a corrected rule, gives it one. No breaker counts a node with no placement.
+- Startup fails for a rule that does not compile. Startup also fails for a rule that reads a label or an annotation with no test for the key. ADR-064 logs a warning for such a rule, because its components can try again. After the node informer has synced, startup places every node. A rule error at this step does not stop startup, for one node or for many nodes. fault-quarantine handles it as a rule error at run time, so that an error on a node cannot stop a restart.
+- node-drainer and fault-remediation try a failed decision again. The live event stream of fault-quarantine has no retry for one event, and a stop of the stream is a stop for all nodes. Thus, when a rule error stops the placement of a node, fault-quarantine logs an error that names the group, the rule, and the node, and it increments a counter of the rule errors of each group. While the node has no placement, fault-quarantine does not start a quarantine for it, and it does not add a cordon to it. This includes a forced quarantine, because a forced quarantine counts in the standing bounds, and no breaker counts a node with no placement. fault-quarantine skips each event that would start a quarantine for the node. For each event that it skips, it logs an error that names the node and the event, and it increments `fault_quarantine_processing_errors_total` with a new `error_type` value. It then continues with the next event. A skipped event is not tried again. After the node has a placement, a later event for the node starts the quarantine. fault-quarantine does not start it from the events that it skipped.
+- This rule applies only while the breaker is on. With `circuitBreaker.enabled: false` or in dry run, no breaker counts a node, so a rule error does not stop a quarantine.
+- For a node that is quarantined when the rule fails, the window entries stay where they were recorded, as for a node that moves. The node leaves the standing count of its breaker, for the node bounds and for the domain bounds, because the standing count follows the placement. It counts again in the breaker of its next placement. Its other events are processed as today: a later unhealthy event is added to the quarantine with no new cordon, and a healthy event releases the node.
 
 ### Counting
 
@@ -145,15 +148,16 @@ Errors follow ADR-064, with one difference:
 - **Forced quarantines and manual changes.** These count as they do today. A forced quarantine does not count in the window, and it counts in the standing bounds. A node that an operator uncordons leaves the standing count.
 - **Percentages.** A group measures its percentages against its own nodes. A group does not use `gpuNodeLabel`.
 - **Caps.** The node bounds of a group are capped at the number of nodes of the group. For the standing bounds, this cap is new. The cluster breaker caps only its window bounds, as today, because its standing count can include nodes that do not match `gpuNodeLabel`. A group counts and measures the same nodes.
-- **The cluster breaker.** When node groups are set, the cluster breaker covers the nodes in no group, and it counts only their quarantines. It measures its percentages against the nodes that it covers and that match `gpuNodeLabel`, as today. Thus a node group for LPU nodes does not change the limits of the GPU nodes.
+- **The cluster breaker.** When node groups are set, the cluster breaker covers the nodes that match no enabled group. Each of its bounds, in the window and standing, counts only these nodes. It measures its percentages against the nodes that it covers and that match `gpuNodeLabel`, as today. Thus a node group for LPU nodes does not change the limits of the GPU nodes.
 - **A node that moves.** If a label change moves a node to another group, its window entries stay where they were recorded, with their domain results. Its standing count moves with the node. For the domain bounds of the new group, the rules for the domain of a node in [Failure domains](#failure-domains) apply.
+- **A node with no placement.** A node with a rule error has no placement (see [Membership](#membership)). It is in the node count of no breaker: not of a node group, and not of the cluster breaker. Thus no percentage and no cap includes it. Membership gives the rule for its window entries and its standing count.
 
 A breaker with no nodes:
 
 - With no node groups, the cluster breaker keeps the rule of [#2273](https://github.com/NVIDIA/NVSentinel/pull/2273). When no node matches `gpuNodeLabel`, a quarantine in the window of a node that is still in the cluster trips the breaker. The rule finds a `gpuNodeLabel` that matches no node.
 - With node groups, the cluster breaker can cover no node that matches `gpuNodeLabel` by design, for example when every GPU node is in a group. The rule of #2273 then does not apply. The percentage bounds of the cluster breaker do not apply, and its absolute bounds apply to the nodes that it covers. Thus, when node groups are set, validation requires a positive `maxNodes` or `maxCordonedNodes` on the cluster breaker.
-- A node group with no nodes does not trip. A node counts in a group only because it matches the group. Thus a wrong rule gives an empty group, not a quarantine that is not counted. Startup logs a warning for each group with no nodes.
-- Deleted nodes. The cluster breaker keeps its rule of today: it forgets the window entries of deleted nodes when the last node that matches `gpuNodeLabel` is deleted. A node group forgets the window entries of its deleted nodes when the last node of the group is deleted. A group that has no nodes because its nodes moved to a different group forgets nothing. In each other case, the entry of a deleted node stays until it expires.
+- A node group with no nodes does not trip. A node counts in a group only because it matches the group. Thus a rule that matches no node gives an empty group, not a quarantine that is not counted. Startup logs a warning for each group with no nodes.
+- Deleted nodes. The cluster breaker keeps its rule of today: it forgets the window entries of deleted nodes when the last node that matches `gpuNodeLabel` is deleted. A node group forgets the window entries of its deleted nodes when the last node of the group is deleted. A group that has no nodes because its nodes moved to a different group, or have no placement, forgets nothing. In each other case, the entry of a deleted node stays until it expires.
 
 ### State, metrics, and reset
 
@@ -162,7 +166,7 @@ A breaker with no nodes:
 - The reset is the reset of [ADR-022](022-circuit-breaker-reset-mechanism.md). The runbook gets one new step: read `trippedBy`.
 - `fault_quarantine_breaker_state`, `fault_quarantine_breaker_utilization`, and `fault_quarantine_breaker_threshold_nodes` get a `group` label. The cluster breaker uses `group="default"`. The label is always present. The documented alert `fault_quarantine_breaker_state{state="TRIPPED"} == 1` still matches.
 - Each breaker sets and deletes only its own series. Today the setters of the state and threshold metrics reset the full vector.
-- New gauges report the node count of each breaker. With failure domains, they also report the domain counts and the domain limits. No metric has a label for the domain.
+- A new counter reports the rule errors of each group. New gauges report the node count of each breaker and the number of nodes with no placement. With failure domains, they also report the domain counts and the domain limits. No metric has a label for the domain.
 
 ### Validation
 
@@ -179,7 +183,7 @@ When node groups are set, startup fails when:
 - a domain bound is negative or 1, or `failureDomains` has no positive domain bound,
 - the cluster breaker has no positive `maxNodes` or `maxCordonedNodes`.
 
-Startup logs the node count of each breaker. In dry run, fault-quarantine does not build the breaker, as today. It still validates the node groups, and it logs a rule error on a node as a warning.
+A rule error on a node does not stop startup (see [Membership](#membership)). Startup logs the node count of each breaker and the number of nodes with no placement. In dry run, fault-quarantine does not build the breaker, as today. It still validates the node groups, and it logs a rule error on a node as a warning, because no breaker counts the node.
 
 ### Failure domains
 
@@ -225,7 +229,7 @@ The domain of a node:
 - The unknown domain has a cost. Nodes without a label can be in different racks, but they all count as one domain, so the domain bound cannot find the second rack. Only the node bounds protect against a failure or a bad signal on such nodes. The breaker then trips at the node bound. With labels, it trips at the domain bound, which is the first quarantine in the domain that reaches the bound. The metric for nodes without a domain label shows this exposure before a fault occurs.
 - Match the group on a stable label, not on the domain label. A node then stays in its group when it loses its domain label.
 - A static rack label is the most stable key. `nvidia.com/gpu.clique` and the [Topograph](../INTEGRATIONS.md#topology-awareness-topograph) domain label are also valid keys, and a cluster with no rack label can use them. A discovery component computes these labels, so they can change or disappear during a fault. The stored result covers a node from the start of its quarantine. It does not cover a node that loses or changes its label before its quarantine, and it does not cover a result that fault-quarantine reads later because it was missing.
-- fault-quarantine cannot verify the domain label. A label that is missing, wrong, or changed before the quarantine can make the domain bound count too many domains or too few. Too many: a node of a failed domain counts in the unknown domain or in a new domain, one failed domain counts as two, and the breaker can trip early. Too few: a node gets the label value of a different domain, two domains count as one, and the domain bound does not find the second domain. In each case the node bounds apply with no change, and they are the protection. `trippedBy`, the domain annotations, and the metric for nodes without a domain label show the cause of a trip. A static label prevents these cases. The [open questions](#open-questions) list ways to keep the domain of a node.
+- fault-quarantine cannot verify the domain label. A label that is missing, wrong, or changed before the quarantine can make the domain bound count too many domains or too few. Too many: a node of a failed domain counts in the unknown domain or in a new domain, one failed domain counts as two, and the breaker can trip early. Too few: a node gets the label value of a different domain, two domains count as one, and the domain bound does not find the second domain. In each case the node bounds apply with no change, and they are the protection. `trippedBy`, the domain annotations, and the metric for nodes without a domain label show the cause of a trip. A static label prevents these cases. [Future work](#future-work) lists ways to keep the domain of a node.
 
 A cluster that is one domain gets no benefit from domain bounds. A failure of the full domain and a bad signal on every node give the same counts there. The node bounds are capped at the number of nodes of the group, so the breaker trips when every node is quarantined. The operator chooses between that trip and `circuitBreaker.enabled: false`.
 
@@ -237,56 +241,57 @@ A cluster that is one domain gets no benefit from domain bounds. A failure of th
 
 ### Compatibility
 
-- With no node groups, the configuration, the state, and the behaviour do not change. The metrics gain `group="default"`.
+- With no node groups, the configuration, the state, and the behaviour do not change. The metrics gain `group="default"`. There are no group rules, so no node has a rule error.
 - A `status` of `TRIPPED` at upgrade time halts every breaker, as today.
 - An older version reads `status` with the same meaning. It ignores `trippedBy`, the domain annotation, and `nodeGroups`, and its cluster breaker then covers all nodes. Before a rollback, remove the node groups, or set the cluster limits for all nodes. An older version does not remove the domain annotation when a quarantine ends. At startup, a newer version removes the domain annotation from each node that is not quarantined. One case remains: a node that an older version quarantined again keeps the result of its earlier quarantine until the quarantine ends. The domain bounds can then count that node in the wrong domain, and the node bounds apply with no change. To prevent this case, remove the `quarantineHealthEventFailureDomains` annotation from all nodes after a rollback.
 - A running pod reads the breaker state from the ConfigMap only at startup. During a rolling update, the old and the new pod can each process events with their own configuration for a short time. This is true today for each change to the breaker configuration. Turn on node groups in a separate rollout, after the new version runs.
 
 ### Rollout
 
-1. Node groups with node bounds: the configuration, membership, counting, `trippedBy`, the `group` label, and validation, with their documentation.
+1. Node groups with node bounds: the configuration, membership and its rule errors, counting, `trippedBy`, the `group` label, the rule error and node count metrics, and validation, with their documentation.
 2. Failure domains: `failureDomains`, the domain annotation, and the domain metrics, with their documentation.
 
 Each step is a separate PR. A cluster with no node groups does not change at either step. Step 2 changes only fault-quarantine. It adds no shared code and it does not change the files of the ADR-064 implementation, so step 1 can merge and release without it. The documentation that changes is the [configuration](../configuration/fault-quarantine.md), the [circuit breaker documentation](../circuit-breaker.md), the [runbook](../runbooks/circuit-breaker.md), and [METRICS.md](../METRICS.md).
 
 Tests:
 
-- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. A node with no label and a node whose label has the value `unknown` count as two domains. A label with an empty value counts as no label. A quarantined node with no stored result for the `topologyKey` of its group: an older quarantine, a changed key, and a move to a group with a different key. After a move, the window entries of the first group keep their domain. A node that is quarantined in one group, released, and quarantined in a second group with the same `topologyKey` and a different label value: the window entry of the first group keeps the first value, and the second quarantine stores the second value. A second record of a node in the same group and window replaces its entry. When the label of the node changed between the two quarantines, the domain count has only the new result. A forced quarantine stores a result and has no window entry. A quarantine with no cordon that gets a cordon later: the new entry holds the stored result, also when the label changed. A quarantined node that moves between groups with the same `topologyKey` keeps its stored result. A quarantined node that moves from a group with no failure domains gets a result when it is first needed. The start of a quarantine replaces a domain annotation that remains from an earlier quarantine, and removes it when the breaker of the node has no `topologyKey`. Startup removes the domain annotation from a node that is not quarantined. A manual uncordon removes the domain annotation. A missing result that a different writer stored first is used, and a failed write is tried again. `trippedBy` for a domain bound, and for two breakers that reach a bound at the same check. A group forgets the entries of deleted nodes when its last node is deleted. The validation of `failureDomains`. A node that is quarantined with no label keeps the unknown domain when its label appears and after a restart. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips. A node that loses its label before the quarantine counts in the unknown domain. A node whose label changes to the value of a different domain counts in that domain. The node bounds for a domain bound of 2 and of 3.
-- E2E tests: a burst on one node type trips by the limits of its group. A full domain is quarantined with no trip, and a second domain trips. A restart while tripped restores `trippedBy` and the series. With no node groups, nothing changes except the `group` label.
+- Unit tests: the winner, equal priorities, a disabled group, and a rule error before and after the winner. A node with a rule error before the winner has no placement: an event for it starts no quarantine, forced or not, the event is not tried again, the stream continues, and a later event starts the quarantine after the node gets a placement. The rule error counter of the group increases, and the gauge for nodes with no placement counts the node until it gets a placement. A quarantined node that loses its placement on a rule error: its window entries stay, it leaves the standing count, a later unhealthy event adds no cordon, and a healthy event releases it. When the node gets a placement again, it counts in the standing count of that breaker. A rule error at startup, for one node and for every node, does not stop startup. With the breaker off, a rule error does not stop a quarantine. The window and the standing count of each group. A group with no nodes, and the cluster breaker with no node that matches `gpuNodeLabel`. The series of each group. The domain of a node at quarantine, stored, and unknown. A node with no label and a node whose label has the value `unknown` count as two domains. A label with an empty value counts as no label. A quarantined node with no stored result for the `topologyKey` of its group: an older quarantine, a changed key, and a move to a group with a different key. After a move, the window entries of the first group keep their domain. A node that is quarantined in one group, released, and quarantined in a second group with the same `topologyKey` and a different label value: the window entry of the first group keeps the first value, and the second quarantine stores the second value. A second record of a node in the same group and window replaces its entry. When the label of the node changed between the two quarantines, the domain count has only the new result. A forced quarantine stores a result and has no window entry. A quarantine with no cordon that gets a cordon later: the new entry holds the stored result, also when the label changed. A quarantined node that moves between groups with the same `topologyKey` keeps its stored result. A quarantined node that moves from a group with no failure domains gets a result when it is first needed. The start of a quarantine replaces a domain annotation that remains from an earlier quarantine, and removes it when the breaker of the node has no `topologyKey`. Startup removes the domain annotation from a node that is not quarantined. A manual uncordon removes the domain annotation. A missing result that a different writer stored first is used, and a failed write is tried again. `trippedBy` for a domain bound, and for two breakers that reach a bound at the same check. A group forgets the entries of deleted nodes when its last node is deleted. The validation of `failureDomains`. A node that is quarantined with no label keeps the unknown domain when its label appears and after a restart. Nodes without a domain label, some in one rack and some in a second rack: they count as one domain, and the node bound trips. A node that loses its label before the quarantine counts in the unknown domain. A node whose label changes to the value of a different domain counts in that domain. The node bounds for a domain bound of 2 and of 3.
+- E2E tests: a burst on one node type trips by the limits of its group. A full domain is quarantined with no trip, and a second domain trips. A restart while tripped restores `trippedBy` and the series. A rule error on one node: that node is not quarantined, a second node is quarantined, and a restart completes. With no node groups, nothing changes except the `group` label.
 
 ## Rationale
 
 - **One way to select nodes.** A node group uses the `Node` rules and the common part of ADR-064, so operators write one type of rule.
 - **One definition of a node type.** The node group is the one place in fault-quarantine that says what a node type is.
-- **Small scope.** The stream, the reset, and the rule sets do not change. The work uses only shared code that is on main.
+- **Small scope.** The effect of a trip, the reset, and the rule sets do not change. There is still one event stream with one resume position. The work uses only shared code that is on main.
 - **Opt-in.** A cluster with no node groups does not change.
-- **Fail closed.** A rule error never moves a node to weaker limits. A node with a missing or wrong domain label keeps the node bounds of its group. Only the domain bound can count such nodes incorrectly, and the node bounds limit that case.
+- **Fail closed.** A rule error never moves a node to weaker limits. fault-quarantine does not quarantine a node with a rule error until the node has a placement, and it continues with the other nodes. A node with a missing or wrong domain label keeps the node bounds of its group. Only the domain bound can count such nodes incorrectly, and the node bounds limit that case.
 - **One deployment.** One component owns the quarantine annotations of each node and reads the event stream.
 
 ## Consequences
 
 ### Positive
 
-- A burst of quarantines on one node type does not trip the breaker for the other types.
+- A burst of quarantines on a node type that has its own node group counts only against the limits of that group. It does not count against the limits of the other node types.
 - Each node type gets limits that fit how it fails.
 - One failed domain, for example a rack, can be quarantined completely with no trip and no manual reset.
 - The reset is the reset of today, and `trippedBy` names the breaker that tripped.
 
 ### Negative
 
-- A trip in one group still stops quarantines and recovery for all nodes.
+- A trip of any breaker still stops quarantines and releases for all nodes.
 - Operators have more configuration and more metrics.
-- Startup validates every rule and places every node (see [Validation](#validation)). But a rule can still fail for a node that is added or changes later. That failure stops the stream for all nodes until the rule or the node is corrected.
+- Startup rejects a rule that does not compile or that reads a key with no test (see [Validation](#validation)). But a rule can still fail at run time, for one node or for many nodes. fault-quarantine then does not quarantine those nodes until the rule or the nodes are corrected. This includes a forced quarantine. The nodes stay in service with their faults, and an event that would start a quarantine in that time is skipped and not tried again. A quarantined node with a rule error is not in a standing count until it has a placement, so the standing bounds of its group count fewer nodes in that time. The event stream and the nodes that have a placement are not affected.
 - The bounds of a group with domains depend on the size of a domain, so each cluster needs its own values.
 - On a cluster that is one domain, the breaker cannot tell a failed domain from a bad signal on every node.
 - For nodes without a domain label, the domain bound is weaker, because it counts them as one domain. The node bounds limit that case.
 - With a domain label that a discovery component computes, a label that disappears or changes during a fault can make the domain bound count too many domains or too few. The node bounds limit both cases.
 - The membership rule (one winner) is different from the fault-quarantine rule sets (every match applies).
-- A node type is defined in two places: the `Node` rules of the quarantine rule sets and the node group. If the two differ, the quarantines of those nodes count against a different breaker than the operator expects. They always count against one breaker: the group that the node matches, or the cluster breaker. A group whose nodes no quarantine rule set covers never counts a node.
+- A node type is defined in two places: the `Node` rules of the quarantine rule sets and the node group. If the two differ, the quarantines of those nodes count against a different breaker than the operator expects. A node that has a placement always counts against one breaker: the group that the node matches, or the cluster breaker. A group whose nodes no quarantine rule set covers never counts a node.
 
 ### Mitigations
 
-- Startup places every node, so most rule errors stop startup before the first event.
+- Startup rejects a rule that does not compile or that reads a key with no test, so most incorrect rules stop startup before the first event.
+- The gauge for nodes with no placement shows that fault-quarantine does not quarantine a node, and the documentation gives an alert for a value above zero. The rule error counter shows the group, and the log names the node.
 - The `group` label lets operators make an alert for each group.
 - The documentation gives sizing rules for groups with domains.
 - The documentation states the membership rule, with a link to ADR-064.
@@ -332,6 +337,10 @@ The limits go on each quarantine rule set, and the breaker needs no rules of its
 
 **Rejected** because: the node then falls through to a later group or to the cluster breaker, which can have weaker limits.
 
+#### Stop the event stream on a group rule error
+
+**Rejected** because: an error on one node would then stop the quarantine and the release of all nodes.
+
 ## Notes
 
 ### Non-goals
@@ -346,13 +355,10 @@ The limits go on each quarantine rule set, and the breaker needs no rules of its
 - **A reference from a rule set to a node group.** A quarantine rule set could name node groups, for example `nodeGroups: [lpu]`, in place of a `Node` rule of its own. The operator would then define a node type one time for the quarantine rules and for the breaker. This is the named selector that ADR-064 deferred. It is not in this ADR, because it changes the rule set layer while the ADR-064 work on that layer is in progress.
 - **A trip that holds only its own group.** A held event needs its own recorded status. A replay needs a rule for a node that has recovered in the meantime. A follow-up ADR can design this.
 - **The shared rule set package.** The node group moves to `commons/pkg/ruleset` when it is available.
-
-### Open questions
-
 - **Domain bounds on the cluster breaker.** To use domains, a cluster with one node type needs a node group that matches every node. `failureDomains` on the top-level `circuitBreaker` would remove that need.
-- **The domain of a node that loses or changes its label before its quarantine.** This ADR counts the node in the unknown domain or in the domain of the new value, so the domain bound can count too many domains or too few. Option 1: fault-quarantine writes the domain to an annotation on each node of the group when it first reads the label. The value is visible and a restart does not change it, but fault-quarantine then writes to nodes that are not quarantined. Option 2: the domain bound does not count the unknown domain, and only the node bounds apply to its nodes. This needs no state, but the domain bound is weaker for a node without a label.
-- **Dry run.** A report-only evaluation in dry run could show the counts of each group. Operators could then size the limits before a live run.
-- **Automatic reset.** A trip latches by design, and the operator chooses between replay and discard at the reset (ADR-022). [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asks for a reset with no operator action after the nodes recover. This ADR does not propose one.
+- **The domain of a node that loses or changes its label before its quarantine.** This ADR counts the node in the unknown domain or in the domain of the new value, so the domain bound can count too many domains or too few. A later change can correct this in one of two ways. In the first, fault-quarantine writes the domain to an annotation on each node of the group when it first reads the label. The value is visible and a restart does not change it, but fault-quarantine then writes to nodes that are not quarantined. In the second, the domain bound does not count the unknown domain, and only the node bounds apply to its nodes. This needs no state, but the domain bound is weaker for a node without a label.
+- **A report in dry run.** A report-only evaluation in dry run could show the counts of each group. Operators could then size the limits before a live run.
+- **Automatic reset.** A trip latches by design, and the operator chooses between replay and discard at the reset (ADR-022). [#2203](https://github.com/NVIDIA/NVSentinel/issues/2203) asks for a reset with no operator action after the nodes recover. A follow-up ADR can propose one.
 - **Rolling update.** `strategy: Recreate` on the fault-quarantine Deployment would stop two pods from processing events at the same time during a rollout.
 
 ## References
