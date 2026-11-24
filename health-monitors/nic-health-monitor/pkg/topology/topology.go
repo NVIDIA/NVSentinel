@@ -259,32 +259,28 @@ func normalizePCIAddress(addr string) string {
 // row belongs to the device that used to hold it. Returning that row
 // would classify this device by another device's topology, and
 // RoleOf would cache the wrong role under the name. The lookup
-// reports no row instead, and classify uses the NUMA default. The
-// second return value reports this rejection, so classify can still
-// apply the checks that are about the device itself rather than its
-// row — the BlueField DPU exclusion — which the rejected row's all-SYS
-// shape would have reached before the row was rejected.
-func (c *Classifier) topologyLevelsFor(device string) (levels []string, rowRejected bool) {
+// reports no row instead, and classify uses the NUMA default.
+func (c *Classifier) topologyLevelsFor(device string) []string {
 	if len(c.topologyByPCI) == 0 {
-		return c.topology[device], false
+		return c.topology[device]
 	}
 
 	addr, err := c.reader.ReadPCIAddress(device)
 	if err != nil {
-		return c.topology[device], false
+		return c.topology[device]
 	}
 
 	addr = normalizePCIAddress(addr)
 
 	if levels, ok := c.topologyByPCI[addr]; ok {
-		return levels, false
+		return levels
 	}
 
 	if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
-		return nil, true
+		return nil
 	}
 
-	return c.topology[device], false
+	return c.topology[device]
 }
 
 // IsManagementNIC returns true when the device should be excluded from
@@ -361,7 +357,7 @@ func (c *Classifier) classify(device string) Role {
 
 	numaOnGPUSocket := c.nicOnGPUNUMA(device)
 
-	levels, rowRejected := c.topologyLevelsFor(device)
+	levels := c.topologyLevelsFor(device)
 	hasCompute, hasStorage, allSYS := summarizeLevels(levels)
 
 	switch {
@@ -372,17 +368,17 @@ func (c *Classifier) classify(device string) Role {
 	case allSYS:
 		return c.classifyNonCompute(device, numaOnGPUSocket, true)
 	default:
-		return c.defaultRole(device, numaOnGPUSocket, rowRejected)
+		return c.defaultRole(device, numaOnGPUSocket)
 	}
 }
 
-// defaultRole handles the no-levels case: the NUMA default. A rejected
-// stale row still reaches the BlueField exclusion, because that check
-// is about the device, not its row — the all-SYS row this device lost
-// would have reached it. A device that never had a row keeps the NUMA
-// default it has always had.
-func (c *Classifier) defaultRole(device string, numaOnGPUSocket, rowRejected bool) Role {
-	if rowRejected && numaOnGPUSocket && c.isBlueFieldDPU(device) {
+// defaultRole handles the no-levels case: the NUMA default. A BlueField
+// DPU without a usable row is excluded, whether the row was rejected
+// as stale or the device never had one — the check is about the
+// device, not its row, so a DPU cannot land on the storage default
+// through an accident of which names the file recorded.
+func (c *Classifier) defaultRole(device string, numaOnGPUSocket bool) Role {
+	if numaOnGPUSocket && c.isBlueFieldDPU(device) {
 		return RoleManagement
 	}
 
@@ -436,7 +432,8 @@ func (c *Classifier) nicOnGPUNUMA(device string) bool {
 }
 
 // isBlueFieldDPU returns true if the NIC's HCA type matches a known
-// BlueField DPU. Only consulted in the all-SYS branch.
+// BlueField DPU. Consulted where the topology row cannot place the
+// device: the all-SYS branch and the no-row default.
 func (c *Classifier) isBlueFieldDPU(device string) bool {
 	hcaType, err := c.reader.ReadIBDeviceField(device, "hca_type")
 	if err != nil {

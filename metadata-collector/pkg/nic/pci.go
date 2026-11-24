@@ -98,16 +98,20 @@ func AddressesForNames(snapshot map[string]string, names []string) map[string]st
 
 // AddressesChangedForNames reports whether any of the given device
 // names maps to a different PCI address in after than in before,
-// including a device appearing in only one of the two snapshots. It
-// detects an RDMA rename that landed between the two snapshots: the
-// name set is unchanged by a rename, but the name → address pairing
-// moves.
+// including a device appearing in only one of the two snapshots, or
+// a device missing from the after snapshot altogether. It detects an
+// RDMA rename that landed between the two snapshots: the name set is
+// unchanged by a rename, but the name → address pairing moves. A name
+// missing from after also counts: when nvidia-smi runs while every
+// renamed device holds a temporary name, those names appear in
+// neither snapshot, and the rows they key belong to names that no
+// longer exist — the run must retry rather than publish them.
 func AddressesChangedForNames(before, after map[string]string, names []string) bool {
 	for _, name := range names {
-		b, bok := before[name]
-		a, aok := after[name]
-
-		if bok != aok || b != a {
+		// A name absent from before reads as "" and differs from
+		// any real address in after; a name absent from after
+		// returns on the first condition.
+		if a, aok := after[name]; !aok || before[name] != a {
 			return true
 		}
 	}

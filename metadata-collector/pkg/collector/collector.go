@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -36,11 +37,19 @@ type NICTopoCollector interface {
 }
 
 // defaultNICTopoCollector runs nvidia-smi and parses the output.
+//
+// runTopo, snapshot and sleep are fields rather than direct calls so
+// tests can drive the retry loop without a real nvidia-smi or sysfs:
+// runTopo fakes the topo command, snapshot fakes the PCI address
+// snapshots, and sleep fakes the settle wait between attempts.
 type defaultNICTopoCollector struct {
 	ibClassPath string
+	runTopo     func(ctx context.Context) (string, error)
+	snapshot    func(path string) (map[string]string, error)
+	sleep       func(ctx context.Context, d time.Duration) bool
 }
 
-// maxTopoCollectAttempts bounds the retries when an RDMA rename lands
+// maxTopoCollectAttempts bounds the topo runs when an RDMA rename lands
 // while nvidia-smi runs. A rename moves every device name to another
 // device in well under a second, so one retry lands after it in
 // practice; the bound only guards against a name set that never
@@ -50,7 +59,30 @@ type defaultNICTopoCollector struct {
 // of the file.
 const maxTopoCollectAttempts = 3
 
+// snapshotSettleInterval is the wait between topo attempts. A run is
+// accepted only when its before snapshot matches the previous run's
+// after snapshot, so the name set was still for a full second before
+// the run started; three back-to-back runs cover a fast renamer but a
+// slower one exhausts them and the file falls back to stale name rows.
+const snapshotSettleInterval = time.Second
+
+// sleepContext waits for d unless ctx ends first, reporting whether
+// the full wait elapsed.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
+	var prevAfter map[string]string
+
 	for attempt := 1; ; attempt++ {
 		matrix, before, after, err := c.collectOnce(ctx)
 		if err != nil {
@@ -66,7 +98,12 @@ func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, 
 
 		matrix.NICPCIAddresses = nic.AddressesForNames(after, matrix.NICs)
 
-		if !nic.AddressesChangedForNames(before, after, matrix.NICs) {
+		// A run is accepted only when the names were still during the
+		// run and across the settle wait since the previous run: the
+		// first run has no previous snapshot to compare against.
+		stable := !nic.AddressesChangedForNames(before, after, matrix.NICs) &&
+			(prevAfter == nil || maps.Equal(prevAfter, before))
+		if stable {
 			return matrix, nil
 		}
 
@@ -83,6 +120,12 @@ func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, 
 		slog.Warn("RDMA device names changed while nvidia-smi topo -m ran, "+
 			"collecting the NIC topology again",
 			"attempt", attempt)
+
+		prevAfter = after
+
+		if !c.sleep(ctx, snapshotSettleInterval) {
+			return nil, ctx.Err()
+		}
 	}
 }
 
@@ -92,7 +135,7 @@ func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, 
 func (c defaultNICTopoCollector) collectOnce(
 	ctx context.Context,
 ) (matrix *nic.TopoMatrix, before, after map[string]string, err error) {
-	before, snapErr := nic.SnapshotPCIAddresses(c.ibClassPath)
+	before, snapErr := c.snapshot(c.ibClassPath)
 	if snapErr != nil {
 		slog.Warn("Could not snapshot IB device PCI addresses before nvidia-smi topo -m, "+
 			"nic_topology_pci_addresses will be empty", "error", snapErr)
@@ -100,7 +143,7 @@ func (c defaultNICTopoCollector) collectOnce(
 		before = nil
 	}
 
-	output, err := nic.RunTopoCommand(ctx)
+	output, err := c.runTopo(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("run nvidia-smi topo -m: %w", err)
 	}
@@ -110,7 +153,7 @@ func (c defaultNICTopoCollector) collectOnce(
 		return nil, nil, nil, fmt.Errorf("parse nvidia-smi topo -m output: %w", err)
 	}
 
-	after, snapErr = nic.SnapshotPCIAddresses(c.ibClassPath)
+	after, snapErr = c.snapshot(c.ibClassPath)
 	if snapErr != nil {
 		slog.Warn("Could not snapshot IB device PCI addresses after nvidia-smi topo -m, "+
 			"nic_topology_pci_addresses will be empty", "error", snapErr)
@@ -123,7 +166,12 @@ func (c defaultNICTopoCollector) collectOnce(
 
 // NewDefaultTopoCollector returns the production NICTopoCollector.
 func NewDefaultTopoCollector() NICTopoCollector {
-	return defaultNICTopoCollector{ibClassPath: nic.DefaultIBClassPath}
+	return defaultNICTopoCollector{
+		ibClassPath: nic.DefaultIBClassPath,
+		runTopo:     nic.RunTopoCommand,
+		snapshot:    nic.SnapshotPCIAddresses,
+		sleep:       sleepContext,
+	}
 }
 
 type nvmlClient interface {

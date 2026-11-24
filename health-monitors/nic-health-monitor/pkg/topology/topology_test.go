@@ -876,3 +876,53 @@ func TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded(t *testing.T) {
 	assert.Equal(t, RoleManagement, c.RoleOf("mlx5_7"))
 	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
 }
+
+// TestClassify_BlueFieldWithoutRowExcluded covers the rowless side of
+// the rejected-row exclusion: a BlueField DPU that never had a row in
+// the file is excluded just like one whose stale row was rejected.
+// The exclusion is about the device, not its row, so whether the file
+// happened to record the name for another device must not change the
+// role. An ordinary NIC on the same path keeps the NUMA default.
+func TestClassify_BlueFieldWithoutRowExcluded(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// Neither mlx5_7 (BlueField-3) nor mlx5_8 (ConnectX-7) has a row
+	// in the file, and the file records neither name. Both sit on GPU
+	// NUMA node 1.
+	reader := &sysfs.MockReader{
+		ReadIBDeviceNUMAFunc: func(device string) (int, error) {
+			return 1, nil
+		},
+		ReadIBDeviceFieldFunc: func(device, field string) (string, error) {
+			if field != "hca_type" {
+				return "", nil
+			}
+
+			switch device {
+			case "mlx5_7":
+				return "MT41692", nil
+			case "mlx5_8":
+				return "MT4129", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleManagement, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
+}
