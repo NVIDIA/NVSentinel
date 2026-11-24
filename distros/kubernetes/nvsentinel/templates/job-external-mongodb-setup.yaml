@@ -28,8 +28,8 @@ inside the mongodb-store subchart instead.
 {{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
 {{- if and $useExternalMongodb (ne ($setupJob.enabled | toString) "false") }}
 {{- $image := ($setupJob.image) | default dict }}
-{{- $imageRepo := $image.repository | default "ghcr.io/rtsp/docker-mongosh" }}
-{{- $imageTag := $image.tag | default "2.5.2" }}
+{{- $imageRepo := $image.repository | default "docker.io/percona/percona-server-mongodb" }}
+{{- $imageTag := $image.tag | default "8.0.26-11" }}
 {{- $imagePullPolicy := $image.pullPolicy | default "IfNotPresent" }}
 
 {{- $tlsEnabled := true }}
@@ -163,6 +163,10 @@ spec:
             echo "External MongoDB setup completed."
             echo "=============================="
         env:
+          # mongosh writes its runtime state under $HOME; keep it writable for
+          # any UID the image or a mirrored replacement runs as.
+          - name: HOME
+            value: /tmp
           - name: MONGODB_TLS_ENABLED
             value: {{ $tlsEnabled | quote }}
           - name: MONGODB_AUTH_MECHANISM

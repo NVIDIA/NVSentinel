@@ -440,6 +440,10 @@ Its local variables are set inside the define, which cannot see the caller's.
             echo "mongodb user creation completed."
             echo "=============================="
         env:
+          # mongosh writes its runtime state under $HOME; keep it writable for
+          # any UID the image or a mirrored replacement runs as.
+          - name: HOME
+            value: /tmp
 {{- if .Values.usePerconaOperator }}
           - name: MONGODB_CLUSTER_MONITOR_USER
             valueFrom:

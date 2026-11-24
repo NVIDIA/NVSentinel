@@ -239,8 +239,8 @@ global:
   #   setupJob:
   #     enabled: true  # Set to false to skip the setup job entirely
   #     image:
-  #       repository: ghcr.io/rtsp/docker-mongosh
-  #       tag: "2.5.2"
+  #       repository: docker.io/percona/percona-server-mongodb
+  #       tag: "8.0.26-11"
   #       pullPolicy: IfNotPresent
   #     # Optional: name of an existing Kubernetes Secret with admin credentials
   #     # for the setup job to authenticate. Secret must have keys: username, password.

@@ -708,8 +708,14 @@ mongodb-store:
         tag: "1.30.6"
         pullPolicy: IfNotPresent
       mongosh:
-        repository: ghcr.io/rtsp/docker-mongosh
-        tag: "2.5.2"
+        repository: docker.io/percona/percona-server-mongodb
+        tag: "8.0.26-11"
+        pullPolicy: IfNotPresent
+  psmdb:
+    helperImages:
+      mongosh:
+        repository: docker.io/percona/percona-server-mongodb
+        tag: "8.0.26-11"
         pullPolicy: IfNotPresent
 ```
 
@@ -719,4 +725,14 @@ mongodb-store:
 Image for Kubernetes operations in init containers (secret creation, certificate management).
 
 ##### mongosh
-Image for MongoDB shell operations and database initialization.
+Image for the `mongo-client` container of the `create-mongodb-database` Job, which creates the users, collections and indexes and resizes the oplog. `mongodb.helperImages.mongosh` is used with Bitnami and `psmdb.helperImages.mongosh` with the Percona operator. The external MongoDB setup Job uses `global.datastore.setupJob.image` and falls back to the same image when it is unset.
+
+The default is the Percona Server for MongoDB image the Percona operator deploys (`percona/percona-server-mongodb`, amd64 and arm64). It ships `mongosh` linked against the system OpenSSL of its Red Hat UBI 9 base, the system CA bundle, and runs as UID 1001.
+
+A replacement or mirrored image needs:
+
+- POSIX `sh`, `cat` and `sleep`
+- `mongosh` with TLS support, `SCRAM-SHA-256` and `MONGODB-X509` authentication
+- a current system CA bundle: when `global.datastore.tls.enabled` is true and no CA secret is set, the external setup Job validates the server certificate against it
+
+Both Jobs set `HOME=/tmp`, so the image can run as any non-root UID.

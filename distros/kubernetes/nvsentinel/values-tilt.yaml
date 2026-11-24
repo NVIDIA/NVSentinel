@@ -220,8 +220,8 @@ mongodb-store:
         tag: "v1.25.4"
         pullPolicy: IfNotPresent
       mongosh:
-        repository: ghcr.io/rtsp/docker-mongosh
-        tag: "2.5.2"
+        repository: docker.io/percona/percona-server-mongodb
+        tag: "8.0.26-11"
         pullPolicy: IfNotPresent
   
   # Bitnami MongoDB configuration

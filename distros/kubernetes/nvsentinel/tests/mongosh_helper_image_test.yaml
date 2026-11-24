@@ -1,0 +1,185 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The mongosh helper image backs three defaults:
+#   - mongodb-store mongodb.helperImages.mongosh (Bitnami)
+#   - mongodb-store psmdb.helperImages.mongosh (Percona operator)
+#   - the external MongoDB setup Job fallback when
+#     global.datastore.setupJob.image is unset
+# These cases pin all three to the maintained multi-arch Percona Server for
+# MongoDB image (not the third-party ghcr.io/rtsp/docker-mongosh) and pin what
+# that image has to support: sh -c, cat into /tmp, and mongosh with TLS and
+# SCRAM-SHA-256 or MONGODB-X509. HOME=/tmp lets mongosh write its runtime
+# state under a non-root UID.
+#
+# Lives in the umbrella suite because the mongodb-store Job calls umbrella
+# helpers, so it cannot render with its subchart alone.
+suite: mongosh helper image
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: uses the maintained default image for the Bitnami init Job
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: mongo-client
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/percona/percona-server-mongodb:8.0.26-11
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HOME
+            value: /tmp
+      - equal:
+          path: spec.template.spec.containers[0].command[0]
+          value: sh
+      # mongodb.tls.enabled is true by default: the client PEM is written to
+      # /tmp and passed to mongosh with the CA file.
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: (?m)^cat /certs/tls\.crt /certs/tls\.key > /tmp/tls\.pem$
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: --authenticationMechanism SCRAM-SHA-256
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: --tlsCertificateKeyFile /tmp/tls\.pem
+
+  - it: uses the maintained default image for the Percona init Job
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: mongo-client
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/percona/percona-server-mongodb:8.0.26-11
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HOME
+            value: /tmp
+
+  - it: still lets the init Job image be overridden for a mirror
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.mongodb.helperImages.mongosh.repository: registry.example.com/mirror/mongosh
+      mongodb-store.mongodb.helperImages.mongosh.tag: "1.2.3"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/mongosh:1.2.3
+
+  - it: falls back to the maintained image for the external setup Job
+    template: templates/job-external-mongodb-setup.yaml
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+      global.mongodbStore.enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: mongo-setup
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/percona/percona-server-mongodb:8.0.26-11
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HOME
+            value: /tmp
+      - equal:
+          path: spec.template.spec.containers[0].command[0]
+          value: sh
+
+  - it: writes the X.509 client PEM under /tmp in the external setup Job
+    template: templates/job-external-mongodb-setup.yaml
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+        auth:
+          mechanism: x509
+          clientCertSecretName: mongo-client-cert
+      global.mongodbStore.enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/percona/percona-server-mongodb:8.0.26-11
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: cat /client-certs/tls\.crt /client-certs/tls\.key > /tmp/client\.pem
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: --authenticationMechanism MONGODB-X509
+
+  - it: uses global.datastore.setupJob.image when it is set
+    template: templates/job-external-mongodb-setup.yaml
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+        setupJob:
+          image:
+            repository: registry.example.com/mirror/mongosh
+            tag: "1.2.3"
+      global.mongodbStore.enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/mongosh:1.2.3
+
+  # With the Percona operator the Job reads psmdb.helperImages, not
+  # mongodb.helperImages, so a mirror has to be set there.
+  - it: keeps the Percona init Job override separate from the Bitnami one
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.mongodb.helperImages.mongosh.repository: registry.example.com/unused
+      mongodb-store.psmdb.helperImages.mongosh.repository: registry.example.com/mirror/mongosh
+      mongodb-store.psmdb.helperImages.mongosh.tag: "1.2.3"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/mongosh:1.2.3
