@@ -17,6 +17,7 @@ package postgresql_test
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -59,6 +60,64 @@ func TestClientFactory_PostgreSQLInitialPosition_PersistsOrReturnsError(t *testi
 				require.NoError(t, err)
 				require.NotNil(t, w)
 			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestClientFactory_PostgreSQLResumePosition_ReportsAcknowledgedCheckpoint(t *testing.T) {
+	t.Setenv("DATASTORE_PROVIDER", "postgresql")
+	t.Setenv("MONGODB_DATABASE_NAME", "HealthEventsDatabase")
+	t.Setenv("MONGODB_TOKEN_COLLECTION_NAME", "ResumeTokens")
+
+	tests := []struct {
+		name       string
+		token      string
+		legacy     bool
+		wantResume bool
+	}{
+		{
+			name:  "initial position",
+			token: `{"timestamp":"2001-02-03T04:05:06Z","eventID":0}`,
+		},
+		{
+			name:       "acknowledged checkpoint",
+			token:      `{"timestamp":"2001-02-03T04:05:06Z","eventID":42}`,
+			wantResume: true,
+		},
+		{
+			name:       "legacy checkpoint",
+			token:      `{"eventID":42}`,
+			legacy:     true,
+			wantResume: true,
+		},
+		{
+			name:  "malformed checkpoint",
+			token: `{"timestamp":"invalid","eventID":42}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			mock.ExpectQuery("SELECT resume_token FROM resume_tokens").WithArgs("event-exporter").
+				WillReturnRows(sqlmock.NewRows([]string{"resume_token"}).AddRow(tt.token))
+			if tt.legacy {
+				mock.ExpectQuery("SELECT changed_at FROM datastore_changelog").WithArgs(int64(42)).
+					WillReturnRows(sqlmock.NewRows([]string{"changed_at"}).AddRow(time.Unix(42, 0).UTC()))
+			}
+
+			watcher, err := factory.NewClientFactory(nil).CreateChangeStreamWatcher(t.Context(),
+				postgresql.NewPostgreSQLDatabaseClient(db, "HealthEvents"), "event-exporter", nil)
+			require.NoError(t, err)
+			defer watcher.Close(t.Context())
+
+			checkpoint, ok := watcher.(interface{ ResumedFromCheckpoint() bool })
+			require.True(t, ok, "watcher must report whether it restored an acknowledged checkpoint")
+			assert.Equal(t, tt.wantResume, checkpoint.ResumedFromCheckpoint())
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}

@@ -152,7 +152,13 @@ func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bo
 
 	slog.Info("Datastore client initialized", "provider", datastoreConfig.Provider)
 
-	hasResumeToken, err := checkResumeTokenExists(ctx)
+	if datastoreConfig.Provider == datastore.ProviderPostgreSQL {
+		watcher, ok := bundle.ChangeStreamWatcher.(interface{ ResumedFromCheckpoint() bool })
+
+		return bundle, ok && watcher.ResumedFromCheckpoint(), nil
+	}
+
+	hasResumeToken, err := checkMongoDBResumeTokenExists(ctx)
 	if err != nil {
 		slog.Warn("Failed to check resume token, assuming false", "error", err)
 
@@ -174,7 +180,7 @@ func tokenDatabaseCertMountPath(datastoreConfig *datastore.DataStoreConfig) stri
 	return filepath.Dir(datastoreConfig.Connection.TLSConfig.CAPath)
 }
 
-func checkResumeTokenExists(ctx context.Context) (bool, error) {
+func checkMongoDBResumeTokenExists(ctx context.Context) (bool, error) {
 	tokenConfig, err := storeconfig.TokenConfigFromEnv("event-exporter")
 	if err != nil {
 		return false, fmt.Errorf("failed to get token config: %w", err)

@@ -169,12 +169,22 @@ func TestWatcherConstruction_ExistingTokens_NeverWrites(t *testing.T) {
 		replay      bool // malformed: keep the row and replay from the beginning
 		wantTime    time.Time
 		wantEventID int64
+		wantResumed bool
 	}{
 		{name: "initial row", token: positionToken(t, initialDBTime, 0), wantTime: initialDBTime},
-		{name: "acknowledged row", token: positionToken(t, initialDBTime, 42), wantTime: initialDBTime, wantEventID: 42},
-		{name: "legacy", token: []byte(`{"eventID":42}`), legacy: true, wantTime: initialDBTime, wantEventID: 42},
+		{
+			name: "acknowledged row", token: positionToken(t, initialDBTime, 42),
+			wantTime: initialDBTime, wantEventID: 42, wantResumed: true,
+		},
+		{
+			name: "legacy", token: []byte(`{"eventID":42}`), legacy: true,
+			wantTime: initialDBTime, wantEventID: 42, wantResumed: true,
+		},
 		// As in #2250: an expired legacy row resumes at the earliest later timestamp, with ID zero.
-		{name: "missing legacy row", token: []byte(`{"eventID":42}`), legacy: true, missingRow: true, wantTime: fallbackTime},
+		{
+			name: "missing legacy row", token: []byte(`{"eventID":42}`), legacy: true, missingRow: true,
+			wantTime: fallbackTime, wantResumed: true,
+		},
 		{name: "malformed JSON", token: []byte(`{"eventID":`), replay: true},
 		{name: "malformed timestamp", token: []byte(`{"eventID":42,"timestamp":"invalid"}`), replay: true},
 		{name: "missing fields", token: []byte(`{}`), replay: true},
@@ -207,6 +217,7 @@ func TestWatcherConstruction_ExistingTokens_NeverWrites(t *testing.T) {
 				// No case fails construction, and none writes: existing rows are never replaced.
 				require.NoError(t, err)
 				require.True(t, w.positionInitialized)
+				assert.Equal(t, tc.wantResumed, NewPostgreSQLChangeStreamAdapter(w).ResumedFromCheckpoint())
 				if tc.replay {
 					assert.True(t, w.lastTimestamp.IsZero())
 					assert.Zero(t, w.lastEventID)
