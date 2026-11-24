@@ -30,8 +30,12 @@ import (
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -110,12 +114,14 @@ func Test_isTransientGRPCError(t *testing.T) {
 type rebootRequestRecorder struct {
 	cspv1alpha1.CSPProviderServiceClient
 	request *cspv1alpha1.SendRebootSignalRequest
+	sends   int
 }
 
 func (c *rebootRequestRecorder) SendRebootSignal(
 	_ context.Context, request *cspv1alpha1.SendRebootSignalRequest, _ ...grpc.CallOption,
 ) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	c.request = request
+	c.sends++
 	return &cspv1alpha1.SendRebootSignalResponse{RequestId: "fixture-boot-id"}, nil
 }
 
@@ -135,6 +141,74 @@ func TestSendRebootSignal_UsesAttemptStartForDeadline(t *testing.T) {
 	deadline := csp.request.GetExecutionDeadline()
 	require.NoError(t, deadline.CheckValid())
 	assert.Equal(t, start.Add(timeout), deadline.AsTime())
+}
+
+func TestRebootNodeReconcile_PersistsStartBeforeDispatch(t *testing.T) {
+	const timeout = 8 * time.Minute
+
+	ctx := t.Context()
+	s := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, janitordgxcnvidiacomv1alpha1.AddToScheme(s))
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}
+	reboot := &janitordgxcnvidiacomv1alpha1.RebootNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "reboot-1"},
+		Spec:       janitordgxcnvidiacomv1alpha1.RebootNodeSpec{NodeName: node.Name},
+	}
+	writeErr := errors.New("status write failed")
+	failWrite := 1
+	writes := 0
+	kube := fake.NewClientBuilder().WithScheme(s).WithObjects(node, reboot).
+		WithStatusSubresource(reboot).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subresource string,
+				obj client.Object, opts ...client.SubResourceUpdateOption,
+			) error {
+				writes++
+				if writes == failWrite {
+					return writeErr
+				}
+
+				return c.SubResource(subresource).Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	csp := &rebootRequestRecorder{}
+	reconciler := &RebootNodeReconciler{
+		Client:   kube,
+		Config:   &config.RebootNodeControllerConfig{Timeout: timeout, ManualMode: new(false)},
+		NodeLock: &mockNodeLock{},
+		dialProviderFunc: func(context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
+			return csp, func() {}, nil
+		},
+	}
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(reboot)}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.ErrorIs(t, err, writeErr)
+	require.Zero(t, csp.sends, "the initial status write must succeed before dispatch")
+
+	failWrite = 3
+	_, err = reconciler.Reconcile(ctx, req)
+	require.ErrorIs(t, err, writeErr)
+	require.Equal(t, 1, csp.sends)
+
+	var stored janitordgxcnvidiacomv1alpha1.RebootNode
+	require.NoError(t, kube.Get(ctx, req.NamespacedName, &stored))
+	require.NotNil(t, stored.Status.StartTime)
+	assert.False(t, stored.IsRebootInProgress(), "the dispatch outcome did not persist")
+	deadline := csp.request.GetExecutionDeadline().AsTime()
+	assert.Equal(t, stored.Status.StartTime.Add(timeout).UTC(), deadline)
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, 2, csp.sends)
+	assert.Equal(t, deadline, csp.request.GetExecutionDeadline().AsTime())
+
+	require.NoError(t, kube.Get(ctx, req.NamespacedName, &stored))
+	assert.True(t, stored.IsRebootInProgress())
+	assert.Equal(t, deadline, stored.Status.StartTime.Add(timeout).UTC())
 }
 
 var _ = Describe("RebootNode Controller", func() {

@@ -53,6 +53,7 @@ type cspProviderDialFunc func(ctx context.Context) (cspv1alpha1.CSPProviderServi
 // RebootNodeReconciler reconciles a RebootNode object
 type RebootNodeReconciler struct {
 	client.Client
+	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	Config        *config.RebootNodeControllerConfig
 	NodeLock      distributedlock.NodeLock
@@ -209,11 +210,6 @@ func (r *RebootNodeReconciler) endRebootSession(crKey string) {
 func (r *RebootNodeReconciler) reconcileHelper(
 	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode,
 ) (ctrl.Result, error) {
-	originalRebootNode := rebootNode.DeepCopy()
-
-	rebootNode.SetInitialConditions()
-	rebootNode.SetStartTime()
-
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: rebootNode.Spec.NodeName}, &node); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -242,6 +238,19 @@ func (r *RebootNodeReconciler) reconcileHelper(
 		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
 	}
 	defer cleanup()
+
+	// A failed outcome write can cause another dispatch. Persist the start
+	// before sending the signal so that retry uses the original deadline.
+	if rebootNode.Status.StartTime == nil {
+		rebootNode.SetStartTime()
+
+		if err := r.Status().Update(ctx, rebootNode); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("persisting reboot start time: %w", err))
+		}
+	}
+
+	originalRebootNode := rebootNode.DeepCopy()
+	rebootNode.SetInitialConditions()
 
 	var result ctrl.Result
 
@@ -284,8 +293,14 @@ func (r *RebootNodeReconciler) updateRebootNodeStatusIfChanged(
 
 	var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
 
+	// The informer cache can still hold the resource version from before the start time was written.
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+
 	objectKey := client.ObjectKey{Name: rebootNode.Name, Namespace: rebootNode.Namespace}
-	if err := r.Get(ctx, objectKey, &freshRebootNode); err != nil {
+	if err := reader.Get(ctx, objectKey, &freshRebootNode); err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.Info("Post-reconciliation status update: not found, object assumed deleted", "node", rebootNode.Name)
 
@@ -610,6 +625,9 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.NodeLock = distributedlock.NewNodeLock(
 		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
 	)
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
