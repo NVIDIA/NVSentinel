@@ -80,6 +80,21 @@ func TestMaxConnections_Precedence_OptionThenEnvironmentThenZero(t *testing.T) {
 	}
 }
 
+func TestLoadDatastoreConfig_HealthEventsRetentionEnv_PopulatesOptions(t *testing.T) {
+	t.Setenv("DATASTORE_PROVIDER", "postgresql")
+	t.Setenv("DATASTORE_HEALTH_EVENTS_RETENTION", "720h")
+	t.Setenv("DATASTORE_HEALTH_EVENTS_CLEANUP_INTERVAL", "30m")
+	t.Setenv("DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE", "500")
+	t.Setenv("DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES", "20")
+
+	config, err := LoadDatastoreConfig()
+	require.NoError(t, err)
+	require.Equal(t, "720h", config.Options["healthEventsRetention"])
+	require.Equal(t, "30m", config.Options["healthEventsCleanupInterval"])
+	require.Equal(t, "500", config.Options["healthEventsCleanupBatchSize"])
+	require.Equal(t, "20", config.Options["healthEventsCleanupMaxBatches"])
+}
+
 func TestLoadDatastoreConfig_CleanupEnv_PopulatesOptionsWithoutRejectingInvalidValues(t *testing.T) {
 	t.Setenv("DATASTORE_PROVIDER", "postgresql")
 	for _, raw := range []string{"", "0", "7d", "168h"} {

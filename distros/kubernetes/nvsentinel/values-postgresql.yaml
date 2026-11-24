@@ -30,6 +30,10 @@ global:
       sslcert: "/etc/ssl/client-certs/tls.crt"
       sslkey: "/etc/ssl/client-certs/tls.key"
       sslrootcert: "/etc/ssl/client-certs/ca.crt"
+    # Delete health events older than the retention, as MongoDB's collectionExpirySeconds does.
+    # Off unless set. See docs/configuration/postgresql-store.md#health-event-retention.
+    # healthEventsCleanup:
+    #   retention: "720h"
 
 # PostgreSQL subchart configuration (from Bitnami)
 postgresql:

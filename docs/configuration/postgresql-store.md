@@ -101,6 +101,28 @@ The example values file ships `postgresPassword: "changeme"`, so that a first in
 
 For the connection of the modules, set `global.datastore.credentialsFromSecret.name` to a Secret that defines `DATASTORE_PASSWORD`. Do not put the password in values. For the full credential model, refer to [External Datastore](../external-datastore.md).
 
+## Health event retention
+
+MongoDB deletes health events after `collectionExpirySeconds`, 30 days by default. PostgreSQL has no TTL, so by default the `health_events` table keeps every event for the life of the cluster. To delete events older than a retention, set `global.datastore.healthEventsCleanup.retention`:
+
+```yaml
+global:
+  datastore:
+    healthEventsCleanup:
+      retention: "720h"     # 30 days, the MongoDB default
+      # interval: "1h"      # how often a cleanup runs
+      # batchSize: 10000    # events deleted per transaction
+      # maxBatches: 100     # batches per run
+```
+
+The chart passes these to the components as `DATASTORE_HEALTH_EVENTS_RETENTION`, `DATASTORE_HEALTH_EVENTS_CLEANUP_INTERVAL`, `DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE` and `DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES`. A component reads them when it starts.
+
+- Retention is off by default. The value is a Go duration: `720h` is valid, `30d` is not. The minimum is `24h`, and the interval must be at least `1m`. An invalid value logs a warning and leaves retention off; it never stops a component.
+- As with the MongoDB TTL, an event expires by the time it was stored, even if it is still in progress. Choose a retention longer than the longest window of your health-events-analyzer rules, and longer than a node stays quarantined.
+- The components that open the store run the cleanup: fault-quarantine, node-drainer, fault-remediation and health-events-analyzer. An advisory lock keeps it to one run at a time. Each run deletes at most `batchSize` × `maxBatches` events, so a large existing backlog drains over several runs.
+- The deletes are not kept in `datastore_changelog`. No component acts on a delete, and the changelog has no cleanup yet ([#2170](https://github.com/NVIDIA/NVSentinel/issues/2170)).
+- New events reuse the space of deleted ones, but the table file does not shrink. To return the space of a large backlog to the operating system, use `pg_repack`, or `VACUUM FULL health_events` in a maintenance window (it locks the table).
+
 ## Verify after install
 
 ```bash

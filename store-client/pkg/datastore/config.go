@@ -234,6 +234,11 @@ func loadOptionsFromEnv(config *DataStoreConfig) {
 		"changelogCleanupInterval":   "DATASTORE_CHANGELOG_CLEANUP_INTERVAL",
 		"changelogCleanupBatchSize":  "DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE",
 		"changelogCleanupMaxBatches": "DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES",
+
+		"healthEventsRetention":         "DATASTORE_HEALTH_EVENTS_RETENTION",
+		"healthEventsCleanupInterval":   "DATASTORE_HEALTH_EVENTS_CLEANUP_INTERVAL",
+		"healthEventsCleanupBatchSize":  "DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE",
+		"healthEventsCleanupMaxBatches": "DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES",
 	} {
 		if raw := os.Getenv(env); raw != "" {
 			config.Options[option] = raw

@@ -39,6 +39,7 @@ import (
 type PostgreSQLDataStore struct {
 	db               *sql.DB
 	cleaner          *changelogCleaner
+	eventsCleaner    *healthEventsCleaner
 	connString       string // Connection string for creating LISTEN connections
 	healthEventStore datastore.HealthEventStore
 	// metricsRegisterer is where change stream metrics are registered; nil means the default
@@ -113,6 +114,7 @@ func newPostgreSQLStore(
 	}
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
 	store.cleaner = startChangelogCleaner(ctx, db, config.Options)
+	store.eventsCleaner = startHealthEventsCleaner(ctx, db, config.Options)
 
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
 
@@ -161,9 +163,12 @@ func (p *PostgreSQLDataStore) Ping(ctx context.Context) error {
 	return p.db.PingContext(ctx)
 }
 
-// Close closes the database connection
+// Close closes the database connection. The pool is closed even when the health events
+// cleaner does not stop in time: closing the pool waits for its query in progress.
 func (p *PostgreSQLDataStore) Close(ctx context.Context) error {
-	return p.cleaner.closePool(ctx, p.db)
+	stopErr := p.eventsCleaner.stop(ctx)
+
+	return errors.Join(stopErr, p.cleaner.closePool(ctx, p.db))
 }
 
 // Provider returns the provider type
