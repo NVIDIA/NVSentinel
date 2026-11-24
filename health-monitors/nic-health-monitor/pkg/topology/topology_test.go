@@ -770,3 +770,43 @@ func TestClassify_NoPCIAddressesInFile_KeepsNameKeyedBehaviour(t *testing.T) {
 	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_7"))
 	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_4"))
 }
+
+// TestClassify_NameMovedToUnrecordedDevice_SkipsNameKeyedRow covers
+// the gap next to the rename fix: the file recorded a PCI address
+// for mlx5_7, but the device now holding that name sits at an address
+// the file does not record under any name, so the PCI index misses.
+// The name-keyed mlx5_7 row belongs to the device that held the name
+// at collection time; using it would classify this device by that
+// device's PXB row. The lookup must report no row instead, and
+// classification falls back to the NUMA default.
+func TestClassify_NameMovedToUnrecordedDevice_SkipsNameKeyedRow(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names a third device at
+	// 0000:55:00.0, which the file records under no name. It sits on
+	// GPU NUMA node 1, so the NUMA default classifies it as storage.
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1},
+		map[string]string{"mlx5_7": "0000:55:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+}

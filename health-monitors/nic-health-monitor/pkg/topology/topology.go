@@ -73,6 +73,14 @@ type Classifier struct {
 	// by older collectors, which keep the name-keyed behaviour.
 	topologyByPCI map[string][]string
 
+	// topologyPCIAddresses is the file's name → PCI address map with
+	// the addresses normalised, kept next to topologyByPCI so a lookup
+	// can tell "the file recorded no address for this name" apart from
+	// "the file recorded a different address for this name". In the
+	// second case the name has moved to another device since
+	// collection, and the name-keyed row belongs to that other device.
+	topologyPCIAddresses map[string]string
+
 	// defaultRouteDevice is the IB device name (e.g., "mlx5_8") whose
 	// associated net interface carries the host's default IP route. If
 	// non-empty, classify() treats it as Management. Resolved once at
@@ -135,6 +143,11 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 	}
 
 	c.topologyByPCI = buildPCIIndex(meta.NICTopology, meta.NICTopologyPCIAddresses)
+
+	c.topologyPCIAddresses = make(map[string]string, len(meta.NICTopologyPCIAddresses))
+	for name, addr := range meta.NICTopologyPCIAddresses {
+		c.topologyPCIAddresses[name] = normalizePCIAddress(addr)
+	}
 
 	c.populateGPUNUMASet(meta.GPUs)
 
@@ -239,11 +252,25 @@ func normalizePCIAddress(addr string) string {
 // collectors, for devices the collector did not record, and for
 // sysfs read failures — in each case the behaviour is the one the
 // monitor had before PCI addresses were published.
+//
+// One case is not a fallback: the file recorded a PCI address for
+// this name and the device now holding the name sits at a different
+// address. The name has moved since collection, so the name-keyed
+// row belongs to the device that used to hold it. Returning that row
+// would classify this device by another device's topology, and
+// RoleOf would cache the wrong role under the name. The lookup
+// reports no row instead, and classify uses the NUMA default.
 func (c *Classifier) topologyLevelsFor(device string) []string {
 	if len(c.topologyByPCI) > 0 {
 		if addr, err := c.reader.ReadPCIAddress(device); err == nil {
-			if levels, ok := c.topologyByPCI[normalizePCIAddress(addr)]; ok {
+			addr = normalizePCIAddress(addr)
+
+			if levels, ok := c.topologyByPCI[addr]; ok {
 				return levels
+			}
+
+			if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
+				return nil
 			}
 		}
 	}
