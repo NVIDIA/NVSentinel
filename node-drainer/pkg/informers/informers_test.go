@@ -34,6 +34,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/celrule"
 	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/stretchr/testify/assert"
@@ -129,11 +130,13 @@ func TestExcludedPodTransformRetainsDrainFieldsOnly(t *testing.T) {
 			NodeName:                      "node-a",
 			TerminationGracePeriodSeconds: new(int64(60)),
 			Containers: []v1.Container{{
+				Name: "workload",
 				Resources: v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1")},
 				},
 			}},
 			InitContainers: []v1.Container{{
+				Name: "init",
 				Resources: v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1")},
 				},
@@ -143,6 +146,12 @@ func TestExcludedPodTransformRetainsDrainFieldsOnly(t *testing.T) {
 		Status: v1.PodStatus{
 			Phase:                 v1.PodRunning,
 			ResourceClaimStatuses: []v1.PodResourceClaimStatus{{Name: "gpu", ResourceClaimName: new("eligible-gpu")}},
+			ExtendedResourceClaimStatus: &v1.PodExtendedResourceClaimStatus{
+				RequestMappings: []v1.ContainerExtendedResourceRequest{{
+					ContainerName: "workload", ResourceName: "nvidia.com/gpu", RequestName: "container-0-request-0",
+				}},
+				ResourceClaimName: "eligible-extended-resources-abc12",
+			},
 			Conditions: []v1.PodCondition{{
 				Type:               v1.PodReady,
 				Status:             v1.ConditionTrue,
@@ -168,6 +177,110 @@ func TestInformerTransformsPassThroughUnknownObjects(t *testing.T) {
 	transformedNodeObject, err := nodeTransform(NodeFields(nil))(tombstone)
 	require.NoError(t, err)
 	assert.Equal(t, tombstone, transformedNodeObject)
+
+	transformedClaimObject, err := resourceClaimTransform(tombstone)
+	require.NoError(t, err)
+	assert.Equal(t, tombstone, transformedClaimObject)
+}
+
+func TestResourceClaimTransform_FullClaim_RetainsDrainFieldsOnly(t *testing.T) {
+	t.Parallel()
+
+	claim := &resourcev1.ResourceClaim{
+		TypeMeta: metav1.TypeMeta{Kind: "ResourceClaim", APIVersion: "resource.k8s.io/v1"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "gpu-claim",
+			Namespace:       "workload",
+			UID:             types.UID("claim-uid"),
+			ResourceVersion: "7",
+			Labels:          map[string]string{"app": "train"},
+			Annotations:     map[string]string{"note": "dropped"},
+			ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "kube-scheduler"}},
+		},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{
+			Requests: []resourcev1.DeviceRequest{
+				{
+					Name: "gpu",
+					Exactly: &resourcev1.ExactDeviceRequest{
+						DeviceClassName: "gpu.nvidia.com",
+						Count:           2,
+						Selectors:       []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: "true"}}},
+					},
+				},
+				{
+					Name: "fallback",
+					FirstAvailable: []resourcev1.DeviceSubRequest{
+						{Name: "nic", DeviceClassName: "nic.example.com", Count: 1},
+						{Name: "gpu", DeviceClassName: "gpu.nvidia.com", Count: 1},
+					},
+				},
+			},
+			Config: []resourcev1.DeviceClaimConfiguration{{Requests: []string{"gpu"}}},
+		}},
+		Status: resourcev1.ResourceClaimStatus{
+			Allocation: &resourcev1.AllocationResult{
+				Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{
+					{Request: "gpu", Driver: "gpu.nvidia.com", Pool: "node-a", Device: "gpu-0"},
+					{Request: "fallback/nic", Driver: "nic.example.com", Pool: "node-a", Device: "nic-0"},
+				}},
+				NodeSelector: &v1.NodeSelector{},
+			},
+			ReservedFor: []resourcev1.ResourceClaimConsumerReference{{Resource: "pods", Name: "train-0"}},
+			Devices:     []resourcev1.AllocatedDeviceStatus{{Driver: "gpu.nvidia.com", Pool: "node-a", Device: "gpu-0"}},
+		},
+	}
+
+	transformed, err := resourceClaimTransform(claim)
+	require.NoError(t, err)
+
+	expected := &resourcev1.ResourceClaim{
+		TypeMeta: metav1.TypeMeta{Kind: "ResourceClaim", APIVersion: "resource.k8s.io/v1"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "gpu-claim",
+			Namespace:       "workload",
+			UID:             types.UID("claim-uid"),
+			ResourceVersion: "7",
+		},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{
+			Requests: []resourcev1.DeviceRequest{
+				{Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"}},
+				{FirstAvailable: []resourcev1.DeviceSubRequest{
+					{DeviceClassName: "nic.example.com"},
+					{DeviceClassName: "gpu.nvidia.com"},
+				}},
+			},
+		}},
+		Status: resourcev1.ResourceClaimStatus{
+			Allocation: &resourcev1.AllocationResult{
+				Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{
+					{Request: "gpu", Driver: "gpu.nvidia.com"},
+					{Request: "fallback/nic", Driver: "nic.example.com"},
+				}},
+			},
+		},
+	}
+
+	assert.NotSame(t, claim, transformed)
+	assert.Equal(t, expected, transformed)
+}
+
+func TestResourceClaimTransform_UnallocatedClaim_KeepsAllocationNil(t *testing.T) {
+	t.Parallel()
+
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: "workload"},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+			Name:    "gpu",
+			Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+		}}}},
+	}
+
+	transformed, err := resourceClaimTransform(claim)
+	require.NoError(t, err)
+
+	cached := transformed.(*resourcev1.ResourceClaim)
+	assert.Nil(t, cached.Status.Allocation, "an unallocated claim must stay unallocated in the cache")
+	assert.Equal(t, []string{"gpu.nvidia.com"}, claimDeviceClasses(&cached.Spec))
 }
 
 func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
@@ -468,7 +581,7 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset(systemPod, daemonPod, eligiblePod, node)
-	informers, err := NewInformers(client, 0, new(5), false, false, `^kube-system$`, NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(), false, `^kube-system$`, NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -512,7 +625,7 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	informers, err := NewInformers(client, 0, new(5), false, false, "", NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(), false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -565,16 +678,73 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 		require.NoError(t, err)
 	}
 
+	// Allocated claims: the allocation, not the requested DeviceClasses, decides which driver the pod uses.
+	for claimName, alloc := range map[string]struct {
+		requests []resourcev1.DeviceRequest
+		result   resourcev1.DeviceRequestAllocationResult
+	}{
+		"fallback-nic-allocated": {
+			requests: []resourcev1.DeviceRequest{{Name: "device", FirstAvailable: []resourcev1.DeviceSubRequest{
+				{Name: "nic", DeviceClassName: "nic.example.com", AllocationMode: resourcev1.DeviceAllocationModeExactCount, Count: 1},
+				{Name: "gpu", DeviceClassName: "gpu.nvidia.com", AllocationMode: resourcev1.DeviceAllocationModeExactCount, Count: 1},
+			}}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "device/nic", Driver: "nic.example.com", Pool: "node-0", Device: "nic-0",
+			},
+		},
+		"gpu-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "device",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "device", Driver: "gpu.nvidia.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
+		// Claims that the scheduler generates for a GPU limit that a DRA driver serves.
+		"extended-gpu-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "container-0-request-0", Driver: "gpu.nvidia.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
+		"extended-other-driver-allocated": {
+			requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+			}},
+			result: resourcev1.DeviceRequestAllocationResult{
+				Request: "container-0-request-0", Driver: "other.example.com", Pool: "node-0", Device: "gpu-0",
+			},
+		},
+	} {
+		claim, err := client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec:       resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: alloc.requests}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		claim.Status.Allocation = &resourcev1.AllocationResult{
+			Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{alloc.result}},
+		}
+		_, err = client.ResourceV1().ResourceClaims(namespace).UpdateStatus(ctx, claim, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
 	const (
 		missingAnnotation = "is requesting devices but is missing device annotation; " +
 			"partial drains need the metadata-collector pod device mapper (podMapper.enabled)"
-		noClaimNeeded     = "-" // bind the claim status entry with a nil ResourceClaimName
+		noClaimNeeded = "-" // bind the claim status entry with a nil ResourceClaimName
 	)
 
 	tests := []struct {
 		name            string
-		annotated       bool
+		annotation      string
 		gpuLimit        bool
+		gpuLimitByDRA   string // the claim through which a DRA driver serves the GPU limit (status.extendedResourceClaimStatus)
 		claim           v1.PodResourceClaim
 		boundClaim      string
 		wantPartialErr  string
@@ -612,9 +782,99 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			wantGPUOnlyErr: "not found",
 		},
 		{
-			name:            "annotated pod is drained without reading its claim",
-			annotated:       true,
+			name:            "annotated pod with an entry for every DRA driver is drained without reading its claim",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
 			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("missing-claim")},
+			wantPartialPods: 1,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			// The annotation has no entry for the DRA driver, so the claim decides whether the pod
+			// requests a GPU through DRA. A claim that cannot be read fails closed.
+			name:            "annotated pod without a DRA driver entry fails closed on a missing claim",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("missing-claim")},
+			wantPartialErr:  "not found",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose GPU claim has no annotation entry fails partial drain",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-0"]}}`,
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("gpu-claim")},
+			wantPartialErr:  "is requesting DeviceClass gpu.nvidia.com of DRA driver gpu.nvidia.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose claim was allocated a non-GPU alternative is drained",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
+			gpuLimit:        true,
+			claim:           v1.PodResourceClaim{Name: "fallback", ResourceClaimName: new("fallback-nic-allocated")},
+			wantPartialPods: 1,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose allocated GPU claim has no annotation entry fails partial drain",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-0"]}}`,
+			claim:           v1.PodResourceClaim{Name: "gpu", ResourceClaimName: new("gpu-allocated")},
+			wantPartialErr:  "is requesting a device of DRA driver gpu.nvidia.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose GPU limit has no annotation entry fails partial drain",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-0"]}}`,
+			gpuLimit:        true,
+			wantPartialErr:  "is requesting resource nvidia.com/gpu but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			// The kubelet reports a GPU limit that a DRA driver serves as a DRA device, so the mapper records it
+			// under the driver name only.
+			name:            "annotated pod whose GPU limit a DRA driver serves is drained through the driver entry",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-gpu-allocated",
+			wantPartialPods: 1,
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose GPU limit a DRA driver serves fails partial drain without a driver entry",
+			annotation:      `{"devices":{"example.com/other":["X-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-gpu-allocated",
+			wantPartialErr:  "is requesting resource nvidia.com/gpu through DRA driver gpu.nvidia.com but its device annotation has no entry for it",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			// The drain selects pods only by the names of the entity type, so it cannot select a pod for a device of
+			// a driver that the entity type does not list. An entry for another driver does not record it either.
+			name:            "annotated pod whose GPU limit an unlisted DRA driver serves fails partial drain",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-other-driver-allocated",
+			wantPartialErr:  "resource nvidia.com/gpu is served by DRA driver other.example.com, which the entity type does not list",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose GPU limit an unlisted DRA driver serves fails partial drain with that driver entry",
+			annotation:      `{"devices":{"other.example.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "extended-other-driver-allocated",
+			wantPartialErr:  "resource nvidia.com/gpu is served by DRA driver other.example.com, which the entity type does not list",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod whose generated claim is missing fails closed",
+			annotation:      `{"devices":{"gpu.nvidia.com":["GPU-1"]}}`,
+			gpuLimit:        true,
+			gpuLimitByDRA:   "missing-extended-claim",
+			wantPartialErr:  "not found",
+			wantGPUOnlyPods: 1,
+		},
+		{
+			name:            "annotated pod with a non-GPU claim is kept when it uses the entity",
+			annotation:      `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`,
+			gpuLimit:        true,
+			claim:           v1.PodResourceClaim{Name: "nic", ResourceClaimName: new("nic-claim")},
 			wantPartialPods: 1,
 			wantGPUOnlyPods: 1,
 		},
@@ -642,8 +902,8 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 				Containers: []v1.Container{{Name: "workload", Image: "workload:latest"}},
 			},
 		}
-		if tt.annotated {
-			pod.Annotations = map[string]string{model.PodDeviceAnnotationName: `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`}
+		if tt.annotation != "" {
+			pod.Annotations = map[string]string{model.PodDeviceAnnotationName: tt.annotation}
 		}
 
 		if tt.gpuLimit {
@@ -664,12 +924,24 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 			}
 
 			created.Status.ResourceClaimStatuses = []v1.PodResourceClaimStatus{claimStatus}
+		}
+
+		if tt.gpuLimitByDRA != "" {
+			created.Status.ExtendedResourceClaimStatus = &v1.PodExtendedResourceClaimStatus{
+				RequestMappings: []v1.ContainerExtendedResourceRequest{{
+					ContainerName: "workload", ResourceName: "nvidia.com/gpu", RequestName: "container-0-request-0",
+				}},
+				ResourceClaimName: tt.gpuLimitByDRA,
+			}
+		}
+
+		if tt.boundClaim != "" || tt.gpuLimitByDRA != "" {
 			_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
 			require.NoError(t, err)
 		}
 	}
 
-	informers, err := NewInformers(client, 0, new(5), true, false, "", NodeFields(nil))
+	informers, err := NewInformers(client, 0, new(5), true, modeltest.GPUEntityTypes(), false, "", NodeFields(nil))
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))
 
@@ -699,6 +971,154 @@ func TestFindEvictablePodsInNamespaceAndNode_DRAClaims_DetectsGPURequests(t *tes
 				require.NoError(t, err)
 				assert.Len(t, pods, tt.wantGPUOnlyPods)
 			}
+		})
+	}
+}
+
+func TestFindEvictablePodsInNamespaceAndNode_ConfiguredEntityType_UsesItsDevices(t *testing.T) {
+	ctx := t.Context()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	const namespace = "workload"
+
+	_, err = client.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	for claimName, deviceClassName := range map[string]string{
+		"accel-claim":       "accel.example.com",
+		"accel-large-claim": "accel-large.example.com",
+	} {
+		_, err = client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name:    "device",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: deviceClassName},
+			}}}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+
+	entityTypes := modeltest.GPUEntityTypes()
+	entityTypes["ACCEL_SERIAL"] = model.PartialRemediationEntityType{
+		Devices: []model.PartialRemediationDevice{
+			{ResourceNames: []string{"example.com/accel"}},
+			{
+				Driver:               "accel.example.com",
+				DeviceClasses:        []string{"accel.example.com", "accel-large.example.com"},
+				EntityValueAttribute: "serial",
+			},
+		},
+		ScopedActions: []string{"accel-reset"},
+	}
+
+	tests := []struct {
+		name            string
+		annotation      string
+		limit           string
+		claim           string
+		wantPartialErr  string
+		wantPartialPods int
+		wantFullPods    int
+	}{
+		{
+			name:            "pod using the entity through DRA is drained",
+			annotation:      `{"devices":{"accel.example.com":["ACC-1"]}}`,
+			claim:           "accel-claim",
+			wantPartialPods: 1,
+			wantFullPods:    1,
+		},
+		{
+			name:            "pod using the entity through a device plugin is drained",
+			annotation:      `{"devices":{"example.com/accel":["ACC-1"]}}`,
+			limit:           "example.com/accel",
+			wantPartialPods: 1,
+			wantFullPods:    1,
+		},
+		{
+			name:         "pod using another device of the entity type keeps running",
+			annotation:   `{"devices":{"accel.example.com":["ACC-2"]}}`,
+			claim:        "accel-large-claim",
+			wantFullPods: 1,
+		},
+		{
+			name:         "the same value under a name of another entity type keeps running",
+			annotation:   `{"devices":{"nvidia.com/gpu":["ACC-1"]}}`,
+			limit:        "nvidia.com/gpu",
+			wantFullPods: 1,
+		},
+		{
+			name:           "pod whose DeviceClass has no annotation entry fails the drain",
+			annotation:     `{"devices":{"example.com/accel":["ACC-2"]}}`,
+			claim:          "accel-large-claim",
+			wantPartialErr: "is requesting DeviceClass accel-large.example.com of DRA driver accel.example.com",
+			wantFullPods:   1,
+		},
+		{
+			name:           "unannotated pod with a device-plugin limit fails the drain",
+			limit:          "example.com/accel",
+			wantPartialErr: "is requesting devices but is missing device annotation",
+			wantFullPods:   1,
+		},
+		{
+			name: "CPU-only pod is neither drained nor blocks the drain",
+		},
+	}
+
+	for idx, tt := range tests {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", idx), Namespace: namespace},
+			Spec: v1.PodSpec{
+				NodeName:   fmt.Sprintf("node-%d", idx),
+				Containers: []v1.Container{{Name: "workload", Image: "workload:latest"}},
+			},
+		}
+		if tt.annotation != "" {
+			pod.Annotations = map[string]string{model.PodDeviceAnnotationName: tt.annotation}
+		}
+
+		if tt.limit != "" {
+			pod.Spec.Containers[0].Resources.Limits = v1.ResourceList{v1.ResourceName(tt.limit): resource.MustParse("1")}
+		}
+
+		if tt.claim != "" {
+			pod.Spec.ResourceClaims = []v1.PodResourceClaim{{Name: "device", ResourceClaimName: new(tt.claim)}}
+		}
+
+		_, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+
+	informers, err := NewInformers(client, 0, new(5), true, entityTypes, false, "", NodeFields(nil))
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
+
+	partialDrainEntity := &protos.Entity{EntityType: "ACCEL_SERIAL", EntityValue: "ACC-1"}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := fmt.Sprintf("node-%d", idx)
+
+			pods, err := informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, partialDrainEntity)
+			if tt.wantPartialErr != "" {
+				require.ErrorContains(t, err, tt.wantPartialErr)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, pods, tt.wantPartialPods)
+			}
+
+			// drainGPUPods keeps the pods that request a device of any configured entity type.
+			pods, err = informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, nodeName, nil)
+			require.NoError(t, err)
+			assert.Len(t, pods, tt.wantFullPods)
 		})
 	}
 }
@@ -747,6 +1167,12 @@ func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 		Status: v1.PodStatus{
 			Phase:                 v1.PodRunning,
 			ResourceClaimStatuses: []v1.PodResourceClaimStatus{{Name: "gpu", ResourceClaimName: new("eligible-gpu")}},
+			ExtendedResourceClaimStatus: &v1.PodExtendedResourceClaimStatus{
+				RequestMappings: []v1.ContainerExtendedResourceRequest{{
+					ContainerName: "workload", ResourceName: "nvidia.com/gpu", RequestName: "container-0-request-0",
+				}},
+				ResourceClaimName: "eligible-extended-resources-abc12",
+			},
 			Conditions: []v1.PodCondition{
 				{
 					Type:               v1.PodReady,
@@ -757,5 +1183,140 @@ func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 			},
 			ContainerStatuses: []v1.ContainerStatus{{Name: "workload", Ready: true}},
 		},
+	}
+}
+
+// An entity type with only a DRA entry has no resource names. A pod can still request its device under a resource
+// name that a DeviceClass of the driver serves (status.extendedResourceClaimStatus). The drain needs an annotation
+// entry for that driver, and ignores generated claims of drivers outside the entity type.
+func TestFindEvictablePodsInNamespaceAndNode_DRAOnlyEntityType_ChecksGeneratedClaims(t *testing.T) {
+	ctx := t.Context()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	const namespace = "workload"
+
+	_, err = client.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	for claimName, driver := range map[string]string{
+		"accel-generated": "accel.example.com",
+		"nic-generated":   "nic.example.com",
+	} {
+		claim, err := client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: driver},
+			}}}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		claim.Status.Allocation = &resourcev1.AllocationResult{
+			Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{{
+				Request: "container-0-request-0", Driver: driver, Pool: "node-0", Device: "device-0",
+			}}},
+		}
+		_, err = client.ResourceV1().ResourceClaims(namespace).UpdateStatus(ctx, claim, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
+	tests := []struct {
+		name           string
+		annotation     string
+		resourceName   string
+		generatedClaim string
+		wantErr        string
+		wantPods       int
+	}{
+		{
+			name:           "pod without an entry for the driver fails partial drain",
+			annotation:     `{"devices":{"example.com/other":["X-1"]}}`,
+			resourceName:   "example.com/accel",
+			generatedClaim: "accel-generated",
+			wantErr:        "is requesting resource example.com/accel through DRA driver accel.example.com but its device annotation has no entry for it",
+		},
+		{
+			name:           "pod with an entry for the driver is drained",
+			annotation:     `{"devices":{"accel.example.com":["ACC-1"]}}`,
+			resourceName:   "example.com/accel",
+			generatedClaim: "accel-generated",
+			wantPods:       1,
+		},
+		{
+			name:           "pod whose generated claim uses a driver outside the entity type does not block the drain",
+			annotation:     `{"devices":{"example.com/other":["X-1"]}}`,
+			resourceName:   "example.com/nic",
+			generatedClaim: "nic-generated",
+		},
+	}
+
+	for idx, tt := range tests {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        fmt.Sprintf("pod-%d", idx),
+				Namespace:   namespace,
+				Annotations: map[string]string{model.PodDeviceAnnotationName: tt.annotation},
+			},
+			Spec: v1.PodSpec{
+				NodeName: fmt.Sprintf("node-%d", idx),
+				Containers: []v1.Container{{
+					Name:  "workload",
+					Image: "workload:latest",
+					Resources: v1.ResourceRequirements{
+						Limits: v1.ResourceList{v1.ResourceName(tt.resourceName): resource.MustParse("1")},
+					},
+				}},
+			},
+		}
+
+		created, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		created.Status.ExtendedResourceClaimStatus = &v1.PodExtendedResourceClaimStatus{
+			RequestMappings: []v1.ContainerExtendedResourceRequest{{
+				ContainerName: "workload", ResourceName: tt.resourceName, RequestName: "container-0-request-0",
+			}},
+			ResourceClaimName: tt.generatedClaim,
+		}
+		_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
+	entityTypes := model.PartialRemediationEntityTypes{"ACCEL_SERIAL": {
+		Devices: []model.PartialRemediationDevice{{
+			Driver:               "accel.example.com",
+			DeviceClasses:        []string{"accel.example.com"},
+			EntityValueAttribute: "serial",
+		}},
+		ScopedActions: []string{"accel-reset"},
+	}}
+
+	informers, err := NewInformers(client, 0, new(5), true, entityTypes, false, "", NodeFields(nil))
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
+
+	partialDrainEntity := &protos.Entity{EntityType: "ACCEL_SERIAL", EntityValue: "ACC-1"}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pods, err := informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, fmt.Sprintf("node-%d", idx),
+				partialDrainEntity)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, pods, tt.wantPods)
+		})
 	}
 }

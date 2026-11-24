@@ -16,6 +16,7 @@ package helpers
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
@@ -248,4 +250,62 @@ func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Conf
 
 	err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
+}
+
+// NodeDrainerMetric adds the sample described by name and labels over every node-drainer replica. It returns an error
+// if no replica exposes metrics or one cannot be scraped, so a caller never mistakes a failed scrape for a zero count.
+func NodeDrainerMetric(
+	ctx context.Context, t *testing.T, c *envconf.Config, name string, labels map[string]string,
+) (float64, error) {
+	t.Helper()
+
+	client, err := c.NewClient()
+	if err != nil {
+		return 0, fmt.Errorf("failed to create client: %w", err)
+	}
+
+	pods := &v1.PodList{}
+
+	err = client.Resources(NVSentinelNamespace).List(ctx, pods, func(opts *metav1.ListOptions) {
+		opts.LabelSelector = "app.kubernetes.io/name=node-drainer"
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list node-drainer pods: %w", err)
+	}
+
+	total := 0.0
+	scraped := 0
+
+	for i := range pods.Items {
+		port := podPortByName(&pods.Items[i], "metrics")
+		if port == 0 {
+			continue
+		}
+
+		exposition, err := ScrapePodMetrics(ctx, c.Client().RESTConfig(), NVSentinelNamespace, pods.Items[i].Name, port)
+		if err != nil {
+			return 0, err
+		}
+
+		total += MetricSampleValue(t, exposition, name, labels)
+		scraped++
+	}
+
+	if scraped == 0 {
+		return 0, fmt.Errorf("no node-drainer replica exposes a metrics port")
+	}
+
+	return total, nil
+}
+
+func podPortByName(pod *v1.Pod, name string) int32 {
+	for _, container := range pod.Spec.Containers {
+		for _, port := range container.Ports {
+			if port.Name == name {
+				return port.ContainerPort
+			}
+		}
+	}
+
+	return 0
 }

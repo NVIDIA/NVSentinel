@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -180,6 +182,106 @@ func TestIsNodeDrained_UsesRecordedScope(t *testing.T) {
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				require.False(t, got)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestPartialDrainEntity_UsesScopedActions(t *testing.T) {
+	t.Parallel()
+
+	accel := &protos.Entity{EntityType: "ACCEL_SERIAL", EntityValue: "ACC-1"}
+	types := modeltest.GPUEntityTypes()
+	types["ACCEL_SERIAL"] = model.PartialRemediationEntityType{
+		Devices: []model.PartialRemediationDevice{{
+			Driver: "accel.example.com", DeviceClasses: []string{"accel.example.com"}, EntityValueAttribute: "serial",
+		}},
+		ScopedActions: []string{"accel-reset"},
+	}
+
+	customAction := func(name string, entities ...*protos.Entity) *protos.HealthEvent {
+		return &protos.HealthEvent{
+			RecommendedAction:       protos.RecommendedAction_CUSTOM,
+			CustomRecommendedAction: name,
+			EntitiesImpacted:        entities,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		event   *protos.HealthEvent
+		enabled bool
+		types   model.PartialRemediationEntityTypes
+		want    *protos.Entity
+		wantErr string
+	}{
+		{
+			name:    "disabled drains the full node",
+			event:   componentReset(gpuEntity("GPU-0")),
+			enabled: false,
+			types:   types,
+		},
+		{
+			name:    "built-in scoped action",
+			event:   componentReset(gpuEntity("GPU-0")),
+			enabled: true,
+			types:   types,
+			want:    gpuEntity("GPU-0"),
+		},
+		{
+			name:    "custom scoped action takes the entity of its type",
+			event:   customAction("accel-reset", gpuEntity("GPU-0"), accel),
+			enabled: true,
+			types:   types,
+			want:    accel,
+		},
+		{
+			name:    "action that is not scoped drains the full node",
+			event:   restartVM(),
+			enabled: true,
+			types:   types,
+		},
+		{
+			name:    "custom action that is not scoped drains the full node",
+			event:   customAction("hardware-repair", gpuEntity("GPU-0")),
+			enabled: true,
+			types:   types,
+		},
+		{
+			name:    "an entity with an empty value is skipped",
+			event:   customAction("accel-reset", &protos.Entity{EntityType: "ACCEL_SERIAL"}, accel),
+			enabled: true,
+			types:   types,
+			want:    accel,
+		},
+		{
+			name:    "scoped action without an entity of its type is an error",
+			event:   customAction("accel-reset", gpuEntity("GPU-0")),
+			enabled: true,
+			types:   types,
+			wantErr: "action accel-reset is scoped to entity type ACCEL_SERIAL",
+		},
+		{
+			name:    "an empty map scopes no action",
+			event:   componentReset(gpuEntity("GPU-0")),
+			enabled: true,
+			types:   model.PartialRemediationEntityTypes{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := PartialDrainEntity(tt.event, tt.enabled, tt.types)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				require.Nil(t, got)
 
 				return
 			}
