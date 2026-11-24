@@ -184,6 +184,67 @@ func TestCollectPopulatesNICTopology(t *testing.T) {
 	assert.Equal(t, 1, metadata.GPUs[1].NUMANode)
 }
 
+// TestCollectPopulatesNICTopologyPCIAddresses verifies that the PCI
+// addresses collected with the topo matrix are published next to
+// nic_topology, restricted to devices that have a topology row.
+func TestCollectPopulatesNICTopologyPCIAddresses(t *testing.T) {
+	fake := &fakeNVMLClient{
+		deviceCount:   2,
+		driverVersion: "560.35.03",
+	}
+
+	matrix := &nic.TopoMatrix{
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0", "mlx5_1"},
+		GPUNUMANodes: []int{0, 1},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+			"mlx5_1": {"SYS", "PIX"},
+		},
+		NICPCIAddresses: map[string]string{
+			"mlx5_0": "0000:0c:00.0",
+			"mlx5_1": "0000:18:00.0",
+			// No topology row for mlx5_9: it must not be published.
+			"mlx5_9": "0000:86:00.0",
+		},
+	}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{matrix: matrix})
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"mlx5_0": "0000:0c:00.0",
+		"mlx5_1": "0000:18:00.0",
+	}, metadata.NICTopologyPCIAddresses)
+}
+
+// TestCollectWithoutPCIAddressesLeavesFieldEmpty verifies that a topo
+// matrix collected without PCI addresses (for example when sysfs could
+// not be read) leaves nic_topology_pci_addresses absent, so consumers
+// keep the name-keyed behaviour.
+func TestCollectWithoutPCIAddressesLeavesFieldEmpty(t *testing.T) {
+	fake := &fakeNVMLClient{
+		deviceCount:   2,
+		driverVersion: "560.35.03",
+	}
+
+	matrix := &nic.TopoMatrix{
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0"},
+		GPUNUMANodes: []int{0, 1},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+		},
+	}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{matrix: matrix})
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, metadata.NICTopologyPCIAddresses)
+}
+
 // TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
 // not abort when `nvidia-smi topo -m` fails.
 func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
@@ -273,4 +334,3 @@ func TestCheckGPUCountMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "3 GPU columns")
 	assert.Contains(t, err.Error(), "1 GPUs")
 }
-

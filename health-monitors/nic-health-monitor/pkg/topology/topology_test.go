@@ -697,3 +697,76 @@ func TestClassifier_ConcurrentUseFromBothPollingLoops(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestClassify_RenamedRDMADevices_UsesPCIAddressRow reproduces
+// issue #2521: the collector wrote the file with boot-time RDMA names,
+// then a cloud agent renamed the devices. The device now called
+// mlx5_7 is the physical card at 0000:9a:00.0, whose own row (recorded
+// under its boot-time name mlx5_10) is NODE to the GPUs. The row stored
+// under mlx5_7 belongs to 0000:41:00.0, which is now called mlx5_4.
+// Classification must follow the physical device, not the name.
+func TestClassify_RenamedRDMADevices_UsesPCIAddressRow(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names 0000:9a:00.0 and mlx5_4
+	// now names 0000:41:00.0.
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1, "mlx5_4": 0},
+		map[string]string{"mlx5_7": "0000:9a:00.0", "mlx5_4": "0000:41:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// 0000:9a:00.0 keeps its own NODE row: storage, not the compute
+	// role the stale mlx5_7 row would give it.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	// 0000:41:00.0 keeps its own PXB row even though its current name
+	// has no row in the file at all.
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_4"))
+}
+
+// TestClassify_NoPCIAddressesInFile_KeepsNameKeyedBehaviour is the
+// control for the rename fix: a file written by an older collector has
+// no nic_topology_pci_addresses, and classification must behave
+// exactly as it did before the field existed.
+func TestClassify_NoPCIAddressesInFile_KeepsNameKeyedBehaviour(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_7":  {"PXB", "SYS"},
+			"mlx5_10": {"NODE", "NODE"},
+		},
+	})
+
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1, "mlx5_4": 0},
+		map[string]string{"mlx5_7": "0000:9a:00.0", "mlx5_4": "0000:41:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// Name-keyed lookup, as before: mlx5_7 gets the mlx5_7 row, and a
+	// device with no row falls back to the NUMA default.
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_4"))
+}

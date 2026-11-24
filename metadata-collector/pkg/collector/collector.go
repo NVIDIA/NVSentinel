@@ -36,25 +36,89 @@ type NICTopoCollector interface {
 }
 
 // defaultNICTopoCollector runs nvidia-smi and parses the output.
-type defaultNICTopoCollector struct{}
+type defaultNICTopoCollector struct {
+	ibClassPath string
+}
 
-func (defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
+// maxTopoCollectAttempts bounds the retries when an RDMA rename lands
+// while nvidia-smi runs. A rename moves every device name to another
+// device in well under a second, so one retry lands after it in
+// practice; the bound only guards against a name set that never
+// settles, where the last snapshot is published as best effort.
+const maxTopoCollectAttempts = 3
+
+func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
+	for attempt := 1; ; attempt++ {
+		matrix, before, after, err := c.collectOnce(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// Without two readable snapshots there is nothing to check the
+		// run against; publish the matrix without PCI addresses, which
+		// is the behaviour of collectors before this field existed.
+		if before == nil || after == nil {
+			return matrix, nil
+		}
+
+		matrix.NICPCIAddresses = nic.AddressesForNames(after, matrix.NICs)
+
+		if !nic.AddressesChangedForNames(before, after, matrix.NICs) {
+			return matrix, nil
+		}
+
+		if attempt >= maxTopoCollectAttempts {
+			slog.Warn("RDMA device names kept changing while nvidia-smi topo -m ran, "+
+				"publishing the last name-to-PCI-address snapshot as best effort",
+				"attempts", attempt)
+
+			return matrix, nil
+		}
+
+		slog.Warn("RDMA device names changed while nvidia-smi topo -m ran, "+
+			"collecting the NIC topology again",
+			"attempt", attempt)
+	}
+}
+
+// collectOnce runs nvidia-smi topo -m once, bracketed by PCI address
+// snapshots of the IB devices. A snapshot that cannot be read comes
+// back nil instead of failing the collection.
+func (c defaultNICTopoCollector) collectOnce(
+	ctx context.Context,
+) (matrix *nic.TopoMatrix, before, after map[string]string, err error) {
+	before, snapErr := nic.SnapshotPCIAddresses(c.ibClassPath)
+	if snapErr != nil {
+		slog.Warn("Could not snapshot IB device PCI addresses before nvidia-smi topo -m, "+
+			"nic_topology_pci_addresses will be empty", "error", snapErr)
+
+		before = nil
+	}
+
 	output, err := nic.RunTopoCommand(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("run nvidia-smi topo -m: %w", err)
+		return nil, nil, nil, fmt.Errorf("run nvidia-smi topo -m: %w", err)
 	}
 
-	matrix, err := nic.ParseTopoMatrix(output)
+	matrix, err = nic.ParseTopoMatrix(output)
 	if err != nil {
-		return nil, fmt.Errorf("parse nvidia-smi topo -m output: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse nvidia-smi topo -m output: %w", err)
 	}
 
-	return matrix, nil
+	after, snapErr = nic.SnapshotPCIAddresses(c.ibClassPath)
+	if snapErr != nil {
+		slog.Warn("Could not snapshot IB device PCI addresses after nvidia-smi topo -m, "+
+			"nic_topology_pci_addresses will be empty", "error", snapErr)
+
+		after = nil
+	}
+
+	return matrix, before, after, nil
 }
 
 // NewDefaultTopoCollector returns the production NICTopoCollector.
 func NewDefaultTopoCollector() NICTopoCollector {
-	return defaultNICTopoCollector{}
+	return defaultNICTopoCollector{ibClassPath: nic.DefaultIBClassPath}
 }
 
 type nvmlClient interface {
@@ -168,9 +232,27 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		metadata.NICTopology[name] = matrix.Relationships[name]
 	}
 
+	// Publish the PCI address of each topology row alongside the
+	// name-keyed matrix, restricted to rows that were published.
+	// Consumers use it to resolve rows by physical device when a
+	// device name has moved since collection.
+	if len(matrix.NICPCIAddresses) > 0 {
+		addresses := make(map[string]string, len(matrix.NICPCIAddresses))
+		for name, addr := range matrix.NICPCIAddresses {
+			if _, ok := metadata.NICTopology[name]; ok {
+				addresses[name] = addr
+			}
+		}
+
+		if len(addresses) > 0 {
+			metadata.NICTopologyPCIAddresses = addresses
+		}
+	}
+
 	slog.Info("Populated NIC topology matrix",
 		"gpus", len(matrix.GPUs),
 		"nics", len(matrix.NICs),
+		"nics_with_pci_address", len(metadata.NICTopologyPCIAddresses),
 	)
 }
 

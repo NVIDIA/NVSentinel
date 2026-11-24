@@ -67,11 +67,17 @@ var (
 // GPUNUMANodes[i] is the NUMA Affinity value for GPUs[i], parsed from
 // the trailing column in each GPU data row. A value of -1 means the
 // column was missing or unparseable.
+//
+// NICPCIAddresses maps each NIC name to the PCI address of the device
+// that carried the name when the matrix was collected. It is populated
+// by the collector, not the parser, and stays nil when the addresses
+// could not be read.
 type TopoMatrix struct {
-	GPUs          []string
-	NICs          []string
-	GPUNUMANodes  []int
-	Relationships map[string][]string
+	GPUs            []string
+	NICs            []string
+	GPUNUMANodes    []int
+	Relationships   map[string][]string
+	NICPCIAddresses map[string]string
 }
 
 // RunTopoCommand runs `nvidia-smi topo -m` and returns its stdout.
