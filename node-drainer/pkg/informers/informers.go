@@ -722,21 +722,13 @@ func unrecordedResourceName(pod *v1.Pod, entityType model.PartialRemediationEnti
 func (i *Informers) unrecordedExtendedResource(pod *v1.Pod, entityType model.PartialRemediationEntityType,
 	deviceAnnotation model.DeviceAnnotation) (string, error) {
 	status := pod.Status.ExtendedResourceClaimStatus
-	if status == nil {
+	if status == nil || len(status.RequestMappings) == 0 {
 		return "", nil
 	}
 
-	resourceNames := entityType.ResourceNames()
 	resourceByRequest := map[string]string{}
-
 	for _, mapping := range status.RequestMappings {
-		if slices.Contains(resourceNames, mapping.ResourceName) {
-			resourceByRequest[mapping.RequestName] = mapping.ResourceName
-		}
-	}
-
-	if len(resourceByRequest) == 0 {
-		return "", nil
+		resourceByRequest[mapping.RequestName] = mapping.ResourceName
 	}
 
 	claim, err := i.claimLister.ResourceClaims(pod.Namespace).Get(status.ResourceClaimName)
@@ -751,14 +743,32 @@ func (i *Informers) unrecordedExtendedResource(pod *v1.Pod, entityType model.Par
 		return "", fmt.Errorf("ResourceClaim %s/%s is not allocated yet", pod.Namespace, status.ResourceClaimName)
 	}
 
-	for _, result := range claim.Status.Allocation.Devices.Results {
+	return unrecordedAllocation(claim.Status.Allocation.Devices.Results, resourceByRequest, entityType,
+		deviceAnnotation), nil
+}
+
+// unrecordedAllocation describes the first device of the entity type in the results of a generated claim that the
+// device annotation has no entry for, or returns "". A device belongs to the entity type when its driver is a driver
+// of the entity type, or when the pod requested it under a resource name of the entity type. An entity type with only
+// DRA entries has no resource names.
+func unrecordedAllocation(results []resourcev1.DeviceRequestAllocationResult, resourceByRequest map[string]string,
+	entityType model.PartialRemediationEntityType, deviceAnnotation model.DeviceAnnotation) string {
+	resourceNames := entityType.ResourceNames()
+	drivers := entityType.Drivers()
+
+	for _, result := range results {
 		resourceName, ok := resourceByRequest[result.Request]
-		if ok && !hasAnnotationEntry(deviceAnnotation, result.Driver) {
-			return fmt.Sprintf("resource %s through DRA driver %s", resourceName, result.Driver), nil
+		if !ok {
+			continue
+		}
+
+		inEntityType := slices.Contains(drivers, result.Driver) || slices.Contains(resourceNames, resourceName)
+		if inEntityType && !hasAnnotationEntry(deviceAnnotation, result.Driver) {
+			return fmt.Sprintf("resource %s through DRA driver %s", resourceName, result.Driver)
 		}
 	}
 
-	return "", nil
+	return ""
 }
 
 func hasAnnotationEntry(deviceAnnotation model.DeviceAnnotation, name string) bool {

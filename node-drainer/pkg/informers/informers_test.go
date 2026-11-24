@@ -1176,3 +1176,138 @@ func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
 		},
 	}
 }
+
+// An entity type with only a DRA entry has no resource names. A pod can still request its device under a resource
+// name that a DeviceClass of the driver serves (status.extendedResourceClaimStatus). The drain needs an annotation
+// entry for that driver, and ignores generated claims of drivers outside the entity type.
+func TestFindEvictablePodsInNamespaceAndNode_DRAOnlyEntityType_ChecksGeneratedClaims(t *testing.T) {
+	ctx := t.Context()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	const namespace = "workload"
+
+	_, err = client.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	for claimName, driver := range map[string]string{
+		"accel-generated": "accel.example.com",
+		"nic-generated":   "nic.example.com",
+	} {
+		claim, err := client.ResourceV1().ResourceClaims(namespace).Create(ctx, &resourcev1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name:    "container-0-request-0",
+				Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: driver},
+			}}}},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		claim.Status.Allocation = &resourcev1.AllocationResult{
+			Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{{
+				Request: "container-0-request-0", Driver: driver, Pool: "node-0", Device: "device-0",
+			}}},
+		}
+		_, err = client.ResourceV1().ResourceClaims(namespace).UpdateStatus(ctx, claim, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
+	tests := []struct {
+		name           string
+		annotation     string
+		resourceName   string
+		generatedClaim string
+		wantErr        string
+		wantPods       int
+	}{
+		{
+			name:           "pod without an entry for the driver fails partial drain",
+			annotation:     `{"devices":{"example.com/other":["X-1"]}}`,
+			resourceName:   "example.com/accel",
+			generatedClaim: "accel-generated",
+			wantErr:        "is requesting resource example.com/accel through DRA driver accel.example.com but its device annotation has no entry for it",
+		},
+		{
+			name:           "pod with an entry for the driver is drained",
+			annotation:     `{"devices":{"accel.example.com":["ACC-1"]}}`,
+			resourceName:   "example.com/accel",
+			generatedClaim: "accel-generated",
+			wantPods:       1,
+		},
+		{
+			name:           "pod whose generated claim uses a driver outside the entity type does not block the drain",
+			annotation:     `{"devices":{"example.com/other":["X-1"]}}`,
+			resourceName:   "example.com/nic",
+			generatedClaim: "nic-generated",
+		},
+	}
+
+	for idx, tt := range tests {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        fmt.Sprintf("pod-%d", idx),
+				Namespace:   namespace,
+				Annotations: map[string]string{model.PodDeviceAnnotationName: tt.annotation},
+			},
+			Spec: v1.PodSpec{
+				NodeName: fmt.Sprintf("node-%d", idx),
+				Containers: []v1.Container{{
+					Name:  "workload",
+					Image: "workload:latest",
+					Resources: v1.ResourceRequirements{
+						Limits: v1.ResourceList{v1.ResourceName(tt.resourceName): resource.MustParse("1")},
+					},
+				}},
+			},
+		}
+
+		created, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		created.Status.ExtendedResourceClaimStatus = &v1.PodExtendedResourceClaimStatus{
+			RequestMappings: []v1.ContainerExtendedResourceRequest{{
+				ContainerName: "workload", ResourceName: tt.resourceName, RequestName: "container-0-request-0",
+			}},
+			ResourceClaimName: tt.generatedClaim,
+		}
+		_, err = client.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+
+	entityTypes := model.PartialRemediationEntityTypes{"ACCEL_SERIAL": {
+		Devices: []model.PartialRemediationDevice{{
+			Driver:               "accel.example.com",
+			DeviceClasses:        []string{"accel.example.com"},
+			EntityValueAttribute: "serial",
+		}},
+		ScopedActions: []string{"accel-reset"},
+	}}
+
+	informers, err := NewInformers(client, 0, new(5), true, entityTypes, false, "", NodeFields(nil))
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
+
+	partialDrainEntity := &protos.Entity{EntityType: "ACCEL_SERIAL", EntityValue: "ACC-1"}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pods, err := informers.FindEvictablePodsInNamespaceAndNode(ctx, namespace, fmt.Sprintf("node-%d", idx),
+				partialDrainEntity)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, pods, tt.wantPods)
+		})
+	}
+}
