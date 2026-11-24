@@ -284,6 +284,146 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 	})
 
+	Context("When the terminate rate limit is reached", func() {
+		var secondCRName string
+
+		signalSent := func(name string) *metav1.Condition {
+			var tn janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, &tn)).To(Succeed())
+
+			return meta.FindStatusCondition(tn.Status.Conditions, janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent)
+		}
+
+		reconcileToSignal := func(name string) {
+			Eventually(func() metav1.ConditionStatus {
+				_, err := reconciler.Reconcile(ctx, ctrl.Request{Name: name})
+				Expect(err).NotTo(HaveOccurred())
+
+				if condition := signalSent(name); condition != nil {
+					return condition.Status
+				}
+
+				return metav1.ConditionUnknown
+			}, timeout, interval).Should(Equal(metav1.ConditionTrue))
+		}
+
+		BeforeEach(func() {
+			secondNodeName := nodeName + "-second"
+			secondCRName = crName + "-second"
+			Expect(k8sClient.Create(ctx, &corev1.Node{
+				Name:   secondNodeName,
+				Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+			})).To(Succeed())
+			Expect(k8sClient.Create(ctx, &janitordgxcnvidiacomv1alpha1.TerminateNode{
+				Name: secondCRName,
+				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{NodeName: secondNodeName},
+			})).To(Succeed())
+		})
+
+		It("Should send the first terminate signal and hold the next one without failing it", func() {
+			// Other specs leave sent TerminateNodes behind: allow exactly one more signal.
+			recorded, err := reconciler.recentTerminateSignals(ctx, time.Now().Add(-time.Hour))
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Config.RateLimit = config.TerminateRateLimitConfig{MaxTerminations: len(recorded) + 1, Window: time.Hour}
+
+			reconcileToSignal(crName)
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{Name: secondCRName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 50*time.Minute))
+
+			var held janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secondCRName}, &held)).To(Succeed())
+			condition := meta.FindStatusCondition(held.Status.Conditions, janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(condition.Reason).To(Equal(conditionReasonRateLimited))
+			Expect(held.Status.CompletionTime).To(BeNil(), "a held request has not failed")
+			checkStatusConditions(held.Status.Conditions)
+		})
+
+		It("Should send the held terminate signal once the first one leaves the window", func() {
+			const window = 3 * time.Second
+
+			// Start from a quiet window, so that only this spec's signals count.
+			Eventually(func() int {
+				recorded, err := reconciler.recentTerminateSignals(ctx, time.Now().Add(-window))
+				Expect(err).NotTo(HaveOccurred())
+
+				return len(recorded)
+			}, timeout, interval).Should(BeZero())
+			reconciler.Config.RateLimit = config.TerminateRateLimitConfig{MaxTerminations: 1, Window: window}
+
+			reconcileToSignal(crName)
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{Name: secondCRName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(signalSent(secondCRName).Reason).To(Equal(conditionReasonRateLimited))
+
+			time.Sleep(result.RequeueAfter)
+			reconcileToSignal(secondCRName)
+		})
+	})
+
+	Context("When a terminate signal was sent after the request waited", func() {
+		backdate := func(startedAgo, sentAgo time.Duration) {
+			var tn janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &tn)).To(Succeed())
+
+			tn.Status.StartTime = &metav1.Time{Time: time.Now().Add(-startedAgo)}
+			for i := range tn.Status.Conditions {
+				if tn.Status.Conditions[i].Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent {
+					tn.Status.Conditions[i].LastTransitionTime = metav1.Time{Time: time.Now().Add(-sentAgo)}
+				}
+			}
+
+			Expect(k8sClient.Status().Update(ctx, &tn)).To(Succeed())
+		}
+
+		sendSignal := func() {
+			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, ctrl.Request{Name: crName})
+				Expect(err).NotTo(HaveOccurred())
+
+				var tn janitordgxcnvidiacomv1alpha1.TerminateNode
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &tn)).To(Succeed())
+
+				return tn.IsTerminateInProgress()
+			}, timeout, interval).Should(BeTrue())
+		}
+
+		It("Should time the terminate from the signal, not from the start of the request", func() {
+			reconciler.Config.Timeout = 30 * time.Minute
+			sendSignal()
+			backdate(2*time.Hour, time.Minute)
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{Name: crName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+			var tn janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &tn)).To(Succeed())
+			Expect(tn.Status.CompletionTime).To(BeNil(), "the signal is a minute old, within the timeout")
+		})
+
+		It("Should time out a terminate whose signal is older than the timeout", func() {
+			reconciler.Config.Timeout = 30 * time.Minute
+			sendSignal()
+			backdate(2*time.Hour, time.Hour)
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{Name: crName})
+			Expect(err).NotTo(HaveOccurred())
+
+			var tn janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &tn)).To(Succeed())
+			Expect(tn.Status.CompletionTime).NotTo(BeNil())
+			terminated := meta.FindStatusCondition(tn.Status.Conditions, janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated)
+			Expect(terminated).NotTo(BeNil())
+			Expect(terminated.Reason).To(Equal("Timeout"))
+		})
+	})
+
 	Context("When node is not ready", func() {
 		It("Should delete the node", func() {
 			// Trigger initial reconciliation to set start time

@@ -84,6 +84,11 @@ data:
       {{- if .Values.config.controllers.terminateNode.cspProviderHost }}
       cspProviderHost: {{ .Values.config.controllers.terminateNode.cspProviderHost }}
       {{- end }}
+      {{- with .Values.config.controllers.terminateNode.rateLimit }}
+      rateLimit:
+        maxTerminations: {{ .maxTerminations | default 0 }}
+        window: {{ .window | default "1m" | quote }}
+      {{- end }}
 
     gpuResetController:
       enabled: {{ if (hasKey .Values.config.controllers.gpuReset "enabled") }}{{ .Values.config.controllers.gpuReset.enabled }}{{ else }}true{{ end }}

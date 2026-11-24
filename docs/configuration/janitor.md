@@ -238,9 +238,21 @@ janitor:
       terminateNode:
         enabled: true
         timeout: "25m"
+        rateLimit:
+          maxTerminations: 0
+          window: "1m"
 ```
 
-Handles `TerminateNode` CRs. `timeout` overrides `config.timeout` for terminate operations.
+Handles `TerminateNode` CRs. `timeout` overrides `config.timeout` for terminate operations. It counts from the terminate signal, so it covers the wait for the instance to go away.
+
+#### Terminate rate limit
+
+`rateLimit` paces the terminate signals the Janitor sends across the cluster: at most `maxTerminations` in any `window`. `maxTerminations: 0`, the default, is no limit. `window` defaults to `1m`.
+
+- A request over the limit waits; it does not fail. Its `SignalSent` condition is `Unknown` with the reason `RateLimited`, and the Janitor sends the signal when an earlier one leaves the window. fault-remediation sees a terminate in progress, so the wait does not use up a remediation attempt, as a rejection by an admission webhook would.
+- The limit counts the signals that `TerminateNode` statuses record, so it holds when the Janitor restarts.
+- The limit covers every CSP provider, because it applies before the Janitor calls the provider.
+- In manual mode the Janitor sends no signals, so the limit does not apply.
 
 ### GPUReset Controller
 

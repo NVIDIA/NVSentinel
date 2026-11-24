@@ -99,6 +99,17 @@ type TerminateNodeControllerConfig struct {
 	CSPProviderInsecure bool
 	// CSPProviderTokenPath is the path to the SA token file for gRPC auth
 	CSPProviderTokenPath string
+	// RateLimit paces the terminate signals the controller sends across the cluster
+	RateLimit TerminateRateLimitConfig
+}
+
+// TerminateRateLimitConfig limits the controller to MaxTerminations terminate signals in any
+// Window. A request over the limit waits until a terminate signal leaves the window; it does not
+// fail. MaxTerminations 0, the default, turns the limit off.
+type TerminateRateLimitConfig struct {
+	MaxTerminations int
+	// Window defaults to DefaultTerminateRateLimitWindow when MaxTerminations is set.
+	Window time.Duration
 }
 
 // GPUResetControllerConfig contains configuration for gpu reset controller

@@ -831,3 +831,25 @@ func TestLoadConfig_RequireNodeOutOfService(t *testing.T) {
 		assert.False(t, *config.TerminateNode.RequireNodeOutOfService)
 	})
 }
+
+func TestLoadConfig_TerminateRateLimit(t *testing.T) {
+	for name, tt := range map[string]struct {
+		rateLimit string
+		want      TerminateRateLimitConfig
+	}{
+		"absent is off":               {rateLimit: "", want: TerminateRateLimitConfig{}},
+		"set":                         {rateLimit: "\n  rateLimit:\n    maxTerminations: 3\n    window: 2m", want: TerminateRateLimitConfig{MaxTerminations: 3, Window: 2 * time.Minute}},
+		"window defaults to a minute": {rateLimit: "\n  rateLimit:\n    maxTerminations: 3", want: TerminateRateLimitConfig{MaxTerminations: 3, Window: time.Minute}},
+		"zero maxTerminations is off": {rateLimit: "\n  rateLimit:\n    maxTerminations: 0\n    window: 2m", want: TerminateRateLimitConfig{Window: 2 * time.Minute}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "janitor-config.yaml")
+			configContent := "global:\n  timeout: 30m\nterminateNodeController:\n  enabled: true" + tt.rateLimit + "\n"
+			require.NoError(t, os.WriteFile(configPath, []byte(configContent), 0644))
+
+			config, err := LoadConfig(configPath, testNamespace)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, config.TerminateNode.RateLimit)
+		})
+	}
+}
