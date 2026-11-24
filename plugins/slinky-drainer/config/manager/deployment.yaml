@@ -33,9 +33,15 @@ spec:
         args:
         - --pod-check-interval=5s
         - --drain-timeout=30m
-        - --slinky-namespace=slinky
+        - --slinky-namespace=$(SLINKY_NAMESPACE)
         - --metrics-bind-address=:8080
         - --health-probe-bind-address=:8081
+        env:
+        # The namespace where the Slinky workload pods run. config/default
+        # overwrites this value. Change it there, so that the pod permissions
+        # of the controller move to the same namespace.
+        - name: SLINKY_NAMESPACE
+          value: slinky
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

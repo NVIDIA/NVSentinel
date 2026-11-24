@@ -289,3 +289,71 @@ func TestAppSpecIsGPUClients(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveManager(t *testing.T) {
+	gpuOperator, err := NewManager("gpu-operator", ManagerSpec{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	t.Run("without a namespace it resolves like NewManager", func(t *testing.T) {
+		got, err := ResolveManager(Manager{Name: "custom", Spec: validCustomSpec})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(got, Manager{Name: "custom", Spec: validCustomSpec}) {
+			t.Errorf("Unexpected manager %+v", got)
+		}
+	})
+
+	t.Run("the namespace replaces the namespace of the built-in manager", func(t *testing.T) {
+		got, err := ResolveManager(Manager{Name: "gpu-operator", Namespace: "nvidia-gpu-operator"})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		want := gpuOperator.Spec
+		want.Namespace = "nvidia-gpu-operator"
+		if !reflect.DeepEqual(got, Manager{Name: "gpu-operator", Spec: want}) {
+			t.Errorf("Unexpected manager %+v", got)
+		}
+		if Registry["gpu-operator"].Namespace != "gpu-operator" {
+			t.Errorf("The registry entry changed: %q", Registry["gpu-operator"].Namespace)
+		}
+	})
+
+	errorCases := []struct {
+		name          string
+		config        Manager
+		expectedError string
+	}{
+		{
+			name:          "a namespace without a name",
+			config:        Manager{Namespace: "nvidia-gpu-operator"},
+			expectedError: "GPU services manager Namespace requires a manager Name",
+		},
+		{
+			name:   "a namespace with a custom spec",
+			config: Manager{Name: "custom", Namespace: "nvidia-gpu-operator", Spec: validCustomSpec},
+			expectedError: "GPU services manager Namespace applies only to a built-in manager; " +
+				"set the namespace of a custom spec in the spec",
+		},
+		{
+			name:          "a namespace for an unknown manager",
+			config:        Manager{Name: "unknown", Namespace: "nvidia-gpu-operator"},
+			expectedError: "GPU services manager 'unknown' not found in registry",
+		},
+	}
+
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveManager(tc.config)
+			if err == nil || err.Error() != tc.expectedError {
+				t.Fatalf("Expected error %q, got %v", tc.expectedError, err)
+			}
+			if !reflect.DeepEqual(got, Manager{}) {
+				t.Errorf("Expected a zero manager on error, got %+v", got)
+			}
+		})
+	}
+}
