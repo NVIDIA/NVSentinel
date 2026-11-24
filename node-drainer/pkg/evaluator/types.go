@@ -59,6 +59,7 @@ type InformersInterface interface {
 	FindEvictablePodsInNamespaceAndNode(context.Context, string, string, *protos.Entity,
 		...informers.PodFilter) ([]*v1.Pod, error)
 	GetNode(string) (*v1.Node, error)
+	NodeDeleted(context.Context, string) (bool, error)
 }
 
 type CustomDrainClientInterface interface {

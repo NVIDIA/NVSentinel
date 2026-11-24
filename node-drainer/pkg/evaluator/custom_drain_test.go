@@ -17,6 +17,7 @@ package evaluator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -40,17 +42,26 @@ import (
 type nodeSelectorInformers struct {
 	InformersInterface
 	nodes     map[string]*v1.Node
+	deleted   map[string]bool
 	podChecks int
 }
 
-// GetNode serves the node cache the drain path decision reads.
+// GetNode serves the node cache the drain path decision reads. A miss is a NotFound, as in
+// the real informer.
 func (i *nodeSelectorInformers) GetNode(nodeName string) (*v1.Node, error) {
 	node, exists := i.nodes[nodeName]
 	if !exists {
-		return nil, errors.New("node not found in cache")
+		return nil, fmt.Errorf("node %s not found in cache: %w", nodeName,
+			apierrors.NewNotFound(v1.Resource("nodes"), nodeName))
 	}
 
 	return node, nil
+}
+
+// NodeDeleted stands in for the API server read: a node missing from the cache is deleted only
+// when the test says so, and otherwise is one the cache has not caught up with.
+func (i *nodeSelectorInformers) NodeDeleted(_ context.Context, nodeName string) (bool, error) {
+	return i.deleted[nodeName], nil
 }
 
 // GetNamespacesMatchingPattern stands in for the namespace scan custom drain does before
@@ -210,6 +221,57 @@ func TestEvaluateEventWithDatabase_NodeMissingFromCache_RetriesInsteadOfGuessing
 	require.Nil(t, result.DrainDecision)
 	require.Empty(t, recorder.decisions)
 	require.Zero(t, client.existsCalls)
+}
+
+// TestEvaluateEventWithDatabase_NodeSelector_DeletedNodeIsCancelled ends the event of a deleted
+// node instead of waiting for a node that will not come back.
+func TestEvaluateEventWithDatabase_NodeSelector_DeletedNodeIsCancelled(t *testing.T) {
+	evaluator, client := newNodeSelectorEvaluator(t, "scheduler=slurm", nil)
+	evaluator.informers.(*nodeSelectorInformers).deleted = map[string]bool{"deleted-node": true}
+	recorder := &decisionRecorder{}
+
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("deleted-node"), nil, nil,
+		recorder.record)
+	require.NoError(t, err)
+	require.Equal(t, ActionCancel, result.Action)
+	require.Equal(t, model.Cancelled, result.Status)
+	require.Nil(t, result.DrainDecision)
+	require.Empty(t, recorder.decisions)
+	require.Zero(t, client.existsCalls)
+}
+
+// TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode covers an AlreadyQuarantined event
+// whose node is gone: deleted, it is cancelled; missing only from the cache, it keeps waiting.
+func TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		deleted bool
+		action  DrainAction
+	}{
+		{name: "deleted node is cancelled", deleted: true, action: ActionCancel},
+		{name: "node the cache has not caught up with waits", deleted: false, action: ActionWait},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			evaluator, client := newNodeSelectorEvaluator(t, "", nil)
+			evaluator.informers.(*nodeSelectorInformers).deleted = map[string]bool{"gone-node": tt.deleted}
+			recorder := &decisionRecorder{}
+
+			event := quarantinedEvent("gone-node")
+			event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
+
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil, recorder.record)
+			require.NoError(t, err)
+			require.Equal(t, tt.action, result.Action)
+			require.Empty(t, recorder.decisions)
+			require.Zero(t, client.existsCalls)
+
+			if tt.deleted {
+				require.Equal(t, model.Cancelled, result.Status)
+			} else {
+				require.Equal(t, time.Minute, result.WaitDelay)
+			}
+		})
+	}
 }
 
 // TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain

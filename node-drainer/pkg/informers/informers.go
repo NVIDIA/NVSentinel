@@ -1278,7 +1278,9 @@ func (i *Informers) GetNode(nodeName string) (*v1.Node, error) {
 	if !exists {
 		slog.Error("Node not found in cache", "node", nodeName)
 
-		return nil, fmt.Errorf("node %s not found in cache", nodeName)
+		// Wrapping a NotFound lets callers tell a node missing from the cache from a failed lookup.
+		return nil, fmt.Errorf("node %s not found in cache: %w", nodeName,
+			errors.NewNotFound(v1.Resource("nodes"), nodeName))
 	}
 
 	node, ok := nodeObj.(*v1.Node)
@@ -1287,6 +1289,21 @@ func (i *Informers) GetNode(nodeName string) (*v1.Node, error) {
 	}
 
 	return node, nil
+}
+
+// NodeDeleted reports whether the API server no longer has the node. It reads the API server,
+// not the informer cache, so a node the cache has not caught up with is not reported deleted.
+func (i *Informers) NodeDeleted(ctx context.Context, nodeName string) (bool, error) {
+	_, err := i.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.IsNotFound(err):
+		return true, nil
+	default:
+		return false, fmt.Errorf("error getting node %s from the API server: %w", nodeName, err)
+	}
 }
 
 // DeletePodsAfterTimeout waits for selected pods until timeout minutes after event creation,
