@@ -176,7 +176,7 @@ Change the `entityValueAttribute` of a driver only while partial drains for its 
        -o jsonpath='{.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}'
      ```
 
-   - Each pod has finished a successful poll: its `metadata_collector_pod_mapper_last_success_timestamp_seconds` is not 0. A new pod starts it at 0, and sets it after a successful poll. A failed poll does not set it. If the metrics endpoint is disabled (`metadata-collector.metrics.enabled: false`), look for the log line `Device mapper pod annotation updates` in the pod log instead. The mapper logs it only after a successful poll.
+   - Each pod has finished a successful poll: its `metadata_collector_pod_mapper_last_success_timestamp_seconds` is not 0. A new pod starts it at 0, and sets it after a successful poll. A failed poll does not set it. If the metrics endpoint is disabled (`metadata-collector.metrics.enabled: false`), look for the log line `Device mapper pod annotation updates` in the pod log instead. The mapper logs it only after a successful poll, at the info level, so it needs `metadata-collector.logLevel: info`, the default.
 
    After a successful poll, no annotation on the node holds values of the old attribute: each one has the new values or is removed. A node without a running metadata-collector pod keeps the old values.
 4. Restore `scopedActions`, and upgrade.
