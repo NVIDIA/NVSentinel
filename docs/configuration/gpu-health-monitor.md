@@ -352,9 +352,9 @@ While the counter is below the threshold, the GPU Health Monitor reports the GPU
 
 ## Uptime Limit for Known Defects
 
-`GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS defect makes NVLink communication fail after more than 60 days of uptime, in some cases after 61 to 63 days. Until you install a fixed version, the mitigation is to reboot each affected node before it reaches that uptime.
+`GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS defect makes NVLink communication fail after more than 60 days of uptime, in some cases after 61 to 63 days. Until you install a fixed vBIOS, the mitigation is to reboot each affected node before it reaches that uptime.
 
-When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
+When the check is enabled, the GPU Health Monitor reads the vBIOS version of each GPU from DCGM. It reads the versions each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed vBIOS version and the node uptime is more than `maxUptimeHours`.
 
 `GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel quarantines, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
 
@@ -367,7 +367,6 @@ gpu-health-monitor:
   uptimeLimit:
     enabled: true
     storeOnly: true
-    affectedDriverVersions: []
     affectedVbiosVersions:
       - "97.00.82.00.4B"
     maxUptimeHours: 1440
@@ -377,7 +376,7 @@ If many affected nodes started at the same time, they pass the limit at the same
 
 ### enabled
 
-This value enables the check. By default, the check is off. If you enable the check, list at least one version and set `maxUptimeHours` to more than 0. Otherwise, Helm does not render the chart. If you write `config.ini` yourself, the GPU Health Monitor does not start.
+This value enables the check. By default, the check is off. If you enable the check, list at least one vBIOS version and set `maxUptimeHours` to more than 0. Otherwise, Helm does not render the chart. If you write `config.ini` yourself, the GPU Health Monitor does not start.
 
 If you disable the check, the GPU Health Monitor stops sending its health events. Thus, a node with an active `GpuUptimeLimitWatch` fault stays quarantined. Reboot such nodes before you disable the check.
 
@@ -385,13 +384,13 @@ If you disable the check, the GPU Health Monitor stops sending its health events
 
 This value enables a dry run for this check. When it is true, the GPU Health Monitor emits the health events of this check with `processingStrategy=STORE_ONLY`. NVSentinel persists these health events and exports them as metrics, but it excludes them from the remediation pipeline. Thus, there is no node condition, no quarantine and no reboot. The default is true, so after you enable the check, you can observe it before it can act.
 
-### affectedDriverVersions and affectedVbiosVersions
+### affectedVbiosVersions
 
-These values list the affected versions. Write each version exactly as `nvidia-smi` reports it, in quotes. YAML reads an unquoted `580.10` as the number 580.1, so the chart refuses a version that is not a string. If you set the lists on the command line, use `--set-json` or `--set-string`. A GPU is affected when its driver version or its vBIOS version is in a list.
+This value lists the affected vBIOS versions. Write each version exactly as `nvidia-smi` reports it, in quotes. YAML can read an unquoted version, such as `97.00`, as a number, so the chart refuses a version that is not a string. If you set the list on the command line, use `--set-json` or `--set-string`. A GPU is affected when its vBIOS version is in the list. The driver version does not change the result.
 
-The match is exact, but it ignores case and surrounding spaces. For example, `570.133` does not match `570.133.20`.
+The match is exact, but it ignores case and surrounding spaces. For example, `97.00.82` does not match `97.00.82.00.4B`.
 
-Within the limit, the GPU Health Monitor reports every GPU as healthy, also a GPU whose versions it cannot read. Thus, a fault clears after the reboot. Past the limit, it does not evaluate a GPU that matches no listed version and has an unknown version for a list that you configured. A version is unknown when DCGM does not return it, or returns a marker such as `<<<NOT_SUPPORTED>>>`. The GPU Health Monitor reports such a GPU neither as healthy nor as unhealthy. It logs a warning that names the GPU, and it reads the versions again every 10 minutes.
+Within the limit, the GPU Health Monitor reports every GPU as healthy, also a GPU whose vBIOS version it cannot read. Thus, a fault clears after the reboot. Past the limit, it does not evaluate a GPU whose vBIOS version is unknown. A version is unknown when DCGM does not return it, or returns a marker such as `<<<NOT_SUPPORTED>>>`. The GPU Health Monitor reports such a GPU neither as healthy nor as unhealthy. It logs a warning that names the GPU, and it reads the version again every 10 minutes.
 
 ### maxUptimeHours
 

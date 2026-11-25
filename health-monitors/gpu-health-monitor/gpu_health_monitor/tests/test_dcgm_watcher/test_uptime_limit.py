@@ -24,8 +24,6 @@ import pytest
 
 from gpu_health_monitor.dcgm_watcher import dcgm
 
-AFFECTED_DRIVER = "570.133.20"
-FIXED_DRIVER = "590.10.01"
 AFFECTED_VBIOS = "97.00.82.00.4B"
 OTHER_VBIOS = "97.00.90.00.01"
 LIMIT_HOURS = 1512.0
@@ -34,8 +32,7 @@ HOUR = 3600.0
 
 def _make_watcher(
     enabled: bool = True,
-    driver_versions: frozenset[str] = frozenset({AFFECTED_DRIVER}),
-    vbios_versions: frozenset[str] = frozenset(),
+    vbios_versions: frozenset[str] = frozenset({AFFECTED_VBIOS}),
     max_uptime_hours: float = LIMIT_HOURS,
 ) -> dcgm.DCGMWatcher:
     return dcgm.DCGMWatcher(
@@ -44,7 +41,6 @@ def _make_watcher(
             poll_interval_seconds=10,
             dcgm_k8s_service_enabled=False,
             uptime_limit_enabled=enabled,
-            uptime_limit_affected_driver_versions=driver_versions,
             uptime_limit_affected_vbios_versions=vbios_versions,
             uptime_limit_max_uptime_hours=max_uptime_hours,
         ),
@@ -67,23 +63,19 @@ def uptime(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return reader
 
 
-def _versions(driver: str = AFFECTED_DRIVER, vbios: str = OTHER_VBIOS) -> dcgm.GpuVersions:
-    return dcgm.GpuVersions(driver=driver, vbios=vbios)
-
-
 def test_disabled_check_reads_nothing_and_returns_none(watchers, uptime) -> None:
     watcher = _make_watcher(enabled=False)
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     assert watcher._evaluate_uptime_limit([0]) is None
     uptime.assert_not_called()
 
 
-def test_affected_driver_past_limit_fails_gpu(watchers, uptime) -> None:
+def test_affected_vbios_past_limit_fails_gpu(watchers, uptime) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     result = watcher._evaluate_uptime_limit([0])
 
@@ -91,20 +83,9 @@ def test_affected_driver_past_limit_fails_gpu(watchers, uptime) -> None:
     assert result.evaluated_gpu_ids == {0}
     (failure,) = result.entity_failures[0]
     assert failure.code == dcgm.UPTIME_LIMIT_ERROR_CODE
-    assert f"driver {AFFECTED_DRIVER}" in failure.message
+    assert f"vBIOS {AFFECTED_VBIOS}" in failure.message
     assert "1513.0 hours" in failure.message
     assert "1512 hours" in failure.message
-
-
-def test_affected_vbios_past_limit_fails_gpu(watchers, uptime) -> None:
-    watcher = _make_watcher(driver_versions=frozenset(), vbios_versions=frozenset({AFFECTED_VBIOS}))
-    watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios=AFFECTED_VBIOS)}
-
-    result = watcher._evaluate_uptime_limit([0])
-
-    assert result.status == dcgm.types.HealthStatus.FAIL
-    assert f"vBIOS {AFFECTED_VBIOS}" in result.entity_failures[0][0].message
 
 
 @pytest.mark.parametrize("uptime_hours", [0.1, LIMIT_HOURS - 1, LIMIT_HOURS])
@@ -113,7 +94,7 @@ def test_affected_gpu_within_limit_is_healthy(watchers, uptime, uptime_hours: fl
     uptime.return_value = uptime_hours * HOUR
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     result = watcher._evaluate_uptime_limit([0])
 
@@ -125,9 +106,9 @@ def test_affected_gpu_within_limit_is_healthy(watchers, uptime, uptime_hours: fl
 def test_unaffected_gpu_past_limit_is_healthy(watchers, uptime) -> None:
     """A long uptime alone must not fail a GPU that runs no listed version."""
     uptime.return_value = 10 * LIMIT_HOURS * HOUR
-    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios=OTHER_VBIOS)}
+    watcher._gpu_vbios = {0: OTHER_VBIOS}
 
     result = watcher._evaluate_uptime_limit([0])
 
@@ -137,14 +118,9 @@ def test_unaffected_gpu_past_limit_is_healthy(watchers, uptime) -> None:
 
 
 def test_version_match_ignores_case_and_surrounding_space(watchers, uptime) -> None:
-    watcher = _make_watcher(
-        driver_versions=frozenset({f"  {AFFECTED_DRIVER} "}), vbios_versions=frozenset({AFFECTED_VBIOS.lower()})
-    )
+    watcher = _make_watcher(vbios_versions=frozenset({f"  {AFFECTED_VBIOS.lower()} "}))
     watchers.append(watcher)
-    watcher._gpu_versions = {
-        0: _versions(driver=AFFECTED_DRIVER, vbios=OTHER_VBIOS),
-        1: _versions(driver=FIXED_DRIVER, vbios=AFFECTED_VBIOS),
-    }
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS, 1: AFFECTED_VBIOS.lower()}
 
     result = watcher._evaluate_uptime_limit([0, 1])
 
@@ -153,20 +129,17 @@ def test_version_match_ignores_case_and_surrounding_space(watchers, uptime) -> N
 
 def test_version_prefix_does_not_match(watchers, uptime) -> None:
     """Matching is exact, so one listed version does not cover a longer one."""
-    watcher = _make_watcher(driver_versions=frozenset({"570.133"}))
+    watcher = _make_watcher(vbios_versions=frozenset({"97.00.82"}))
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=AFFECTED_DRIVER)}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     assert watcher._evaluate_uptime_limit([0]).entity_failures == {}
 
 
 def test_only_affected_gpus_fail_on_a_mixed_node(watchers, uptime) -> None:
-    watcher = _make_watcher(driver_versions=frozenset(), vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {
-        0: _versions(driver=FIXED_DRIVER, vbios=AFFECTED_VBIOS),
-        1: _versions(driver=FIXED_DRIVER, vbios=OTHER_VBIOS),
-    }
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS, 1: OTHER_VBIOS}
 
     result = watcher._evaluate_uptime_limit([0, 1])
 
@@ -175,11 +148,11 @@ def test_only_affected_gpus_fail_on_a_mixed_node(watchers, uptime) -> None:
     assert result.evaluated_gpu_ids == {0, 1}
 
 
-def test_gpu_with_unknown_versions_is_not_evaluated(watchers, uptime) -> None:
-    """A GPU without versions is neither failed nor reported healthy."""
+def test_gpu_with_unknown_vbios_is_not_evaluated(watchers, uptime) -> None:
+    """Past the limit, a GPU without a vBIOS version is neither failed nor reported healthy."""
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(), 2: _versions(driver="", vbios="")}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS, 2: ""}
 
     result = watcher._evaluate_uptime_limit([0, 1, 2])
 
@@ -187,37 +160,10 @@ def test_gpu_with_unknown_versions_is_not_evaluated(watchers, uptime) -> None:
     assert set(result.entity_failures) == {0}
 
 
-def test_blank_version_with_a_configured_list_is_not_evaluated(watchers, uptime) -> None:
-    """Without a match, a blank vBIOS could still be a listed one, so the GPU is not known to be healthy."""
-    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
-    watchers.append(watcher)
-    watcher._gpu_versions = {
-        0: _versions(driver=FIXED_DRIVER, vbios=""),
-        1: _versions(driver=AFFECTED_DRIVER, vbios=""),
-    }
-
-    result = watcher._evaluate_uptime_limit([0, 1])
-
-    assert result.evaluated_gpu_ids == {1}
-    assert set(result.entity_failures) == {1}
-
-
-def test_blank_version_without_a_configured_list_is_evaluated(watchers, uptime) -> None:
-    """A blank vBIOS does not matter when no vBIOS version is listed."""
-    watcher = _make_watcher(driver_versions=frozenset({AFFECTED_DRIVER}), vbios_versions=frozenset())
-    watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios="")}
-
-    result = watcher._evaluate_uptime_limit([0])
-
-    assert result.status == dcgm.types.HealthStatus.PASS
-    assert result.evaluated_gpu_ids == {0}
-
-
 def test_no_known_versions_returns_none(watchers, uptime) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {}
+    watcher._gpu_vbios = {}
 
     assert watcher._evaluate_uptime_limit([0, 1]) is None
 
@@ -228,7 +174,7 @@ def test_unreadable_uptime_returns_none(watchers, uptime, error: Exception) -> N
     uptime.side_effect = error
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     assert watcher._evaluate_uptime_limit([0]) is None
 
@@ -243,12 +189,12 @@ def test_read_node_uptime_seconds_uses_boottime(monkeypatch: pytest.MonkeyPatch)
     clock.assert_called_once_with(7)
 
 
-def test_gpus_with_unknown_versions_are_healthy_within_the_limit(watchers, uptime) -> None:
+def test_gpus_with_unknown_vbios_are_healthy_within_the_limit(watchers, uptime) -> None:
     """Within the limit the versions do not matter, so a fault from before a reboot can clear."""
     uptime.return_value = 0.5 * HOUR
-    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER, vbios="")}
+    watcher._gpu_vbios = {0: ""}
 
     result = watcher._evaluate_uptime_limit([0, 1])
 
@@ -256,13 +202,13 @@ def test_gpus_with_unknown_versions_are_healthy_within_the_limit(watchers, uptim
     assert result.evaluated_gpu_ids == {0, 1}
 
 
-def test_failed_gpu_clears_after_reconnect_with_a_fixed_driver(watchers, uptime) -> None:
+def test_failed_gpu_clears_after_reconnect_with_a_fixed_vbios(watchers, uptime) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(driver=AFFECTED_DRIVER)}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
     assert set(watcher._evaluate_uptime_limit([0]).entity_failures) == {0}
 
-    watcher._gpu_versions = {0: _versions(driver=FIXED_DRIVER)}
+    watcher._gpu_vbios = {0: OTHER_VBIOS}
     result = watcher._evaluate_uptime_limit([0])
 
     assert result.status == dcgm.types.HealthStatus.PASS
@@ -272,7 +218,7 @@ def test_failed_gpu_clears_after_reconnect_with_a_fixed_driver(watchers, uptime)
 def test_unevaluated_gpus_past_the_limit_are_logged_once(watchers, uptime, caplog) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
 
     with caplog.at_level("WARNING"):
         watcher._evaluate_uptime_limit([0, 1])
@@ -286,46 +232,46 @@ def test_unevaluated_gpus_past_the_limit_are_logged_once(watchers, uptime, caplo
 def test_refresh_reads_missing_versions_after_the_retry_interval(watchers, monkeypatch: pytest.MonkeyPatch) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions()}
-    watcher._get_gpu_identifiers = MagicMock(return_value=({}, {0: _versions(driver=FIXED_DRIVER), 1: _versions()}))
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS, 2: ""}
+    watcher._get_gpu_identifiers = MagicMock(return_value=({}, {0: OTHER_VBIOS, 1: AFFECTED_VBIOS, 2: OTHER_VBIOS}))
     now = 1000.0
     monkeypatch.setattr(dcgm.time, "monotonic", lambda: now)
-    watcher._gpu_versions_retry_at = now + 1
+    watcher._gpu_vbios_retry_at = now + 1
 
-    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+    watcher._refresh_gpu_vbios(MagicMock(), [0, 1, 2])
     watcher._get_gpu_identifiers.assert_not_called()
 
     now += 2
     handle = MagicMock()
-    watcher._refresh_gpu_versions(handle, [0, 1])
+    watcher._refresh_gpu_vbios(handle, [0, 1, 2])
 
     # The refresh reads only the versions; the serials are read only on connect.
     watcher._get_gpu_identifiers.assert_called_once_with(handle, read_serials=False)
 
-    # Only the GPU that was missing is updated; GPU 0 keeps the versions it had.
-    assert watcher._gpu_versions == {0: _versions(), 1: _versions()}
-    assert watcher._gpu_versions_retry_at == now + dcgm.GPU_VERSIONS_RETRY_SECONDS
+    # Only the GPUs that were missing are updated; GPU 0 keeps the version it had.
+    assert watcher._gpu_vbios == {0: AFFECTED_VBIOS, 1: AFFECTED_VBIOS, 2: OTHER_VBIOS}
+    assert watcher._gpu_vbios_retry_at == now + dcgm.GPU_VERSIONS_RETRY_SECONDS
 
 
 def test_refresh_does_nothing_when_versions_are_complete(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    watcher._gpu_versions = {0: _versions(), 1: _versions(driver=FIXED_DRIVER)}
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS, 1: OTHER_VBIOS}
     watcher._get_gpu_identifiers = MagicMock()
 
-    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+    watcher._refresh_gpu_vbios(MagicMock(), [0, 1])
 
     watcher._get_gpu_identifiers.assert_not_called()
 
 
-def _read_versions(watcher: dcgm.DCGMWatcher, handle: MagicMock) -> dict[int, dcgm.GpuVersions]:
-    """Read only the versions, as the refresh in the poll loop does."""
+def _read_versions(watcher: dcgm.DCGMWatcher, handle: MagicMock) -> dict[int, str]:
+    """Read only the vBIOS versions, as the refresh in the poll loop does."""
     serials, versions = watcher._get_gpu_identifiers(handle, read_serials=False)
     assert serials == {}
     return versions
 
 
-def _dcgm_handle(identifiers_by_gpu: dict[int, SimpleNamespace]) -> MagicMock:
+def _dcgm_handle(identifiers_by_gpu: dict[int, object]) -> MagicMock:
     handle = MagicMock()
     system = handle.GetSystem.return_value
     system.discovery.GetEntityGroupEntities.return_value = list(identifiers_by_gpu)
@@ -339,15 +285,29 @@ def test_version_read_uses_dcgm_identifiers(watchers) -> None:
     watchers.append(watcher)
     handle = _dcgm_handle(
         {
-            0: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
-            1: SimpleNamespace(driverVersion=f" {AFFECTED_DRIVER}\x00".encode(), vbios=b""),
+            0: SimpleNamespace(vbios=AFFECTED_VBIOS),
+            1: SimpleNamespace(vbios=f" {AFFECTED_VBIOS}\x00".encode()),
+            2: SimpleNamespace(vbios=b""),
         }
     )
 
-    assert _read_versions(watcher, handle) == {
-        0: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
-        1: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=""),
-    }
+    assert _read_versions(watcher, handle) == {0: AFFECTED_VBIOS, 1: AFFECTED_VBIOS, 2: ""}
+
+
+def test_version_read_does_not_read_the_driver_version(watchers) -> None:
+    """The defect is in the vBIOS, so a driver version that cannot be read does not matter."""
+
+    class DriverUnreadable:
+        vbios = AFFECTED_VBIOS
+
+        @property
+        def driverVersion(self) -> str:
+            raise AssertionError("the driver version must not be read")
+
+    watcher = _make_watcher()
+    watchers.append(watcher)
+
+    assert _read_versions(watcher, _dcgm_handle({0: DriverUnreadable()})) == {0: AFFECTED_VBIOS}
 
 
 @pytest.mark.parametrize("marker", ["<<<NULL>>>", "<<<NOT_FOUND>>>", "<<<NOT_SUPPORTED>>>", "<<<NOT_PERM>>>"])
@@ -356,21 +316,21 @@ def test_dcgm_unavailable_markers_read_as_unknown(marker: str) -> None:
     assert dcgm._identifier_text(marker.encode()) == ""
 
 
-def test_unsupported_vbios_with_unlisted_driver_is_not_evaluated(watchers, uptime) -> None:
+def test_unsupported_vbios_is_not_evaluated(watchers, uptime) -> None:
     """A vBIOS that DCGM cannot report could be a listed one, so the GPU is not known to be healthy."""
-    watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
+    watcher = _make_watcher()
     watchers.append(watcher)
-    handle = _dcgm_handle({0: SimpleNamespace(driverVersion=FIXED_DRIVER, vbios="<<<NOT_SUPPORTED>>>")})
-    watcher._gpu_versions = _read_versions(watcher, handle)
+    handle = _dcgm_handle({0: SimpleNamespace(vbios="<<<NOT_SUPPORTED>>>")})
+    watcher._gpu_vbios = _read_versions(watcher, handle)
 
-    assert watcher._gpu_versions == {0: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios="")}
+    assert watcher._gpu_vbios == {0: ""}
     assert watcher._evaluate_uptime_limit([0]) is None
 
 
 def test_version_read_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    good = SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)
+    good = SimpleNamespace(vbios=AFFECTED_VBIOS)
 
     def attributes(gpu: int) -> SimpleNamespace:
         if gpu == 1:
@@ -388,15 +348,10 @@ def test_version_read_keeps_gpus_read_before_and_after_a_failure(watchers) -> No
     assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 1
 
 
-def test_version_read_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -> None:
+def test_version_read_skips_a_gpu_whose_identifiers_lack_the_vbios(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    handle = _dcgm_handle(
-        {
-            0: SimpleNamespace(vbios=AFFECTED_VBIOS),
-            1: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
-        }
-    )
+    handle = _dcgm_handle({0: SimpleNamespace(), 1: SimpleNamespace(vbios=AFFECTED_VBIOS)})
 
     assert set(_read_versions(watcher, handle)) == {1}
 
@@ -405,15 +360,13 @@ def test_version_read_skips_a_gpu_whose_identifiers_fail_to_decode(watchers) -> 
     """The bindings decode on attribute access, so a bad byte raises there; only that GPU is skipped."""
 
     class Undecodable:
-        vbios = AFFECTED_VBIOS
-
         @property
-        def driverVersion(self) -> str:
-            return b"\xff570".decode("utf-8")
+        def vbios(self) -> str:
+            return b"\xff97".decode("utf-8")
 
     watcher = _make_watcher()
     watchers.append(watcher)
-    handle = _dcgm_handle({0: Undecodable(), 1: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)})
+    handle = _dcgm_handle({0: Undecodable(), 1: SimpleNamespace(vbios=AFFECTED_VBIOS)})
 
     assert set(_read_versions(watcher, handle)) == {1}
 
@@ -447,40 +400,36 @@ def test_initialize_reads_serials_and_versions_in_one_walk(watchers) -> None:
     dcgm_group = MagicMock()
     dcgm_group.GetGpuIds.return_value = [0]
     watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(dcgm_group, []))
-    versions = {0: _versions()}
     handle = MagicMock()
-    watcher._get_gpu_identifiers = MagicMock(return_value=({0: "SERIAL0"}, versions))
+    watcher._get_gpu_identifiers = MagicMock(return_value=({0: "SERIAL0"}, {0: AFFECTED_VBIOS}))
 
     _group, _gpu_ids, _switch_ids, gpu_serials = watcher._initialize_dcgm_monitoring(handle)
 
     watcher._get_gpu_identifiers.assert_called_once_with(handle)
     assert gpu_serials == {0: "SERIAL0"}
-    assert watcher._gpu_versions == versions
+    assert watcher._gpu_vbios == {0: AFFECTED_VBIOS}
 
 
-def _identifiers(serial: str, driver: str = AFFECTED_DRIVER, vbios: str = AFFECTED_VBIOS) -> SimpleNamespace:
-    return SimpleNamespace(serial=serial, driverVersion=driver, vbios=vbios)
+def _identifiers(serial: str, vbios: str = AFFECTED_VBIOS) -> SimpleNamespace:
+    return SimpleNamespace(serial=serial, vbios=vbios)
 
 
 def test_connect_reads_the_attributes_of_each_gpu_once(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    handle = _dcgm_handle({0: _identifiers("SERIAL0"), 1: _identifiers("SERIAL1", driver=FIXED_DRIVER)})
+    handle = _dcgm_handle({0: _identifiers("SERIAL0"), 1: _identifiers("SERIAL1", vbios=OTHER_VBIOS)})
 
     serials, versions = watcher._get_gpu_identifiers(handle)
 
     assert serials == {0: "SERIAL0", 1: "SERIAL1"}
-    assert versions == {
-        0: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
-        1: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios=AFFECTED_VBIOS),
-    }
+    assert versions == {0: AFFECTED_VBIOS, 1: OTHER_VBIOS}
     discovery = handle.GetSystem.return_value.discovery
     assert discovery.GetEntityGroupEntities.call_count == 1
     assert [c.args for c in discovery.GetGpuAttributes.call_args_list] == [(0,), (1,)]
 
 
 def test_connect_with_the_check_disabled_reads_only_serials(watchers) -> None:
-    """Without the check, identifiers that lack the version fields are not an error."""
+    """Without the check, identifiers that lack the vBIOS field are not an error."""
     watcher = _make_watcher(enabled=False)
     watchers.append(watcher)
     handle = _dcgm_handle({0: SimpleNamespace(serial="SERIAL0")})
@@ -548,10 +497,10 @@ def test_connect_listing_failure_propagates(watchers) -> None:
         watcher._get_gpu_identifiers(handle)
 
 
-def test_connect_keeps_the_serial_of_a_gpu_whose_versions_fail(watchers) -> None:
+def test_connect_keeps_the_serial_of_a_gpu_whose_vbios_fails(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
-    handle = _dcgm_handle({0: SimpleNamespace(serial="SERIAL0", vbios=AFFECTED_VBIOS), 1: _identifiers("SERIAL1")})
+    handle = _dcgm_handle({0: SimpleNamespace(serial="SERIAL0"), 1: _identifiers("SERIAL1")})
 
     serials, versions = watcher._get_gpu_identifiers(handle)
 
@@ -564,7 +513,7 @@ def test_poll_loop_publishes_uptime_limit_watch(watchers, uptime) -> None:
     watchers.append(watcher)
 
     def initialize(_handle: object) -> tuple[MagicMock, list[int], list[int], dict[int, str]]:
-        watcher._gpu_versions = {0: _versions()}
+        watcher._gpu_vbios = {0: AFFECTED_VBIOS}
         return MagicMock(), [0], [], {}
 
     watcher._get_dcgm_handle = MagicMock(return_value=MagicMock())

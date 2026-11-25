@@ -100,8 +100,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
             "MinConsecutivePolls=DCGM_FR_NVLINK_DOWN=3\n"
             "ConnectivityFailureEscalationThreshold=9\n"
             "[dcgmconnectivity]\nFailureThreshold=4\nSuccessThreshold=2\n"
-            "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20, 580.82.07\n"
-            "AffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours=1512\n"
+            "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B, 96.00.AF.00.01\nMaxUptimeHours=1512\n"
         )
     config_file.write_text(config_text)
     started: list[cli_module.dcgm.DCGMWatcher] = []
@@ -158,10 +157,9 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert watcher._power_brake_min_consecutive_polls == (4 if custom_settings else 1)
     assert watcher._imex_monitoring_enabled is custom_settings
     assert watcher._uptime_limit_enabled is custom_settings
-    assert watcher._uptime_limit_driver_versions == (
-        frozenset({"570.133.20", "580.82.07"}) if custom_settings else frozenset()
+    assert watcher._uptime_limit_vbios_versions == (
+        frozenset({"97.00.82.00.4b", "96.00.af.00.01"}) if custom_settings else frozenset()
     )
-    assert watcher._uptime_limit_vbios_versions == (frozenset({"97.00.82.00.4b"}) if custom_settings else frozenset())
     assert watcher._uptime_limit_max_uptime_seconds == (1512 * 3600 if custom_settings else 0)
     assert watcher._suppress_unbridged_pcie_nvlink_down is custom_settings
     assert watcher._suppressed_error_codes == (
@@ -285,25 +283,28 @@ class TestParseUptimeLimit:
     def test_enabled_check_is_store_only_by_default(self) -> None:
         uptime_limit = _parse_uptime_limit(
             _uptime_config(
-                "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20,, 580.82.07 \nMaxUptimeHours=1512\n"
+                "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B,, 96.00.AF.00.01 \nMaxUptimeHours=1512\n"
             )
         )
 
         assert uptime_limit == UptimeLimitConfig(
             enabled=True,
             store_only=True,
-            affected_driver_versions=frozenset({"570.133.20", "580.82.07"}),
-            affected_vbios_versions=frozenset(),
+            affected_vbios_versions=frozenset({"97.00.82.00.4B", "96.00.AF.00.01"}),
             max_uptime_hours=1512.0,
         )
 
     def test_enabled_check_without_versions_refuses_to_start(self) -> None:
-        with pytest.raises(click.BadParameter, match="at least one version"):
+        with pytest.raises(click.BadParameter, match="at least one vBIOS version"):
             _parse_uptime_limit(
-                _uptime_config(
-                    "[uptimelimit]\nEnabled=true\nAffectedDriverVersions=\nAffectedVbiosVersions= , \n"
-                    "MaxUptimeHours=1512\n"
-                )
+                _uptime_config("[uptimelimit]\nEnabled=true\nAffectedVbiosVersions= , \nMaxUptimeHours=1512\n")
+            )
+
+    def test_driver_versions_do_not_enable_the_check(self) -> None:
+        """The defect is in the vBIOS, so a driver version list does not count as a version."""
+        with pytest.raises(click.BadParameter, match="at least one vBIOS version"):
+            _parse_uptime_limit(
+                _uptime_config("[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20\nMaxUptimeHours=1512\n")
             )
 
     @pytest.mark.parametrize("hours", ["0", "-1", "nan", "inf", "-inf"])

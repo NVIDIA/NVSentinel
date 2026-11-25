@@ -68,7 +68,6 @@ def _parse_version_list(raw: str) -> frozenset[str]:
 class UptimeLimitConfig:
     enabled: bool = False
     store_only: bool = True
-    affected_driver_versions: frozenset[str] = frozenset()
     affected_vbios_versions: frozenset[str] = frozenset()
     max_uptime_hours: float = 0.0
 
@@ -76,7 +75,7 @@ class UptimeLimitConfig:
 def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
     """Read the [uptimelimit] section. A missing section disables the check.
 
-    An enabled check without a version list or a positive limit cannot fire, so the
+    An enabled check without a vBIOS version or a positive limit cannot fire, so the
     monitor refuses to start rather than run without the protection the operator
     asked for.
     """
@@ -87,17 +86,16 @@ def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
     uptime_limit = UptimeLimitConfig(
         enabled=section.getboolean("Enabled", fallback=False),
         store_only=section.getboolean("StoreOnly", fallback=True),
-        affected_driver_versions=_parse_version_list(section.get("AffectedDriverVersions", fallback="")),
         affected_vbios_versions=_parse_version_list(section.get("AffectedVbiosVersions", fallback="")),
         max_uptime_hours=section.getfloat("MaxUptimeHours", fallback=0.0),
     )
     if not uptime_limit.enabled:
         return uptime_limit
 
-    if not uptime_limit.affected_driver_versions and not uptime_limit.affected_vbios_versions:
+    if not uptime_limit.affected_vbios_versions:
         raise click.BadParameter(
-            "must list at least one version when the check is enabled",
-            param_hint="uptimelimit.AffectedDriverVersions / uptimelimit.AffectedVbiosVersions",
+            "must list at least one vBIOS version when the check is enabled",
+            param_hint="uptimelimit.AffectedVbiosVersions",
         )
     # NaN passes a "<= 0" test and never compares greater, so the check would never fire.
     if not math.isfinite(uptime_limit.max_uptime_hours) or uptime_limit.max_uptime_hours <= 0:
@@ -451,7 +449,6 @@ def cli(
         health_check_min_consecutive_polls=health_check_min_consecutive_polls,
         imex_monitoring_enabled=imex_monitoring_enabled,
         uptime_limit_enabled=uptime_limit.enabled,
-        uptime_limit_affected_driver_versions=uptime_limit.affected_driver_versions,
         uptime_limit_affected_vbios_versions=uptime_limit.affected_vbios_versions,
         uptime_limit_max_uptime_hours=uptime_limit.max_uptime_hours,
     )

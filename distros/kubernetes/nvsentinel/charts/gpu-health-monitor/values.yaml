@@ -119,23 +119,20 @@ dcgmFieldsMonitoring:
 # GpuUptimeLimitWatch: reboot a node before a known uptime-limited defect.
 # Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS
 # defect makes NVLink fail after more than 60 days of uptime.
-# When this check is enabled, each GPU that runs a listed driver or vBIOS version
+# When this check is enabled, each GPU that runs a listed vBIOS version
 # fails after the node uptime is more than maxUptimeHours. The failure recommends
 # RESTART_BM, so NVSentinel quarantines, drains and reboots the node before the defect.
 # Off by default so existing deployments see no change in behaviour.
 uptimeLimit:
-  # Enables the check. If true, list at least one version and set
+  # Enables the check. If true, list at least one vBIOS version and set
   # maxUptimeHours, otherwise the chart does not render.
   enabled: false
   # Dry-run for GpuUptimeLimitWatch. When true, this check's
   # events are emitted with processingStrategy=STORE_ONLY
   storeOnly: true
-  # Driver versions, exactly as nvidia-smi reports them, quoted. YAML reads an
-  # unquoted 580.10 as 580.1, so the chart refuses non-string entries.
-  # Example: ["570.133.20"]
-  affectedDriverVersions: []
-  # vBIOS versions, exactly as nvidia-smi reports them. The match ignores case.
-  # Example: ["97.00.82.00.4B"]
+  # vBIOS versions, exactly as nvidia-smi reports them, quoted. YAML can read an
+  # unquoted version as a number, so the chart refuses non-string entries.
+  # The match ignores case. Example: ["97.00.82.00.4B"]
   affectedVbiosVersions: []
   # Maximum node uptime in hours for a node with an affected GPU. Set it below
   # the uptime at which the defect occurs, with time for a drain. Example: 1440

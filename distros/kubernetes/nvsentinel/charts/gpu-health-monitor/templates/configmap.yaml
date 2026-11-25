@@ -46,7 +46,6 @@ data:
     [uptimelimit]
     Enabled = {{ .Values.uptimeLimit.enabled }}
     StoreOnly = {{ .Values.uptimeLimit.storeOnly }}
-    AffectedDriverVersions = {{ .Values.uptimeLimit.affectedDriverVersions | join "," }}
     AffectedVbiosVersions = {{ .Values.uptimeLimit.affectedVbiosVersions | join "," }}
     MaxUptimeHours = {{ include "gpu-health-monitor.uptimeLimitMaxUptimeHours" . }}
 

@@ -54,7 +54,6 @@ class DCGMWatcherConfig:
     health_check_min_consecutive_polls: dict[str, int] | None = None
     imex_monitoring_enabled: bool = False
     uptime_limit_enabled: bool = False
-    uptime_limit_affected_driver_versions: frozenset[str] = frozenset()
     uptime_limit_affected_vbios_versions: frozenset[str] = frozenset()
     uptime_limit_max_uptime_hours: float = 0.0
 
