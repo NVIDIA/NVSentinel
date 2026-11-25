@@ -375,6 +375,7 @@ These metrics track the performance of the internal ring buffer workqueue:
 |------------|------|--------|-------------|
 | `metadata_collector_pod_mapper_failures_total` | Counter | - | Pod device mapper poll cycles that failed |
 | `metadata_collector_pod_mapper_consecutive_failures` | Gauge | - | Consecutive failed poll cycles of the pod device mapper. Any success resets this value to 0. The container exits when this value reaches `--pod-mapper-max-consecutive-failures` |
+| `metadata_collector_pod_mapper_last_success_timestamp_seconds` | Gauge | - | Unix time of the last successful poll of the pod device mapper, or 0 before the first one. A successful poll has updated the device annotation of every pod on the node |
 
 ---
 

@@ -168,7 +168,17 @@ Change the `entityValueAttribute` of a driver only while partial drains for its 
 
 1. Set `scopedActions` of the entity type to `[]`, and upgrade. Wait until the node-drainer rollout completes. Events with those actions then drain the full node.
 2. Change `entityValueAttribute`, and upgrade. The metadata-collector pods restart, and each pod writes the new values on its node.
-3. Wait until the metadata-collector DaemonSet has a ready pod on every node where it runs, and each pod has run for at least one poll (30 seconds) after its GPU collection. `metadata_collector_collection_completed_timestamp_seconds` shows when the collection completed. A node without a running metadata-collector pod keeps the old values.
+3. Wait until every node runs a new metadata-collector pod that has finished a successful poll:
+   - The DaemonSet runs the new revision on every node: `updatedNumberScheduled` and `numberAvailable` in its status equal `desiredNumberScheduled`. With `updateStrategy.type: OnDelete`, an old pod keeps the old configuration until you delete it, so delete the old pods first.
+
+     ```bash
+     kubectl -n nvsentinel get daemonset metadata-collector \
+       -o jsonpath='{.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}'
+     ```
+
+   - On each pod, `metadata_collector_pod_mapper_last_success_timestamp_seconds` is not 0. A new pod starts it at 0, and sets it after a poll that updated the annotation of every pod on the node. A failed poll does not set it.
+
+   A node without a running metadata-collector pod keeps the old values.
 4. Restore `scopedActions`, and upgrade.
 
 ### Partial Drain Entity Metric
