@@ -268,6 +268,12 @@ func TestNewPodMapperMetrics_ExposesTheDocumentedNames(t *testing.T) {
 // Registers on the process-wide default, so it must stay the only test that does.
 func TestNewPodMapperMetrics_DefaultRegisterer_IsServedByTheDefaultGatherer(t *testing.T) {
 	metrics := newPodMapperMetrics(prometheus.DefaultRegisterer)
+	// Unregistered at the end, so that the test can run again in the same process, as with -count.
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer.Unregister(metrics.failures)
+		prometheus.DefaultRegisterer.Unregister(metrics.consecutiveFailures)
+		prometheus.DefaultRegisterer.Unregister(metrics.lastSuccess)
+	})
 	metrics.recordFailure(1)
 
 	families, err := prometheus.DefaultGatherer.Gather()
