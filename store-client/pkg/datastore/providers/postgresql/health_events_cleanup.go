@@ -27,7 +27,7 @@ import (
 
 // Health events retention deletes the health_events rows older than the retention, as the
 // MongoDB TTL index does for the HealthEvents collection, by insert time. Unlike the TTL, it
-// keeps the events node-drainer still has to drain, so a node-drainer restart can resume them.
+// keeps the events of drains in progress, so a node-drainer restart can resume them.
 
 const healthEventsCleanupLockKey int64 = 2026112401
 
@@ -48,16 +48,13 @@ const healthEventsCleanupPrerequisitesQuery = `SELECT
  WHERE i.indexrelid = to_regclass('idx_changelog_table_record')
  AND i.indrelid = to_regclass('datastore_changelog') AND i.indisvalid)`
 
-// healthEventsStillToDrain matches the events node-drainer's cold start requeues: a drain in
-// progress, or a quarantined event whose drain has not started. A quarantined event with no drain
-// status counts as not started. Older documents spell the keys nodeQuarantined and Status. Every
-// COALESCE falls back to an empty string, so the condition is never NULL.
-const healthEventsStillToDrain = `(COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
-  document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') = 'InProgress'
- OR (COALESCE(document->'healtheventstatus'->>'nodequarantined',
-   document->'healtheventstatus'->>'nodeQuarantined', '') IN ('Quarantined', 'AlreadyQuarantined')
-  AND COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
-   document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') IN ('', 'NotStarted')))`
+// healthEventsDrainInProgress matches an event whose drain node-drainer is running: its cold start
+// resumes it. A quarantined event whose drain never started is not kept. Kept, it could outlive the
+// later event that ended its quarantine, and a cold start would then replay it as active. Older
+// documents spell the key Status. The COALESCE falls back to an empty string, so the condition is
+// never NULL.
+const healthEventsDrainInProgress = `(COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
+  document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') = 'InProgress')`
 
 // A batch picks its rows from idx_health_events_created_id, after the position the previous batch
 // of the run reached, and deletes them by primary key. It reads only its own rows and the kept
@@ -68,9 +65,9 @@ const healthEventsDeleteQuery = `DELETE FROM health_events
 WHERE id = ANY (ARRAY(
  SELECT id FROM health_events
  WHERE created_at < $1 AND (created_at, id) > ($3, $4::uuid)
- AND NOT ` + healthEventsStillToDrain + `
+ AND NOT ` + healthEventsDrainInProgress + `
  ORDER BY created_at, id LIMIT $2
-)) AND NOT ` + healthEventsStillToDrain + `
+)) AND NOT ` + healthEventsDrainInProgress + `
 RETURNING id::text, created_at`
 
 // The health_events trigger logs every delete to the changelog with a copy of the row. No

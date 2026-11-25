@@ -205,9 +205,11 @@ func TestHealthEventsCleaner_Integration_DeletesExpiredEventsAndOwnChanges(t *te
 	require.Equal(t, int64(1), n)
 }
 
-// Events node-drainer still has to drain stay however old they are, in both key spellings, and a
-// run deletes past them in order: batches continue after the last event they deleted.
-func TestHealthEventsCleaner_Integration_KeepsEventsStillToDrain(t *testing.T) {
+// The events of drains in progress stay however old they are, in both key spellings, and a run
+// deletes past them in order: batches continue after the last event they deleted. A quarantined
+// event whose drain never started goes, together with the later event that ended its quarantine,
+// so no stale record outlives its end and is replayed on restart.
+func TestHealthEventsCleaner_Integration_KeepsDrainsInProgress(t *testing.T) {
 	dsn := os.Getenv("NVSENTINEL_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("set NVSENTINEL_TEST_POSTGRES_DSN to run PostgreSQL retention tests")
@@ -247,10 +249,10 @@ func TestHealthEventsCleaner_Integration_KeepsEventsStillToDrain(t *testing.T) {
 	for i, event := range []struct{ node, document string }{
 		{"keep-in-progress", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"InProgress"}}}`},
 		{"delete-drained", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"Succeeded"}}}`},
-		{"keep-quarantined-not-started", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":""}}}`},
-		{"keep-legacy-keys", `{"healtheventstatus":{"nodeQuarantined":"AlreadyQuarantined","userpodsevictionstatus":{"Status":"NotStarted"}}}`},
-		{"keep-no-drain-status", `{"healtheventstatus":{"nodequarantined":"AlreadyQuarantined"}}`},
-		{"delete-never-quarantined", `{"healtheventstatus":{"userpodsevictionstatus":{"status":"NotStarted"}}}`},
+		{"delete-stale-not-started", `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":""}}}`},
+		{"keep-legacy-in-progress", `{"healtheventstatus":{"nodeQuarantined":"AlreadyQuarantined","userpodsevictionstatus":{"Status":"InProgress"}}}`},
+		{"delete-session-end", `{"healtheventstatus":{"nodequarantined":"UnQuarantined","userpodsevictionstatus":{"status":"Succeeded"}}}`},
+		{"delete-no-drain-status", `{"healtheventstatus":{"nodequarantined":"AlreadyQuarantined"}}`},
 		{"delete-no-status", `{}`},
 		{"delete-cancelled", `{"healtheventstatus":{"nodequarantined":"AlreadyQuarantined","userpodsevictionstatus":{"status":"Cancelled"}}}`},
 	} {
@@ -266,7 +268,7 @@ func TestHealthEventsCleaner_Integration_KeepsEventsStillToDrain(t *testing.T) {
 
 	n, err := cleaner.run(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(4), n, "two full batches of 2, then an empty one")
+	require.Equal(t, int64(6), n, "three full batches of 2, then an empty one")
 
 	rows, err := db.QueryContext(ctx, `SELECT node_name FROM health_events ORDER BY created_at`)
 	require.NoError(t, err)
@@ -281,7 +283,5 @@ func TestHealthEventsCleaner_Integration_KeepsEventsStillToDrain(t *testing.T) {
 
 	require.NoError(t, rows.Err())
 	require.NoError(t, rows.Close())
-	require.Equal(t, []string{
-		"keep-in-progress", "keep-quarantined-not-started", "keep-legacy-keys", "keep-no-drain-status", "keep-fresh",
-	}, kept)
+	require.Equal(t, []string{"keep-in-progress", "keep-legacy-in-progress", "keep-fresh"}, kept)
 }
