@@ -22,7 +22,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.ini"]
-          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = false\\n\\s*StoreOnly = true\\n\\s*AffectedVbiosVersions = \\n\\s*MaxUptimeHours = 0\\n"
+          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = false\\n\\s*StoreOnly = true\\n\\s*AffectedVbiosVersions = \\n\\s*MaxUptimeHours = 0\\n\\s*StaggerHours = 0\\n"
 
   - it: maps the error code to a reboot
     set:
@@ -42,7 +42,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.ini"]
-          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedVbiosVersions = 97\\.00\\.82\\.00\\.4B,96\\.00\\.AF\\.00\\.01\\n\\s*MaxUptimeHours = 1512\\n"
+          pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedVbiosVersions = 97\\.00\\.82\\.00\\.4B,96\\.00\\.AF\\.00\\.01\\n\\s*MaxUptimeHours = 1512\\n\\s*StaggerHours = 0\\n"
       - notMatchRegex:
           path: data["config.ini"]
           pattern: "AffectedDriverVersions"
@@ -150,3 +150,77 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: gpu-health-monitor.uptimeLimit must list at least one non-blank affectedVbiosVersions entry when uptimeLimit.enabled is true
+
+  - it: renders a stagger
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1440
+      uptimeLimit.staggerHours: 72
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "\\n\\s*MaxUptimeHours = 1440\\n\\s*StaggerHours = 72\\n"
+
+  - it: accepts a stagger with a fraction
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1440
+      uptimeLimit.staggerHours: 71.5
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "StaggerHours = 71\\.5\\n"
+
+  - it: rejects a negative stagger
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1440
+      uptimeLimit.staggerHours: -1
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.staggerHours must be a finite number of at least 0 and less than maxUptimeHours when uptimeLimit.enabled is true
+
+  - it: rejects a stagger equal to the limit
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1440
+      uptimeLimit.staggerHours: 1440
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.staggerHours must be a finite number of at least 0 and less than maxUptimeHours when uptimeLimit.enabled is true
+
+  - it: rejects a stagger greater than the limit
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.enabled: true
+      uptimeLimit.affectedVbiosVersions: ["97.00.82.00.4B"]
+      uptimeLimit.maxUptimeHours: 1440.5
+      uptimeLimit.staggerHours: 2000
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.staggerHours must be a finite number of at least 0 and less than maxUptimeHours when uptimeLimit.enabled is true
+
+  - it: rejects a quoted stagger
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.staggerHours: "72"
+    asserts:
+      - failedTemplate:
+          errorMessage: gpu-health-monitor.uptimeLimit.staggerHours must be a number, got string "72"; with --set, use --set-json for a value with a fraction
+
+  - it: does not range-check the stagger when the check is disabled
+    set:
+      global.platformConnectorAuth.enabled: false
+      uptimeLimit.staggerHours: -1
+    asserts:
+      - matchRegex:
+          path: data["config.ini"]
+          pattern: "StaggerHours = -1\\n"

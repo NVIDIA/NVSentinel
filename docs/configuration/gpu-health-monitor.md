@@ -354,7 +354,7 @@ While the counter is below the threshold, the GPU Health Monitor reports the GPU
 
 `GpuUptimeLimitWatch` reboots a node before a known uptime-limited defect occurs. Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS defect makes NVLink communication fail after more than 60 days of uptime, in some cases after 61 to 63 days. Until you install a fixed vBIOS, the mitigation is to reboot each affected node before it reaches that uptime.
 
-When the check is enabled, the GPU Health Monitor reads the vBIOS version of each GPU from DCGM. It reads the versions each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed vBIOS version and the node uptime is more than `maxUptimeHours`.
+When the check is enabled, the GPU Health Monitor reads the vBIOS version of each GPU from DCGM. It reads the versions each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed vBIOS version and the node uptime is more than the limit of the node. This limit is `maxUptimeHours`, or less if you set `staggerHours`.
 
 `GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel quarantines, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
 
@@ -370,9 +370,10 @@ gpu-health-monitor:
     affectedVbiosVersions:
       - "97.00.82.00.4B"
     maxUptimeHours: 1440
+    staggerHours: 72
 ```
 
-If many affected nodes started at the same time, they pass the limit at the same time. Then the [circuit breaker](../runbooks/circuit-breaker.md) can trip and stop all remediation. To prevent this, keep `storeOnly` true first and examine which nodes fail. Then reboot some of these nodes before the limit, so that their uptimes are different.
+If many affected nodes started at the same time, they pass `maxUptimeHours` at the same time. Then the [circuit breaker](../runbooks/circuit-breaker.md) can trip and stop all remediation. To spread the reboots of these nodes over time, set `staggerHours`. Keep `storeOnly` true first, and examine which nodes fail and when. If you prefer to tune the breaker, use the `circuitBreaker` settings of [fault-quarantine](fault-quarantine.md#circuit-breaker): `percentage`, `maxNodes`, `maxCordonedNodes` and `maxCordonedPercentage`.
 
 ### enabled
 
@@ -395,6 +396,16 @@ Within the limit, the GPU Health Monitor reports every GPU as healthy, also a GP
 ### maxUptimeHours
 
 This value is the maximum node uptime in hours for a node with an affected GPU. Set it below the uptime at which the defect occurs. Leave enough time to drain and reboot every affected node. For example, for a defect that can occur after 61 days (1464 hours), a value of `1440` leaves one day.
+
+### staggerHours
+
+This value spreads the reboots of nodes that started at the same time. The default is `0`, which gives every node the limit `maxUptimeHours`.
+
+If you set a value, each node gets its own limit between `maxUptimeHours` minus `staggerHours` and `maxUptimeHours`. The GPU Health Monitor calculates the limit from a hash of the node name. Thus, the limit of a node does not change when the GPU Health Monitor restarts. No node gets a limit that is more than `maxUptimeHours`. When the check starts, the GPU Health Monitor logs the limit of its node.
+
+For example, with `maxUptimeHours: 1440` and `staggerHours: 72`, each affected node fails the check at an uptime between 1368 and 1440 hours. Thus, the reboots of nodes that started together spread over three days.
+
+If you enable the check, set `staggerHours` to at least 0 and to less than `maxUptimeHours`. Otherwise, Helm does not render the chart. If you write `config.ini` yourself, the GPU Health Monitor does not start.
 
 ## DCGM Startup Gate
 

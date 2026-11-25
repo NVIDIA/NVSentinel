@@ -24,6 +24,7 @@ from gpu_health_monitor.healthz import mark_alive as _mark_alive
 from collections.abc import Callable, Iterator
 import contextlib
 import ctypes
+import hashlib
 from contextlib import AbstractContextManager
 import os
 import time
@@ -95,6 +96,18 @@ def _identifier_text(value: object) -> str:
 def _normalize_version(version: str) -> str:
     """Compare versions without regard to case or surrounding space."""
     return version.strip().casefold()
+
+
+def _uptime_limit_offset_hours(node_name: str, stagger_hours: float) -> float:
+    """Return the share of staggerHours by which this node reboots early.
+
+    The first 8 bytes of the SHA-256 of the node name give a fraction in [0, 1], so
+    the offset is in [0, stagger_hours]. The same node name always gives the same
+    offset, so the limit of a node does not move when the monitor restarts, while
+    nodes that booted at the same time reach their limits at different times.
+    """
+    digest = hashlib.sha256(node_name.encode()).digest()
+    return stagger_hours * (int.from_bytes(digest[:8], "big") / 2**64)
 
 
 def _read_node_uptime_seconds() -> float:
@@ -425,15 +438,24 @@ class DCGMWatcher:
         self._uptime_limit_vbios_versions = frozenset(
             _normalize_version(v) for v in config.uptime_limit_affected_vbios_versions if v.strip()
         )
-        self._uptime_limit_max_uptime_seconds = config.uptime_limit_max_uptime_hours * 3600
+        # The limit of this node is maxUptimeHours less a fixed offset of up to
+        # staggerHours. It is never later than maxUptimeHours.
+        limit_hours = config.uptime_limit_max_uptime_hours - _uptime_limit_offset_hours(
+            config.node_name, config.uptime_limit_stagger_hours
+        )
+        self._uptime_limit_max_uptime_seconds = limit_hours * 3600
         # The vBIOS version of each GPU, or "" when DCGM did not return it.
         self._gpu_vbios: dict[int, str] = {}
         self._gpu_vbios_retry_at = 0.0
         self._uptime_limit_unevaluated: tuple[int, ...] = ()
         if self._uptime_limit_enabled:
             log.info(
-                "GpuUptimeLimitWatch enabled: limit %s hour(s), affected vBIOS versions %s",
+                "GpuUptimeLimitWatch enabled: limit %g hour(s) for node %s (maxUptimeHours %g, staggerHours %g), "
+                "affected vBIOS versions %s",
+                limit_hours,
+                config.node_name,
                 config.uptime_limit_max_uptime_hours,
+                config.uptime_limit_stagger_hours,
                 sorted(self._uptime_limit_vbios_versions),
             )
         self._metadata_reader = metadata_reader

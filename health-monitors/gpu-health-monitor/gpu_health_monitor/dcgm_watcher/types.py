@@ -56,6 +56,10 @@ class DCGMWatcherConfig:
     uptime_limit_enabled: bool = False
     uptime_limit_affected_vbios_versions: frozenset[str] = frozenset()
     uptime_limit_max_uptime_hours: float = 0.0
+    uptime_limit_stagger_hours: float = 0.0
+    # Name of the node that the monitor runs on. GpuUptimeLimitWatch derives the
+    # stagger offset of the node from it.
+    node_name: str = ""
 
 
 @dataclasses.dataclass

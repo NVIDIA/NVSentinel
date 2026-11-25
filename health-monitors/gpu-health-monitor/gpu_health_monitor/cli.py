@@ -70,6 +70,7 @@ class UptimeLimitConfig:
     store_only: bool = True
     affected_vbios_versions: frozenset[str] = frozenset()
     max_uptime_hours: float = 0.0
+    stagger_hours: float = 0.0
 
 
 def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
@@ -88,6 +89,7 @@ def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
         store_only=section.getboolean("StoreOnly", fallback=True),
         affected_vbios_versions=_parse_version_list(section.get("AffectedVbiosVersions", fallback="")),
         max_uptime_hours=section.getfloat("MaxUptimeHours", fallback=0.0),
+        stagger_hours=section.getfloat("StaggerHours", fallback=0.0),
     )
     if not uptime_limit.enabled:
         return uptime_limit
@@ -102,6 +104,13 @@ def _parse_uptime_limit(config: configparser.ConfigParser) -> UptimeLimitConfig:
         raise click.BadParameter(
             "must be a finite number greater than 0 when the check is enabled",
             param_hint="uptimelimit.MaxUptimeHours",
+        )
+    # A stagger of maxUptimeHours or more could give a node a limit of 0 or less. NaN
+    # fails every comparison, and infinity is not less than the finite limit.
+    if not 0 <= uptime_limit.stagger_hours < uptime_limit.max_uptime_hours:
+        raise click.BadParameter(
+            "must be a finite number of at least 0 and less than MaxUptimeHours when the check is enabled",
+            param_hint="uptimelimit.StaggerHours",
         )
     return uptime_limit
 
@@ -451,6 +460,8 @@ def cli(
         uptime_limit_enabled=uptime_limit.enabled,
         uptime_limit_affected_vbios_versions=uptime_limit.affected_vbios_versions,
         uptime_limit_max_uptime_hours=uptime_limit.max_uptime_hours,
+        uptime_limit_stagger_hours=uptime_limit.stagger_hours,
+        node_name=node_name or "",
     )
     dcgm_watcher = dcgm.DCGMWatcher(
         config=watcher_config,

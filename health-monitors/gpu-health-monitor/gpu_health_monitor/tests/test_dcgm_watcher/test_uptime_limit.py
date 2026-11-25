@@ -28,12 +28,19 @@ AFFECTED_VBIOS = "97.00.82.00.4B"
 OTHER_VBIOS = "97.00.90.00.01"
 LIMIT_HOURS = 1512.0
 HOUR = 3600.0
+STAGGER_HOURS = 72.0
+# int.from_bytes(sha256(name.encode()).digest()[:8], "big") / 2**64 for each node
+# name: the share of staggerHours by which that node reboots early.
+NODE_A, NODE_A_FRACTION = "node-a", 0.3997659646794334
+NODE_B, NODE_B_FRACTION = "node-b", 0.5778689249613692
 
 
 def _make_watcher(
     enabled: bool = True,
     vbios_versions: frozenset[str] = frozenset({AFFECTED_VBIOS}),
     max_uptime_hours: float = LIMIT_HOURS,
+    stagger_hours: float = 0.0,
+    node_name: str = NODE_A,
 ) -> dcgm.DCGMWatcher:
     return dcgm.DCGMWatcher(
         dcgm.types.DCGMWatcherConfig(
@@ -43,6 +50,8 @@ def _make_watcher(
             uptime_limit_enabled=enabled,
             uptime_limit_affected_vbios_versions=vbios_versions,
             uptime_limit_max_uptime_hours=max_uptime_hours,
+            uptime_limit_stagger_hours=stagger_hours,
+            node_name=node_name,
         ),
         callbacks=[],
     )
@@ -227,6 +236,73 @@ def test_unevaluated_gpus_past_the_limit_are_logged_once(watchers, uptime, caplo
     warnings = [r for r in caplog.records if "not evaluated" in r.getMessage()]
     assert len(warnings) == 1
     assert "[1]" in warnings[0].getMessage()
+
+
+def _limit_hours(watcher: dcgm.DCGMWatcher) -> float:
+    return watcher._uptime_limit_max_uptime_seconds / HOUR
+
+
+def test_stagger_offset_is_fixed_for_a_node_name() -> None:
+    offset = dcgm._uptime_limit_offset_hours(NODE_A, STAGGER_HOURS)
+
+    assert dcgm._uptime_limit_offset_hours(NODE_A, STAGGER_HOURS) == offset
+    assert offset == pytest.approx(STAGGER_HOURS * NODE_A_FRACTION)
+
+
+def test_stagger_gives_different_nodes_different_limits_within_the_stagger(watchers) -> None:
+    node_a = _make_watcher(stagger_hours=STAGGER_HOURS, node_name=NODE_A)
+    node_b = _make_watcher(stagger_hours=STAGGER_HOURS, node_name=NODE_B)
+    watchers.extend([node_a, node_b])
+
+    assert _limit_hours(node_a) == pytest.approx(LIMIT_HOURS - STAGGER_HOURS * NODE_A_FRACTION)
+    assert _limit_hours(node_b) == pytest.approx(LIMIT_HOURS - STAGGER_HOURS * NODE_B_FRACTION)
+    assert _limit_hours(node_a) != _limit_hours(node_b)
+
+
+def test_stagger_never_moves_a_limit_past_max_uptime_hours() -> None:
+    offsets = [dcgm._uptime_limit_offset_hours(f"gpu-node-{i:04d}", STAGGER_HOURS) for i in range(1000)]
+
+    assert all(0 <= offset <= STAGGER_HOURS for offset in offsets)
+    # The offsets spread over the whole stagger, so the reboots spread too.
+    assert min(offsets) < STAGGER_HOURS * 0.01
+    assert max(offsets) > STAGGER_HOURS * 0.99
+
+
+@pytest.mark.parametrize("node_name", [NODE_A, NODE_B, ""])
+def test_zero_stagger_gives_every_node_max_uptime_hours(watchers, node_name: str) -> None:
+    watcher = _make_watcher(stagger_hours=0.0, node_name=node_name)
+    watchers.append(watcher)
+
+    assert watcher._uptime_limit_max_uptime_seconds == LIMIT_HOURS * HOUR
+
+
+def test_gpu_fails_past_the_staggered_limit_of_its_node_and_not_before(watchers, uptime) -> None:
+    """With a stagger, an affected GPU fails before maxUptimeHours, but not before the limit of its node."""
+    watcher = _make_watcher(stagger_hours=STAGGER_HOURS, node_name=NODE_A)
+    watchers.append(watcher)
+    watcher._gpu_vbios = {0: AFFECTED_VBIOS}
+    node_limit_hours = LIMIT_HOURS - STAGGER_HOURS * NODE_A_FRACTION
+
+    uptime.return_value = (node_limit_hours - 0.01) * HOUR
+    within = watcher._evaluate_uptime_limit([0])
+    uptime.return_value = (node_limit_hours + 0.01) * HOUR
+    past = watcher._evaluate_uptime_limit([0])
+
+    assert within.status == dcgm.types.HealthStatus.PASS
+    assert within.entity_failures == {}
+    assert past.status == dcgm.types.HealthStatus.FAIL
+    assert set(past.entity_failures) == {0}
+    assert f"limit of {node_limit_hours:g} hours" in past.entity_failures[0][0].message
+
+
+def test_enabled_check_logs_the_limit_of_the_node_once(watchers, caplog) -> None:
+    with caplog.at_level("INFO"):
+        watcher = _make_watcher(stagger_hours=STAGGER_HOURS, node_name=NODE_A)
+    watchers.append(watcher)
+
+    messages = [r.getMessage() for r in caplog.records if "GpuUptimeLimitWatch enabled" in r.getMessage()]
+    assert len(messages) == 1
+    assert f"limit {LIMIT_HOURS - STAGGER_HOURS * NODE_A_FRACTION:g} hour(s) for node {NODE_A}" in messages[0]
 
 
 def test_refresh_reads_missing_versions_after_the_retry_interval(watchers, monkeypatch: pytest.MonkeyPatch) -> None:

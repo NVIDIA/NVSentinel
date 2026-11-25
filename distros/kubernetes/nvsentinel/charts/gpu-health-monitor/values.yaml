@@ -138,6 +138,13 @@ uptimeLimit:
   # the uptime at which the defect occurs, with time for a drain. Example: 1440
   # With --set, use --set-json for a value with a fraction.
   maxUptimeHours: 0
+  # Spreads the reboots of nodes that booted at the same time, so that they do not
+  # trip the fault-quarantine circuit breaker together. Each node gets a fixed limit
+  # between maxUptimeHours - staggerHours and maxUptimeHours, from a hash of the
+  # node name. 0 gives every node maxUptimeHours. If the check is enabled, it must
+  # be at least 0 and less than maxUptimeHours. Example: 72
+  # With --set, use --set-json for a value with a fraction.
+  staggerHours: 0
 
 # DCGM health check incident suppression
 dcgmHealthCheck:

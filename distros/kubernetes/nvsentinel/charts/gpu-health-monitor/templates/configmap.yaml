@@ -48,6 +48,7 @@ data:
     StoreOnly = {{ .Values.uptimeLimit.storeOnly }}
     AffectedVbiosVersions = {{ .Values.uptimeLimit.affectedVbiosVersions | join "," }}
     MaxUptimeHours = {{ include "gpu-health-monitor.uptimeLimitMaxUptimeHours" . }}
+    StaggerHours = {{ include "gpu-health-monitor.uptimeLimitStaggerHours" . }}
 
     [dcgmhealthcheck]
     ImexMonitoringEnabled = {{ .Values.dcgmHealthCheck.imexMonitoringEnabled }}
