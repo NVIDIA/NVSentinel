@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2750,6 +2751,15 @@ func newCustomDrainReconcilerWithMapper(t *testing.T, setup *testSetup, customDr
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
 	require.NoError(t, err)
 
+	return newCustomDrainReconcilerWithDiscovery(t, setup, customDrainConfig, dynamicClient, discoveryClient)
+}
+
+// newCustomDrainReconcilerWithDiscovery builds the reconciler's REST mapper on the given discovery client.
+func newCustomDrainReconcilerWithDiscovery(t *testing.T, setup *testSetup, customDrainConfig config.CustomDrainConfig,
+	dynamicClient dynamic.Interface, discoveryClient discovery.DiscoveryInterface,
+) (*reconciler.Reconciler, *restmapper.DeferredDiscoveryRESTMapper) {
+	t.Helper()
+
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
 	r, err := reconciler.NewReconciler(config.ReconcilerConfig{
 		TomlConfig: config.TomlConfig{
@@ -2885,6 +2895,83 @@ func TestReconciler_CustomDrainDeletedNode_KindNoLongerServed_EventEnds(t *testi
 	err = r.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err, "no DrainRequest is left, so the event of the deleted node ends")
 	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the event is marked Cancelled")
+}
+
+// partialDiscovery fails discovery of one group version while the rest answers. client-go then
+// leaves that group's kinds out of its REST mapper without returning an error.
+type partialDiscovery struct {
+	discovery.DiscoveryInterface
+	groupVersion string
+	failing      atomic.Bool
+}
+
+func (d *partialDiscovery) ServerResourcesForGroupVersion(groupVersion string) (*metav1.APIResourceList, error) {
+	if d.failing.Load() && groupVersion == d.groupVersion {
+		return nil, fmt.Errorf("injected discovery failure for %s", groupVersion)
+	}
+
+	return d.DiscoveryInterface.ServerResourcesForGroupVersion(groupVersion)
+}
+
+// When discovery of the DrainRequest group fails but the kind is still served, the REST mapper
+// reports no match. The cleanup still deletes the DrainRequest of a deleted node before its event
+// ends, through the resource resolved at startup.
+func TestReconciler_CustomDrainDeletedNode_PartialDiscovery_StillDeletesTheCR(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	nodeName := "custom-drain-partial-discovery-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "default")
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
+
+	gvr := schema.GroupVersionResource{Group: "drain.example.com", Version: "v1alpha1", Resource: "drainrequests"}
+	crName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+	crExists := func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return err == nil
+	}
+
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.ErrorContains(t, err, "waiting for custom drain CR to complete")
+	require.Eventually(t, crExists, 10*time.Second, 500*time.Millisecond, "DrainRequest CR should be created")
+
+	realDiscovery, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
+	require.NoError(t, err)
+
+	partial := &partialDiscovery{DiscoveryInterface: realDiscovery, groupVersion: "drain.example.com/v1alpha1"}
+	r, restMapper := newCustomDrainReconcilerWithDiscovery(t, setup, customDrainCfg, setup.dynamicClient, partial)
+
+	require.NoError(t, setup.client.CoreV1().Nodes().Delete(setup.ctx, nodeName, metav1.DeleteOptions{}))
+	require.Eventually(t, func() bool {
+		_, err := setup.informersInstance.GetNode(nodeName)
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 100*time.Millisecond, "the node cache should drop the deleted node")
+
+	partial.failing.Store(true)
+	restMapper.Reset()
+
+	_, err = restMapper.RESTMapping(schema.GroupKind{Group: "drain.example.com", Kind: "DrainRequest"}, "v1alpha1")
+	require.True(t, meta.IsNoMatchError(err), "discovery no longer maps the served DrainRequest kind: %v", err)
+
+	err = r.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !crExists() }, 10*time.Second, 500*time.Millisecond,
+		"the DrainRequest CR is deleted although discovery misses its kind")
 }
 
 // In dry run node-drainer must not hand the node to the external drain controller, so the
