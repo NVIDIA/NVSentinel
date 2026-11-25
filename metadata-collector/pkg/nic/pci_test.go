@@ -113,10 +113,10 @@ func TestAddressesChangedForNames(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "device in neither snapshot counts as changed",
+			name:    "device in neither snapshot counts as unchanged",
 			after:   map[string]string{"mlx5_7": "0000:41:00.0", "mlx5_10": "0000:9a:00.0"},
 			devices: []string{"mlx5_7", "mlx5_10", "mlx5_9"},
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "change outside the watched names is ignored",
