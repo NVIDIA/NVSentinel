@@ -27,6 +27,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 )
 
 // scriptedMapper returns the given results in order, then blocks the poll loop from making
@@ -178,6 +181,45 @@ func TestPollPodDevices_Success_ResetsTheStreakGauge(t *testing.T) {
 	assert.Equal(t, 0.0, testutil.ToFloat64(metrics.consecutiveFailures))
 }
 
+// The rollout procedure for entityValueAttribute reads the last success time to know that the
+// annotations of a node are up to date, so only a successful poll may set it.
+func TestPollPodDevices_LastSuccess_SetOnlyBySuccessfulPolls(t *testing.T) {
+	poll := errors.New("kubelet said no")
+
+	for _, tt := range []struct {
+		name    string
+		results []error
+		set     bool
+	}{
+		{"only failures", []error{poll, poll}, false},
+		{"a success, then a failure", []error{poll, nil, poll}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mapper := &scriptedMapper{results: tt.results}
+			ticks := make(chan time.Time)
+			metrics := newPodMapperMetrics(prometheus.NewRegistry())
+			ctx, cancel := context.WithCancel(context.Background())
+			before := time.Now()
+
+			done := make(chan error, 1)
+			go func() { done <- pollPodDevices(ctx, mapper, ticks, 10, metrics) }()
+
+			tick(t, ticks, len(tt.results))
+			cancel()
+			require.NoError(t, <-done)
+
+			lastSuccess := testutil.ToFloat64(metrics.lastSuccess)
+			if !tt.set {
+				assert.Equal(t, 0.0, lastSuccess, "a failed poll must not set the time")
+				return
+			}
+
+			assert.InDelta(t, float64(before.Unix()), lastSuccess, 5,
+				"the success sets the time, and the failure after it keeps it")
+		})
+	}
+}
+
 // The exit is loud, but the scrape that precedes it should still show why, so the final streak
 // has to be recorded before the threshold returns rather than lost with the process.
 func TestPollPodDevices_ThresholdReached_RecordsTheFinalStreak(t *testing.T) {
@@ -248,6 +290,7 @@ func TestNewPodMapperMetrics_ExposesTheDocumentedNames(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		"metadata_collector_pod_mapper_failures_total",
 		"metadata_collector_pod_mapper_consecutive_failures",
+		"metadata_collector_pod_mapper_last_success_timestamp_seconds",
 	}, names)
 }
 
@@ -269,7 +312,8 @@ func TestNewPodMapperMetrics_DefaultRegisterer_IsServedByTheDefaultGatherer(t *t
 	for _, f := range families {
 		switch f.GetName() {
 		case "metadata_collector_pod_mapper_failures_total",
-			"metadata_collector_pod_mapper_consecutive_failures":
+			"metadata_collector_pod_mapper_consecutive_failures",
+			"metadata_collector_pod_mapper_last_success_timestamp_seconds":
 			found = append(found, f.GetName())
 		}
 	}
@@ -277,6 +321,7 @@ func TestNewPodMapperMetrics_DefaultRegisterer_IsServedByTheDefaultGatherer(t *t
 	assert.ElementsMatch(t, []string{
 		"metadata_collector_pod_mapper_failures_total",
 		"metadata_collector_pod_mapper_consecutive_failures",
+		"metadata_collector_pod_mapper_last_success_timestamp_seconds",
 	}, found, "the endpoint serves the default gatherer, so the metrics must be on the default registry")
 }
 
@@ -290,6 +335,7 @@ func TestPollPodDevices_DefaultThreshold_RidesOutAtLeastAMinute(t *testing.T) {
 func TestRunMapper_ExplicitKubeconfigs_UsesBothFlags(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	t.Setenv("NODE_NAME", "node-a")
 	previousAPI, previousKubelet := *kubeconfigPath, *kubeletKubeconfigPath
 	t.Cleanup(func() { *kubeconfigPath, *kubeletKubeconfigPath = previousAPI, previousKubelet })
 
@@ -316,11 +362,33 @@ current-context: test
 			// Client construction must reject the missing file before polling starts.
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()), nil)
+			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()), modeltest.GPUEntityTypes())
 			require.ErrorContains(t, err, tt.want)
 			require.ErrorContains(t, err, missing)
 		})
 	}
+}
+
+// The node name is checked with the configuration, before the GPU collection, so a missing NODE_NAME fails at once.
+func TestLoadMapperConfig_DRAEntryWithoutNodeName_ReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+[[partialRemediationEntityTypes.GPU_UUID.devices]]
+driver = "gpu.nvidia.com"
+deviceClasses = ["gpu.nvidia.com"]
+entityValueAttribute = "uuid"
+`), 0o600))
+
+	_, err := loadMapperConfig(true, path, "")
+	require.ErrorIs(t, err, mapper.ErrNodeNameMissing)
+
+	entityTypes, err := loadMapperConfig(true, path, "node-a")
+	require.NoError(t, err)
+	assert.Len(t, entityTypes, 1)
+
+	entityTypes, err = loadMapperConfig(false, "", "")
+	require.NoError(t, err, "a disabled mapper needs no configuration and no node name")
+	assert.Nil(t, entityTypes)
 }
 
 // Alerts on a stalled collection depend on this metric being scrapeable at 0 before collection

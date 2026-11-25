@@ -157,6 +157,22 @@ func TestPartialRemediationEntityTypesValidate(t *testing.T) {
 			}}},
 		},
 		{
+			name: "driver with two attributes",
+			types: PartialRemediationEntityTypes{"ACCEL_SERIAL": {Devices: []PartialRemediationDevice{
+				{Driver: "accel.example.com", DeviceClasses: []string{"a"}, EntityValueAttribute: "serial"},
+				{Driver: "accel.example.com", DeviceClasses: []string{"b"}, EntityValueAttribute: "uuid"},
+			}}},
+			wantErr: []string{"entity type ACCEL_SERIAL lists driver accel.example.com with entityValueAttribute " +
+				"serial and uuid; a driver can have only one"},
+		},
+		{
+			name: "driver listed twice with one attribute",
+			types: PartialRemediationEntityTypes{"ACCEL_SERIAL": {Devices: []PartialRemediationDevice{
+				{Driver: "accel.example.com", DeviceClasses: []string{"a"}, EntityValueAttribute: "serial"},
+				{Driver: "accel.example.com", DeviceClasses: []string{"b"}, EntityValueAttribute: "serial"},
+			}}},
+		},
+		{
 			name: "reports every error",
 			types: PartialRemediationEntityTypes{
 				"ACCEL_SERIAL": {ScopedActions: []string{""}},

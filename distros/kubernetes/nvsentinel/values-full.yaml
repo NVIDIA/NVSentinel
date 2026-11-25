@@ -1242,6 +1242,12 @@ gpu-health-monitor:
     # Set to false only after validating embedded-mode detections on your fleet.
     probeStoreOnly: true
 
+    # Dry-run for NVSwitch health events. While true every event whose entity is
+    # an NVSwitch is persisted/exported but kept out of remediation, whichever
+    # DCGM watch reported it. Set to false to give NVSwitch events the same
+    # processing strategy as GPU events from the same check.
+    nvswitchStoreOnly: true
+
   # DCGM connection lifecycle configuration
   dcgmConnectivity:
     # Optional startup gate for remote DCGM modes. The init container waits

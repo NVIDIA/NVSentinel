@@ -138,3 +138,16 @@ A user-set affinity overrides the default and renders unchanged.
 {{- end -}}
 {{- toYaml $affinity -}}
 {{- end -}}
+
+{{/*
+Whether global.partialRemediationEntityTypes has a DRA entry, as a template-truthy string. The pod device mapper
+then lists ResourceSlices to find the entity value of DRA devices.
+*/}}
+{{- define "metadata-collector.hasDRADevices" -}}
+{{- $types := ((.Values.global | default dict).partialRemediationEntityTypes) | default dict -}}
+{{- range $name, $entityType := $types -}}
+{{- range $device := (($entityType | default dict).devices | default list) -}}
+{{- if $device.driver -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

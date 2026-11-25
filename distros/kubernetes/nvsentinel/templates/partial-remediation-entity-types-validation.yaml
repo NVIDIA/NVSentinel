@@ -33,7 +33,16 @@ type, so a device name or DeviceClass can belong to only one entity type. */}}
 {{- if not $entityType.devices }}
 {{- fail (printf "%s has no devices. Add a device-plugin entry with resourceNames, or a DRA entry with driver, deviceClasses and entityValueAttribute." $path) }}
 {{- end }}
+{{- /* The annotation lists the devices of a driver under the driver name only, so the pod device mapper records
+one attribute for each driver. */}}
+{{- $driverAttribute := dict }}
 {{- range $i, $device := $entityType.devices }}
+{{- if and $device.driver $device.entityValueAttribute }}
+{{- if and (hasKey $driverAttribute $device.driver) (ne (index $driverAttribute $device.driver) $device.entityValueAttribute) }}
+{{- fail (printf "%s lists driver %s with entityValueAttribute %s and %s. A driver can have only one." $path $device.driver (index $driverAttribute $device.driver) $device.entityValueAttribute) }}
+{{- end }}
+{{- $_ := set $driverAttribute $device.driver $device.entityValueAttribute }}
+{{- end }}
 {{- $isDevicePlugin := not (empty $device.resourceNames) }}
 {{- $isDRA := or $device.driver $device.deviceClasses $device.entityValueAttribute }}
 {{- if and $isDevicePlugin $isDRA }}
