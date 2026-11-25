@@ -35,7 +35,8 @@ type terminateRateLimit struct {
 	window time.Duration
 
 	mu sync.Mutex
-	// holds keeps this process's signals by TerminateNode name until they leave the window.
+	// holds keeps this process's signals by TerminateNode UID until they leave the window. A name
+	// can be reused by a new object, which must take its own signal.
 	holds map[string]terminateHold
 }
 
@@ -50,10 +51,10 @@ func newTerminateRateLimit(limit int, window time.Duration) *terminateRateLimit 
 	return &terminateRateLimit{limit: limit, window: window, holds: make(map[string]terminateHold)}
 }
 
-// reserve claims a signal for the named TerminateNode at now. recorded holds the signal times the
-// TerminateNode statuses show, by name. When the window is full, reserve claims nothing and
+// reserve claims a signal for the TerminateNode with the given UID at now. recorded holds the
+// signal times the TerminateNode statuses show, by UID. When the window is full, reserve claims nothing and
 // returns how long to wait for a signal to leave the window.
-func (l *terminateRateLimit) reserve(name string, now time.Time, recorded map[string]time.Time) (time.Duration, bool) {
+func (l *terminateRateLimit) reserve(uid string, now time.Time, recorded map[string]time.Time) (time.Duration, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -79,12 +80,12 @@ func (l *terminateRateLimit) reserve(name string, now time.Time, recorded map[st
 
 	// A request that already holds a signal, such as a resend after a lost status update, does
 	// not take a second one, and its hold keeps its time.
-	if _, ok := inWindow[name]; ok {
+	if _, ok := inWindow[uid]; ok {
 		return 0, true
 	}
 
 	if len(inWindow) < l.limit {
-		l.holds[name] = terminateHold{at: now}
+		l.holds[uid] = terminateHold{at: now}
 		return 0, true
 	}
 
@@ -98,22 +99,22 @@ func (l *terminateRateLimit) reserve(name string, now time.Time, recorded map[st
 	return max(oldest.Add(l.window).Sub(now), minimumRateLimitWait), false
 }
 
-// recordSent marks the named request's signal as accepted at sentAt, the time its status records.
-// Its hold then lasts until that signal leaves the window, and a later failed resend keeps it.
-func (l *terminateRateLimit) recordSent(name string, sentAt time.Time) {
+// recordSent marks the request's signal as accepted at sentAt, the time its status records. Its
+// hold then lasts until that signal leaves the window, and a later failed resend keeps it.
+func (l *terminateRateLimit) recordSent(uid string, sentAt time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.holds[name] = terminateHold{at: sentAt, sent: true}
+	l.holds[uid] = terminateHold{at: sentAt, sent: true}
 }
 
 // release returns the hold of a request whose terminate failed: no instance went away. The hold of
 // a signal the provider accepted stays.
-func (l *terminateRateLimit) release(name string) {
+func (l *terminateRateLimit) release(uid string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if hold, ok := l.holds[name]; ok && !hold.sent {
-		delete(l.holds, name)
+	if hold, ok := l.holds[uid]; ok && !hold.sent {
+		delete(l.holds, uid)
 	}
 }

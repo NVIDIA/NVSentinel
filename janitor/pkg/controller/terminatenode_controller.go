@@ -438,7 +438,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 					NodeName: node.Name,
 				})
 				if terminateErr != nil {
-					r.releaseTerminateSignal(terminateNode.Name)
+					r.releaseTerminateSignal(string(terminateNode.UID))
 				}
 
 				// Update status based on terminate result
@@ -453,7 +453,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 					}
 
 					// The hold of this signal lasts as long as its recorded time stays in the window.
-					r.recordTerminateSignal(terminateNode.Name, signalSentCondition.LastTransitionTime.Time)
+					r.recordTerminateSignal(string(terminateNode.UID), signalSentCondition.LastTransitionTime.Time)
 
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
@@ -567,20 +567,20 @@ func (r *TerminateNodeReconciler) reserveTerminateSignal(
 		return 0, false, fmt.Errorf("list TerminateNodes for the terminate rate limit: %w", err)
 	}
 
-	wait, allowed := limit.reserve(terminateNode.Name, time.Now(), recorded)
+	wait, allowed := limit.reserve(string(terminateNode.UID), time.Now(), recorded)
 
 	return wait, allowed, nil
 }
 
-func (r *TerminateNodeReconciler) releaseTerminateSignal(name string) {
+func (r *TerminateNodeReconciler) releaseTerminateSignal(uid string) {
 	if limit := r.terminateRateLimit(); limit != nil {
-		limit.release(name)
+		limit.release(uid)
 	}
 }
 
-func (r *TerminateNodeReconciler) recordTerminateSignal(name string, sentAt time.Time) {
+func (r *TerminateNodeReconciler) recordTerminateSignal(uid string, sentAt time.Time) {
 	if limit := r.terminateRateLimit(); limit != nil {
-		limit.recordSent(name, sentAt)
+		limit.recordSent(uid, sentAt)
 	}
 }
 
@@ -602,7 +602,7 @@ func (r *TerminateNodeReconciler) terminateRateLimit() *terminateRateLimit {
 }
 
 // recentTerminateSignals returns the time of every terminate signal sent after since, by
-// TerminateNode name, as the statuses record it.
+// TerminateNode UID, as the statuses record it. A name can be reused by a new object; a UID cannot.
 func (r *TerminateNodeReconciler) recentTerminateSignals(ctx context.Context, since time.Time) (map[string]time.Time, error) {
 	var terminateNodes janitordgxcnvidiacomv1alpha1.TerminateNodeList
 	if err := r.List(ctx, &terminateNodes); err != nil {
@@ -615,7 +615,7 @@ func (r *TerminateNodeReconciler) recentTerminateSignals(ctx context.Context, si
 		for _, condition := range terminateNodes.Items[i].Status.Conditions {
 			if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent &&
 				condition.Status == metav1.ConditionTrue && condition.LastTransitionTime.After(since) {
-				recorded[terminateNodes.Items[i].Name] = condition.LastTransitionTime.Time
+				recorded[string(terminateNodes.Items[i].UID)] = condition.LastTransitionTime.Time
 			}
 		}
 	}

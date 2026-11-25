@@ -342,6 +342,33 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			checkStatusConditions(held.Status.Conditions)
 		})
 
+		It("Should count a TerminateNode recreated under the same name as a new request", func() {
+			recorded, err := reconciler.recentTerminateSignals(ctx, time.Now().Add(-time.Hour))
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Config.RateLimit = config.TerminateRateLimitConfig{MaxTerminations: len(recorded) + 1, Window: time.Hour}
+
+			reconcileToSignal(crName)
+
+			// The request is deleted, and a new one under the same name asks to terminate another node.
+			var first janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &first)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &first)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &janitordgxcnvidiacomv1alpha1.TerminateNode{})
+				return apierrors.IsNotFound(err)
+			}, timeout, interval).Should(BeTrue())
+			Expect(k8sClient.Create(ctx, &janitordgxcnvidiacomv1alpha1.TerminateNode{
+				Name: crName,
+				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{NodeName: nodeName + "-second"},
+			})).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{Name: crName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 50*time.Minute))
+			Expect(signalSent(crName).Reason).To(Equal(conditionReasonRateLimited),
+				"the deleted request's signal still counts, and the new object takes its own slot")
+		})
+
 		It("Should send the held terminate signal once the first one leaves the window", func() {
 			const window = 3 * time.Second
 
