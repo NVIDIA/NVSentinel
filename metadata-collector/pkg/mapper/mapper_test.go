@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -154,6 +155,30 @@ func TestUpdatePodDevicesAnnotationsWithListPodResourcesError(t *testing.T) {
 	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
 	assert.Error(t, err)
 	assert.Equal(t, numUpdates, 0)
+}
+
+// A failed DRA lookup still updates the other pods, and the poll reports the failure.
+func TestUpdatePodDevicesAnnotations_DRALookupFails_UpdatesOtherPodsAndReturnsError(t *testing.T) {
+	existingTestPod := testPodTemplate.DeepCopy()
+	podKey := existingTestPod.Namespace + "/" + existingTestPod.Name
+	testCase := &kubeletResponses{
+		pods: []corev1.Pod{*existingTestPod},
+		devicesPerPod: map[string]*model.DeviceAnnotation{
+			podKey: {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-1"}}},
+		},
+		grpcClientErr: fmt.Errorf("%w: forbidden", ErrDRALookupFailed),
+	}
+	mapper, err := newTestDeviceMapper(testCase, []*corev1.Pod{existingTestPod})
+	require.NoError(t, err)
+
+	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
+	require.ErrorIs(t, err, ErrDRALookupFailed)
+	assert.Equal(t, 1, numUpdates)
+
+	pod, err := mapper.kubernetesClient.CoreV1().Pods(existingTestPod.Namespace).Get(context.TODO(),
+		existingTestPod.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"devices":{"nvidia.com/gpu":["GPU-1"]}}`, pod.Annotations[model.PodDeviceAnnotationName])
 }
 
 func TestUpdatePodDevicesAnnotationsWithAnnotationAdded(t *testing.T) {

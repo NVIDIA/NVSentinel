@@ -93,7 +93,8 @@ drivers, under the driver name, with the value of the configured ResourceSlice a
 
 A pod with a DRA device that does not resolve is left out, so it gets no annotation. A partial annotation would make
 node-drainer miss the pod. Without an annotation, node-drainer sees a pod with a claim and no annotation, and the
-partial drain waits instead.
+partial drain waits instead. If the ResourceSlices cannot be read, the function returns an error that wraps
+ErrDRALookupFailed together with the devices of the other pods, so that the caller can still update their annotations.
 
 This function returns a mapping from pods to all devices used by any container in that pod. Additionally, it will
 ensure that each pod has a unique list of devices (even if multiple containers are allocated the same device) and
@@ -144,8 +145,10 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 	allocations, draDevices := client.collectAllocations(listPodResourcesResponse)
 
 	var resolved map[draDevice]string
+
+	var lookupErr error
 	if len(draDevices) > 0 {
-		resolved = client.resolver.resolve(client.ctx, draDevices)
+		resolved, lookupErr = client.resolver.resolve(client.ctx, draDevices)
 	}
 
 	devicesPerPod := make(map[string]*model.DeviceAnnotation, len(allocations))
@@ -158,7 +161,7 @@ func (client *kubeletGRPClient) ListPodResources() (map[string]*model.DeviceAnno
 
 	sortAndRemoveDuplicateDevices(devicesPerPod)
 
-	return devicesPerPod, nil
+	return devicesPerPod, lookupErr
 }
 
 // podAllocation holds the configured devices of one pod: device-plugin IDs by resource name, and DRA devices.

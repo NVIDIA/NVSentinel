@@ -17,6 +17,7 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -228,11 +229,32 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 		return 0, fmt.Errorf("error listing pods from Kubelet pods endpoint: %w", err)
 	}
 
+	// A failed DRA lookup leaves only the pods of those devices without an annotation. The other pods are still
+	// updated, and the poll then counts as failed.
 	devicesPerPod, err := mapper.kubeletGRPCClient.ListPodResources()
-	if err != nil {
+	lookupErr := err
+
+	if err != nil && !stderrors.Is(err, ErrDRALookupFailed) {
 		return 0, fmt.Errorf("error listing pod resources from Kubelet ListPodResources service: %w", err)
 	}
 
+	numPodDevicesAnnotationsModified, err := mapper.updateAnnotations(pods, devicesPerPod)
+	if err != nil {
+		return numPodDevicesAnnotationsModified, err
+	}
+
+	if lookupErr != nil {
+		return numPodDevicesAnnotationsModified, fmt.Errorf("pods with DRA devices got no device annotation: %w",
+			lookupErr)
+	}
+
+	return numPodDevicesAnnotationsModified, nil
+}
+
+// updateAnnotations patches the device annotation of each pod whose annotation differs from devicesPerPod, and
+// returns the number of patched pods.
+func (mapper *podDeviceMapper) updateAnnotations(pods []KubeletPod,
+	devicesPerPod map[string]*model.DeviceAnnotation) (int, error) {
 	numPodDevicesAnnotationsModified := 0
 
 	for _, pod := range pods {
@@ -241,17 +263,19 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 			return numPodDevicesAnnotationsModified, fmt.Errorf("error getting patch for pod: %w", err)
 		}
 
-		if len(patchBytes) > 0 {
-			err = mapper.patchPodWithRetry(pod.Name, pod.Namespace, patchType, patchBytes)
-			switch {
-			case errors.IsNotFound(err):
-				slog.Info("Skipping device annotation update because pod no longer exists",
-					"podKey", pod.Namespace+"/"+pod.Name)
-			case err != nil:
-				return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
-			default:
-				numPodDevicesAnnotationsModified++
-			}
+		if len(patchBytes) == 0 {
+			continue
+		}
+
+		err = mapper.patchPodWithRetry(pod.Name, pod.Namespace, patchType, patchBytes)
+		switch {
+		case errors.IsNotFound(err):
+			slog.Info("Skipping device annotation update because pod no longer exists",
+				"podKey", pod.Namespace+"/"+pod.Name)
+		case err != nil:
+			return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
+		default:
+			numPodDevicesAnnotationsModified++
 		}
 	}
 

@@ -251,7 +251,7 @@ The pod device mapper records the devices that [`global.partialRemediationEntity
 
 The mapper lists ResourceSlices only when a pod on the node has a DRA device that it has not seen before. It lists only the ResourceSlices of its node and of that driver, from the cache of the API server. It keeps each value until it restarts. For this, the chart gives the metadata-collector `list` permission on ResourceSlices when an entity type has a DRA entry.
 
-If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
+If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. If the mapper cannot read the ResourceSlices, for example because it has no permission or `NODE_NAME` is not set, it still updates the annotations of the other pods, and the poll counts as failed. A lasting failure then reaches the [failure limit](#pod-mapper-failure-tolerance). An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
 
 ## Disabling the Pod Mapper
 

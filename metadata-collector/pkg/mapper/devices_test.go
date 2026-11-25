@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
@@ -154,7 +155,8 @@ func TestResourceSliceResolver_ResolvesDevicesOfItsNodeAndDriver(t *testing.T) {
 	stale, otherNode := gpuDRADevice("gpu-2"), gpuDRADevice("gpu-3")
 	otherDriverName := draDevice{driver: model.GPUDRADriverName, pool: "node-a", name: "gpu-4"}
 
-	resolved := resolver.resolve(t.Context(), []draDevice{gpu0, gpu1, stale, otherNode, otherDriverName})
+	resolved, err := resolver.resolve(t.Context(), []draDevice{gpu0, gpu1, stale, otherNode, otherDriverName})
+	require.NoError(t, err)
 	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0", gpu1: "GPU-a1"}, resolved,
 		"stale generations, other nodes and other drivers do not resolve")
 }
@@ -167,7 +169,9 @@ func TestResourceSliceResolver_ResolvedDevice_IsNotListedAgain(t *testing.T) {
 	resolver := newResourceSliceResolver(client, "node-a", map[string]string{model.GPUDRADriverName: "uuid"})
 	gpu0, gpu1 := gpuDRADevice("gpu-0"), gpuDRADevice("gpu-1")
 
-	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0"}, resolver.resolve(t.Context(), []draDevice{gpu0, gpu1}),
+	resolved, err := resolver.resolve(t.Context(), []draDevice{gpu0, gpu1})
+	require.NoError(t, err, "a device that the driver has not published yet is not an error")
+	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0"}, resolved,
 		"a device that the driver has not published yet stays unresolved")
 
 	require.NoError(t, client.ResourceV1().ResourceSlices().Delete(t.Context(), "node-a-gpus",
@@ -175,8 +179,9 @@ func TestResourceSliceResolver_ResolvedDevice_IsNotListedAgain(t *testing.T) {
 	createResourceSlice(t, client, "node-a-gpus-2", "node-a", model.GPUDRADriverName, "node-a", 2,
 		map[string]string{"gpu-1": "GPU-a1"})
 
-	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0", gpu1: "GPU-a1"},
-		resolver.resolve(t.Context(), []draDevice{gpu0, gpu1}),
+	resolved, err = resolver.resolve(t.Context(), []draDevice{gpu0, gpu1})
+	require.NoError(t, err)
+	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0", gpu1: "GPU-a1"}, resolved,
 		"gpu-0 comes from the cache, and gpu-1 resolves on the next poll")
 }
 
@@ -186,5 +191,38 @@ func TestResourceSliceResolver_NoNodeName_LeavesDevicesUnresolved(t *testing.T) 
 		map[string]string{"gpu-0": "GPU-a0"})
 
 	resolver := newResourceSliceResolver(client, "", map[string]string{model.GPUDRADriverName: "uuid"})
-	assert.Empty(t, resolver.resolve(t.Context(), []draDevice{gpuDRADevice("gpu-0")}))
+	resolved, err := resolver.resolve(t.Context(), []draDevice{gpuDRADevice("gpu-0")})
+	require.ErrorIs(t, err, ErrDRALookupFailed)
+	require.ErrorContains(t, err, "NODE_NAME is not set")
+	assert.Empty(t, resolved)
+}
+
+// A denied list fails the lookup of that driver only. Cached devices and other drivers still resolve.
+func TestResourceSliceResolver_ListDenied_ReturnsErrorAndKeepsOtherValues(t *testing.T) {
+	environment := &envtest.Environment{}
+	adminConfig, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, environment.Stop()) })
+
+	admin, err := kubernetes.NewForConfig(adminConfig)
+	require.NoError(t, err)
+	createResourceSlice(t, admin, "node-a-gpus", "node-a", model.GPUDRADriverName, "node-a", 1,
+		map[string]string{"gpu-0": "GPU-a0"})
+
+	user, err := environment.AddUser(envtest.User{Name: "no-resourceslices"}, adminConfig)
+	require.NoError(t, err)
+	denied, err := kubernetes.NewForConfig(user.Config())
+	require.NoError(t, err)
+
+	gpu0 := gpuDRADevice("gpu-0")
+	resolver := newResourceSliceResolver(admin, "node-a", map[string]string{model.GPUDRADriverName: "uuid"})
+	_, err = resolver.resolve(t.Context(), []draDevice{gpu0})
+	require.NoError(t, err)
+
+	resolver.client = denied
+	gpu1 := gpuDRADevice("gpu-1")
+	resolved, err := resolver.resolve(t.Context(), []draDevice{gpu0, gpu1})
+	require.ErrorIs(t, err, ErrDRALookupFailed)
+	assert.True(t, apierrors.IsForbidden(err), "the API error stays in the chain: %v", err)
+	assert.Equal(t, map[draDevice]string{gpu0: "GPU-a0"}, resolved)
 }

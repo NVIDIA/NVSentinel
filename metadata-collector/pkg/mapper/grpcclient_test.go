@@ -17,6 +17,7 @@ package mapper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,13 +180,14 @@ func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[stri
 	}
 }
 
-// fakeDRAResolver resolves the devices in values and records every device that it was asked for.
+// fakeDRAResolver resolves the devices in values, returns err, and records every device that it was asked for.
 type fakeDRAResolver struct {
 	values    map[draDevice]string
+	err       error
 	requested []draDevice
 }
 
-func (f *fakeDRAResolver) resolve(_ context.Context, devices []draDevice) map[draDevice]string {
+func (f *fakeDRAResolver) resolve(_ context.Context, devices []draDevice) (map[draDevice]string, error) {
 	f.requested = append(f.requested, devices...)
 	resolved := map[draDevice]string{}
 
@@ -195,7 +197,7 @@ func (f *fakeDRAResolver) resolve(_ context.Context, devices []draDevice) map[dr
 		}
 	}
 
-	return resolved
+	return resolved, f.err
 }
 
 func TestListPodResources(t *testing.T) {
@@ -343,4 +345,23 @@ func TestListPodResources_NoDRADevices_DoesNotCallTheResolver(t *testing.T) {
 	_, err := client.ListPodResources()
 	require.NoError(t, err)
 	assert.Empty(t, resolver.requested)
+}
+
+// A failed lookup leaves the DRA pods out, keeps the other pods, and reports the failure to the caller.
+func TestListPodResources_DRALookupFails_ReturnsOtherPodsAndTheError(t *testing.T) {
+	client := newTestKubeletGRPCClient(nil, 0, map[string]map[string][]deviceInfo{
+		"dra-pod": {
+			"container-1": {{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"}},
+		},
+		"plugin-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-plugin"}},
+		},
+	})
+	client.resolver = &fakeDRAResolver{err: fmt.Errorf("%w: forbidden", ErrDRALookupFailed)}
+
+	devicesPerPod, err := client.ListPodResources()
+	require.ErrorIs(t, err, ErrDRALookupFailed)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/plugin-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-plugin"}}},
+	}, devicesPerPod)
 }

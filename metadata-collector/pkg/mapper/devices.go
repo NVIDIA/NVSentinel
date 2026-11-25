@@ -16,8 +16,8 @@ package mapper
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -68,11 +68,17 @@ type draDevice struct {
 	name   string
 }
 
+// ErrDRALookupFailed means the mapper could not read the ResourceSlices for some DRA devices. Their pods get
+// no annotation, and the poll counts as failed, so that a lasting failure reaches
+// --pod-mapper-max-consecutive-failures instead of showing only in the logs.
+var ErrDRALookupFailed = errors.New("failed to look up DRA devices in ResourceSlices")
+
 // draDeviceResolver finds the entity value of DRA devices.
 type draDeviceResolver interface {
 	// resolve returns the entity value of each device that it finds. A device that is not in the result is
-	// unresolved.
-	resolve(ctx context.Context, devices []draDevice) map[draDevice]string
+	// unresolved. The error wraps ErrDRALookupFailed when a lookup failed; the result still holds the
+	// devices that resolved.
+	resolve(ctx context.Context, devices []draDevice) (map[draDevice]string, error)
 }
 
 // resourceSliceResolver reads the entity value of a DRA device from the ResourceSlices of the node. A device
@@ -95,7 +101,7 @@ func newResourceSliceResolver(client kubernetes.Interface, nodeName string,
 	}
 }
 
-func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice) map[draDevice]string {
+func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice) (map[draDevice]string, error) {
 	driversToList := map[string]bool{}
 
 	for _, device := range devices {
@@ -104,8 +110,12 @@ func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice
 		}
 	}
 
+	var errs []error
+
 	for _, driver := range sortedKeys(driversToList) {
-		r.loadDriver(ctx, driver)
+		if err := r.loadDriver(ctx, driver); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	resolved := make(map[draDevice]string, len(devices))
@@ -116,15 +126,15 @@ func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice
 		}
 	}
 
-	return resolved
+	return resolved, errors.Join(errs...)
 }
 
 // loadDriver lists the ResourceSlices of the driver on this node and keeps the entity value of each device. An
 // error leaves the devices unresolved, so their pods get no annotation and a partial drain waits for them.
-func (r *resourceSliceResolver) loadDriver(ctx context.Context, driver string) {
+func (r *resourceSliceResolver) loadDriver(ctx context.Context, driver string) error {
 	if r.nodeName == "" {
-		slog.Error("NODE_NAME is not set, so DRA devices stay unresolved", "driver", driver)
-		return
+		return fmt.Errorf("%w: NODE_NAME is not set, so the ResourceSlices of driver %s cannot be read",
+			ErrDRALookupFailed, driver)
 	}
 
 	// resourceVersion 0 lets the API server answer from its cache instead of etcd.
@@ -136,10 +146,8 @@ func (r *resourceSliceResolver) loadDriver(ctx context.Context, driver string) {
 		ResourceVersion: "0",
 	})
 	if err != nil {
-		slog.Error("Failed to list ResourceSlices, DRA devices stay unresolved until the next poll",
-			"node", r.nodeName, "driver", driver, "error", err)
-
-		return
+		return fmt.Errorf("%w: failed to list the ResourceSlices of driver %s on node %s: %w",
+			ErrDRALookupFailed, driver, r.nodeName, err)
 	}
 
 	attribute := r.attributeByDriver[driver]
@@ -154,6 +162,8 @@ func (r *resourceSliceResolver) loadDriver(ctx context.Context, driver string) {
 			r.values[draDevice{driver: driver, pool: slice.Spec.Pool.Name, name: device.Name}] = value
 		}
 	}
+
+	return nil
 }
 
 // currentPoolSlices returns the slices of the newest generation of each pool. A driver that republishes a

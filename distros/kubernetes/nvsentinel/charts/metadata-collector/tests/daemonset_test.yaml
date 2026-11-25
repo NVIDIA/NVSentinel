@@ -277,14 +277,14 @@ tests:
       nriPlugin.cdiDevice: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
       podAnnotations:
         example.com/team: gpu
-      # The checksum annotation of the mapper configuration is covered in configmap_test.yaml.
-      podMapper.enabled: false
     asserts:
+      # checksum/config is the sha256 of the suite's global.partialRemediationEntityTypes, {}.
       - equal:
           path: spec.template.metadata.annotations
           value:
             example.com/team: gpu
             nvidia.cdi.k8s.io/container.metadata-collector: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
+            checksum/config: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
 
   - it: must fail on a quoted nriPlugin.enabled
     set:
