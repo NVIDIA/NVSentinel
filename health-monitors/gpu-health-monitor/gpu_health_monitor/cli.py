@@ -254,6 +254,11 @@ def cli(
         store_only_checks.add("GpuDcgmUnresponsive")
     log.info("GpuDcgmUnresponsive check: store_only=%s", probe_store_only)
 
+    # NVSwitch events ship observe-only. They are gated by component, not by
+    # check name, because any DCGM watch can report an NVSwitch entity.
+    nvswitch_store_only = dcgm_config.getboolean("NvswitchStoreOnly", fallback=True)
+    log.info("NVSwitch health events: store_only=%s", nvswitch_store_only)
+
     store_only_checks = frozenset(store_only_checks)
 
     suppressed_error_codes = frozenset()
@@ -322,6 +327,7 @@ def cli(
         metadata_path=metadata_path,
         processing_strategy=processing_strategy_value,
         store_only_checks=store_only_checks,
+        nvswitch_store_only=nvswitch_store_only,
         connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
         connectivity_failure_threshold=connectivity_failure_threshold,
         connectivity_success_threshold=connectivity_success_threshold,
