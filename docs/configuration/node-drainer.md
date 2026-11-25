@@ -162,6 +162,15 @@ global:
   partialDrainEnabled: true
 ```
 
+#### Changing entityValueAttribute
+
+Change the `entityValueAttribute` of a driver only while partial drains for its entity type are off. After the change, each pod keeps the values of the old attribute in its annotation, under the same driver name, until the pod device mapper on its node writes the new values. The node-drainer cannot tell old values from new ones. During that time, a partial drain finds no pod that uses the failed device and evicts no pod, and the repair then acts on a device that pods still use. Use this order:
+
+1. Set `scopedActions` of the entity type to `[]`, and upgrade. Wait until the node-drainer rollout completes. Events with those actions then drain the full node.
+2. Change `entityValueAttribute`, and upgrade. The metadata-collector pods restart, and each pod writes the new values on its node.
+3. Wait until the metadata-collector DaemonSet has a ready pod on every node where it runs, and each pod has run for at least one poll (30 seconds) after its GPU collection. `metadata_collector_collection_completed_timestamp_seconds` shows when the collection completed. A node without a running metadata-collector pod keeps the old values.
+4. Restore `scopedActions`, and upgrade.
+
 ### Partial Drain Entity Metric
 
 Registers `node_drainer_partial_drains_total{node, entity_type, entity_value}`.

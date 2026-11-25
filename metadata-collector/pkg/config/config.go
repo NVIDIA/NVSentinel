@@ -37,8 +37,7 @@ type fileConfig struct {
 // devices that they list (ADR-071).
 func LoadPartialRemediationEntityTypes(path string) (model.PartialRemediationEntityTypes, error) {
 	if path == "" {
-		return nil, errors.New("--config is not set; the pod device mapper needs the file with " +
-			"partialRemediationEntityTypes")
+		return nil, errors.New("--config is not set; the pod device mapper needs its configuration file")
 	}
 
 	var config fileConfig

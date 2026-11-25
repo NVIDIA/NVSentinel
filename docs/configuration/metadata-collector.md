@@ -253,6 +253,8 @@ For a full GPU, the NVIDIA DRA driver sets the `uuid` attribute to the GPU UUID 
 
 The mapper lists ResourceSlices only when a pod on the node has a DRA device that it has not seen before. It lists only the ResourceSlices of its node and of that driver, from the cache of the API server. It keeps each value until it restarts. For this, the chart gives the metadata-collector `list` permission on ResourceSlices when an entity type has a DRA entry.
 
+To change the `entityValueAttribute` of a driver, follow [Changing entityValueAttribute](node-drainer.md#changing-entityvalueattribute): until the mapper writes the new values, the annotations hold values of the old attribute.
+
 If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. If the mapper cannot read the ResourceSlices, for example because it has no permission or `NODE_NAME` is not set, it still updates the annotations of the other pods, and the poll counts as failed. A lasting failure then reaches the [failure limit](#pod-mapper-failure-tolerance). An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
 
 ## Disabling the Pod Mapper
@@ -300,7 +302,7 @@ Set `NODE_NAME` to the name of the Kubernetes node. The mapper needs it to read 
 |---|---|---|
 | `--kubeconfig` | Kubernetes API endpoint, trust, and credentials for pod annotation updates | In-cluster configuration |
 | `--kubelet-kubeconfig` | Kubelet HTTPS endpoint, trust, and credentials for `/pods` | `KUBELET_HOST:10250` and the projected ServiceAccount token |
-| `--config` | TOML file with the devices that the pod device mapper records | None. Required when the mapper is enabled |
+| `--config` | TOML configuration file | None. Required when the pod device mapper is enabled |
 
 If `KUBELET_HOST` is not set, the default is `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not use the API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
 

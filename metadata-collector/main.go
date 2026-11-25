@@ -63,9 +63,7 @@ var (
 	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
 		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
 
-	configPath = flag.String("config", "",
-		"TOML file with partialRemediationEntityTypes, which lists the devices that the pod device mapper records. "+
-			"Required when the mapper is enabled.")
+	configPath = flag.String("config", "", "TOML configuration file. Required when the pod device mapper is enabled.")
 
 	podMapperEnabled = flag.Bool("pod-mapper-enabled", true,
 		"Run the pod device mapper after writing the metadata file. Partial drains need the device annotations "+

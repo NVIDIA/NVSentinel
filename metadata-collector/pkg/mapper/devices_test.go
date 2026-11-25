@@ -38,11 +38,11 @@ func TestNewDeviceFilter_GPUDefault_ListsResourceNamesAndDriver(t *testing.T) {
 
 func TestAttributeValue_QualifiedAndUnqualifiedNames(t *testing.T) {
 	attributes := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-		"uuid":                                 {StringValue: ptr.To("GPU-1")},
-		"resource.kubernetes.io/pciBusID":      {StringValue: ptr.To("0000:3b:00.0")},
-		"index":                                {IntValue: ptr.To[int64](3)},
-		"empty":                                {StringValue: ptr.To("")},
-		"other.example.com/serial":             {StringValue: ptr.To("SN-other")},
+		"uuid":                                  {StringValue: ptr.To("GPU-1")},
+		"resource.kubernetes.io/pciBusID":       {StringValue: ptr.To("0000:3b:00.0")},
+		"index":                                 {IntValue: ptr.To[int64](3)},
+		"empty":                                 {StringValue: ptr.To("")},
+		"other.example.com/serial":              {StringValue: ptr.To("SN-other")},
 		model.GPUDRADriverName + "/productName": {StringValue: ptr.To("H100")},
 	}
 
