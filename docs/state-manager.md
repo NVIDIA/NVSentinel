@@ -9,8 +9,8 @@ The State Manager is a Go library that the NVSentinel modules share. It manages 
 The State Manager coordinates the node lifecycle state across three modules that operate on the same node:
 
 - **fault-quarantine**: Detects faults and applies the `quarantined` state
-- **node-drainer**: Evacuates workloads and applies `draining` → `drain-succeeded` or `drain-failed`
-- **fault-remediation**: Runs the recovery and applies `remediating` → `remediation-succeeded` or `remediation-failed`
+- **node-drainer**: Evacuates workloads and applies `draining`, `drain-succeeded`, `drain-failed`, or `drain-stopped`
+- **fault-remediation**: Runs the recovery and applies `remediating`, `remediation-succeeded`, `remediation-failed`, or `remediation-stopped`
 
 The State Manager provides:
 
@@ -76,11 +76,15 @@ The State Manager provides:
 | `draining`                 | node-drainer         | Workload evacuation in progress        | No       |
 | `drain-succeeded`          | node-drainer         | All workloads evacuated successfully   | No       |
 | `drain-failed`             | node-drainer         | Workload evacuation failed             | Yes      |
+| `drain-stopped`            | node-drainer         | A rule set stopped the drain. The node stays cordoned | No |
 | `remediating`              | fault-remediation    | Remediation action in progress         | No       |
 | `remediation-succeeded`    | fault-remediation    | Remediation completed successfully     | Yes*     |
 | `remediation-failed`       | fault-remediation    | Remediation action failed              | Yes*     |
+| `remediation-stopped`      | fault-remediation    | A rule set stopped the remediation. No maintenance CR | No |
 
 *Terminal until a healthy event triggers the removal of the label. These states are terminal for one failure only. In the same quarantine, fault-remediation can still change the label after a partial recovery, or when it starts a new remediation. See the State Transitions table.
+
+A node in `drain-stopped` or `remediation-stopped` stays cordoned. The circuit breaker limits `maxCordonedNodes` and `maxCordonedPercentage` include that node.
 
 ## State Transitions
 
@@ -91,16 +95,26 @@ This table lists the expected transitions. The State Machine diagram shows only 
 | (no label)            | `quarantined`              | Fault detected              |
 | `quarantined`         | `draining`                 | Drain started               |
 | `quarantined`         | `drain-succeeded`          | No pods to drain            |
+| `quarantined`         | `drain-stopped`            | A rule set stops the drain  |
 | `draining`            | `drain-succeeded`          | All pods evacuated          |
 | `draining`            | `drain-failed`             | Evacuation timeout or failure |
+| `drain-stopped`       | `draining`                 | A later health event starts a drain |
+| `drain-stopped`       | `drain-succeeded`          | A later health event finds no pods to drain |
 | `drain-succeeded`     | `remediating`              | Remediation started         |
 | `drain-succeeded`     | `remediation-failed`       | Unsupported remediation action, or the maximum number of remediation attempts is reached |
+| `drain-succeeded`     | `remediation-stopped`      | A rule set stops the remediation |
 | `remediating`         | `remediation-succeeded`    | Remediation completed       |
 | `remediating`         | `remediation-failed`       | Remediation error           |
+| `remediating`         | `remediation-stopped`      | Recompute: every remaining active failure is stopped |
 | `remediation-succeeded` | `remediation-failed`     | Partial recovery: a remaining active failure is unsupported or its remediation failed |
 | `remediation-failed`  | `remediation-succeeded`    | Partial recovery: the recovered failure was the only failed one, and the remaining failures are remediated |
 | `remediation-succeeded` | `remediating`            | New remediation-ready health event in the same quarantine, for example a fault after a reboot |
 | `remediation-failed`  | `remediating`              | Retry of a failed maintenance CR with a new CR |
+| `remediation-stopped` | `remediating`              | fault-remediation starts remediation for a later health event |
+| `remediation-stopped` | `remediation-succeeded`    | Remediation for a later health event succeeds |
+| `remediation-stopped` | `remediation-failed`       | Remediation for a later health event fails or is unsupported |
+| `remediation-succeeded` | `remediation-stopped`    | Recompute: every remaining active failure is stopped |
+| `remediation-failed`  | `remediation-stopped`      | Recompute: every remaining active failure is stopped |
 | (any state)           | (no label)                 | Healthy event (cancellation)|
 
 ### Example Flows
@@ -133,4 +147,16 @@ none → quarantined → draining → none
 
 ```text
 none → quarantined → draining → drain-succeeded → remediating → remediation-failed [TERMINAL]
+```
+
+**Stopped drain:**
+
+```text
+none → quarantined → drain-stopped → none
+```
+
+**Stopped remediation:**
+
+```text
+none → quarantined → drain-succeeded → remediation-stopped → none
 ```

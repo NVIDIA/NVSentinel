@@ -25,6 +25,8 @@ type MockStateManager struct {
 		newStateLabelValue NVSentinelStateLabelValue, removeStateLabel bool) (bool, error)
 	RemoveNVSentinelStateNodeLabelIfMatchFn func(ctx context.Context, nodeName string,
 		expectedValues ...NVSentinelStateLabelValue) (bool, error)
+	UpdateNVSentinelStateNodeLabelIfMatchFn func(ctx context.Context, nodeName string,
+		newStateLabelValue NVSentinelStateLabelValue, expectedValues ...NVSentinelStateLabelValue) (bool, error)
 }
 
 func (manager *MockStateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context, nodeName string,
@@ -42,4 +44,17 @@ func (manager *MockStateManager) RemoveNVSentinelStateNodeLabelIfMatch(
 	}
 
 	return manager.RemoveNVSentinelStateNodeLabelIfMatchFn(ctx, nodeName, expectedValues...)
+}
+
+func (manager *MockStateManager) UpdateNVSentinelStateNodeLabelIfMatch(
+	ctx context.Context,
+	nodeName string,
+	newStateLabelValue NVSentinelStateLabelValue,
+	expectedValues ...NVSentinelStateLabelValue,
+) (bool, error) {
+	if manager.UpdateNVSentinelStateNodeLabelIfMatchFn == nil {
+		return false, nil
+	}
+
+	return manager.UpdateNVSentinelStateNodeLabelIfMatchFn(ctx, nodeName, newStateLabelValue, expectedValues...)
 }
