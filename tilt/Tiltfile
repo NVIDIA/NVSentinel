@@ -479,6 +479,14 @@ k8s_resource(
     objects=['certifications.nvcre.nvidia.com:customresourcedefinition']
 )
 
+# Only the DrainRequest CRD is installed (no slinky-drainer controller). The custom
+# drain end-to-end test marks DrainRequest status complete itself.
+k8s_yaml('../plugins/slinky-drainer/config/crd/nvsentinel.nvidia.com_drainrequests.yaml')
+k8s_resource(
+    new_name='drain-request-crd',
+    objects=['drainrequests.nvsentinel.nvidia.com:customresourcedefinition']
+)
+
 k8s_resource(
     'nvcre-certification-monitor',
     resource_deps=['platform-connectors', 'nvcre-certification-crd']

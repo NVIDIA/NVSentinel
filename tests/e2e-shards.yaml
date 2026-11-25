@@ -172,6 +172,9 @@ amd64-mongodb-percona:
   # fault_remediation_test.go
   - TestNewCRsAreCreatedAfterFaultsAreRemediated
 
+  # node_drainer_custom_drain_test.go
+  - TestNodeDrainerCustomDrain
+
   # node_drainer_test.go
   - TestNodeDrainerEvictionModes
   - TestNodeDrainerPartialDrain
@@ -199,6 +202,9 @@ amd64-postgresql:
 
   # node_drainer_pod_policies_test.go
   - TestNodeDrainerPodPolicies
+
+  # node_drainer_custom_drain_test.go
+  - TestNodeDrainerCustomDrain
 
   # node_drainer_test.go
   - TestNodeDrainerEvictionModes
