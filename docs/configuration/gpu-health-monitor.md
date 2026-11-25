@@ -405,6 +405,8 @@ If you set a value, each node gets its own limit between `maxUptimeHours` minus 
 
 For example, with `maxUptimeHours: 1440` and `staggerHours: 72`, each affected node fails the check at an uptime between 1368 and 1440 hours. Thus, the reboots of nodes that started together spread over three days.
 
+`staggerHours` moves the limits, not the time when the check acts. A node whose uptime is already more than its limit fails on the next poll. Thus, affected nodes that are already past their limits fail together when you enable the check, or when you set `storeOnly` to false after a long observation. Reboot these nodes in small batches before the check can act on them. Then `staggerHours` spreads the nodes that reach their limits later.
+
 If you enable the check, set `staggerHours` to at least 0 and to less than `maxUptimeHours`. Otherwise, Helm does not render the chart. If you write `config.ini` yourself, the GPU Health Monitor does not start.
 
 ## DCGM Startup Gate
