@@ -36,9 +36,9 @@ type deviceFilter struct {
 	attributeByDriver map[string]string
 }
 
-// newDeviceFilter collects the devices of every entity type. A driver needs one attribute, because the
-// annotation lists its devices under the driver name only.
-func newDeviceFilter(entityTypes model.PartialRemediationEntityTypes) (deviceFilter, error) {
+// newDeviceFilter collects the devices of every entity type. PartialRemediationEntityTypes.Validate allows one
+// attribute for each driver, because the annotation lists the devices of a driver under the driver name only.
+func newDeviceFilter(entityTypes model.PartialRemediationEntityTypes) deviceFilter {
 	filter := deviceFilter{resourceNames: map[string]bool{}, attributeByDriver: map[string]string{}}
 
 	for _, device := range entityTypes.AllDevices().Devices {
@@ -46,19 +46,12 @@ func newDeviceFilter(entityTypes model.PartialRemediationEntityTypes) (deviceFil
 			filter.resourceNames[name] = true
 		}
 
-		if device.Driver == "" {
-			continue
+		if device.Driver != "" {
+			filter.attributeByDriver[device.Driver] = device.EntityValueAttribute
 		}
-
-		if attribute, ok := filter.attributeByDriver[device.Driver]; ok && attribute != device.EntityValueAttribute {
-			return deviceFilter{}, fmt.Errorf("DRA driver %s has two entityValueAttribute values, %s and %s; "+
-				"a driver can have only one", device.Driver, attribute, device.EntityValueAttribute)
-		}
-
-		filter.attributeByDriver[device.Driver] = device.EntityValueAttribute
 	}
 
-	return filter, nil
+	return filter
 }
 
 // draDevice identifies a device that the kubelet reports for a DRA allocation.

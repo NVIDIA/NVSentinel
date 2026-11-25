@@ -31,20 +31,9 @@ import (
 )
 
 func TestNewDeviceFilter_GPUDefault_ListsResourceNamesAndDriver(t *testing.T) {
-	filter, err := newDeviceFilter(modeltest.GPUEntityTypes())
-	require.NoError(t, err)
+	filter := newDeviceFilter(modeltest.GPUEntityTypes())
 	assert.Equal(t, map[string]bool{"nvidia.com/gpu": true, "nvidia.com/pgpu": true}, filter.resourceNames)
 	assert.Equal(t, map[string]string{model.GPUDRADriverName: "uuid"}, filter.attributeByDriver)
-}
-
-func TestNewDeviceFilter_DriverWithTwoAttributes_ReturnsError(t *testing.T) {
-	_, err := newDeviceFilter(model.PartialRemediationEntityTypes{
-		"ACCEL_SERIAL": {Devices: []model.PartialRemediationDevice{
-			{Driver: "accel.example.com", DeviceClasses: []string{"a"}, EntityValueAttribute: "serial"},
-			{Driver: "accel.example.com", DeviceClasses: []string{"b"}, EntityValueAttribute: "uuid"},
-		}},
-	})
-	require.ErrorContains(t, err, "accel.example.com has two entityValueAttribute values")
 }
 
 func TestAttributeValue_QualifiedAndUnqualifiedNames(t *testing.T) {

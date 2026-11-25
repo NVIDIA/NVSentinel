@@ -167,15 +167,10 @@ func (mock *MockPodResourcesServer) List(ctx context.Context,
 
 func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[string]map[string][]deviceInfo) *kubeletGRPClient {
 	mockPodResourcesServer := NewMockPodResourcesServer(err, errReturnCount, podDevices)
-	filter, filterErr := newDeviceFilter(modeltest.GPUEntityTypes())
-	if filterErr != nil {
-		panic(filterErr)
-	}
-
 	return &kubeletGRPClient{
 		ctx:                context.Background(),
 		podResourcesClient: mockPodResourcesServer,
-		filter:             filter,
+		filter:             newDeviceFilter(modeltest.GPUEntityTypes()),
 		resolver:           &fakeDRAResolver{},
 	}
 }
@@ -307,9 +302,6 @@ func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.
 			},
 		},
 	}
-	filter, err := newDeviceFilter(entityTypes)
-	require.NoError(t, err)
-
 	accel := draDevice{driver: "accel.example.com", pool: "node-a", name: "accel-0"}
 	client := newTestKubeletGRPCClient(nil, 0, map[string]map[string][]deviceInfo{
 		"accel-pod": {
@@ -324,7 +316,7 @@ func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.
 			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-2"}},
 		},
 	})
-	client.filter = filter
+	client.filter = newDeviceFilter(entityTypes)
 	client.resolver = &fakeDRAResolver{values: map[draDevice]string{accel: "SN-dra"}}
 
 	devicesPerPod, err := client.ListPodResources()

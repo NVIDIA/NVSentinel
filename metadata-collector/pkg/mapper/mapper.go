@@ -85,10 +85,11 @@ func NewPodDeviceMapper(ctx context.Context, entityTypes model.PartialRemediatio
 		option(&config)
 	}
 
-	filter, err := newDeviceFilter(entityTypes)
-	if err != nil {
+	if err := entityTypes.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
 	}
+
+	filter := newDeviceFilter(entityTypes)
 
 	clusterConfig, err := loadRESTConfig(config.kubeconfigPath)
 	if err != nil {
@@ -318,7 +319,8 @@ func (mapper *podDeviceMapper) getPatchRequestForPod(pod KubeletPod,
 			patchBytes = []byte(fmt.Sprintf(mergePatchPath, model.PodDeviceAnnotationName, string(deviceAnnotationJSON)))
 		}
 	} else if podHasDeviceAnnotation { // !podHasGPUDevices
-		slog.Info("Removing devices annotation for pod since it no longer has devices allocated", "podKey", podKey)
+		slog.Info("Removing devices annotation for pod: it has no configured device, or a DRA device of the pod "+
+			"has no entity value yet", "podKey", podKey)
 
 		patchType = types.JSONPatchType
 		patch := []map[string]string{

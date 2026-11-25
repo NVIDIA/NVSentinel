@@ -294,6 +294,22 @@ tests:
       - failedTemplate:
           errorMessage: Device name gpu.nvidia.com is listed under both GPU_SERIAL and GPU_UUID. The pod device annotation does not record the entity type, so a device name can belong to only one entity type.
 
+  - it: fails for a driver with two entityValueAttribute values
+    template: templates/partial-remediation-entity-types-validation.yaml
+    set:
+      global.partialRemediationEntityTypes.GPU_UUID:
+        devices:
+          - driver: gpu.nvidia.com
+            deviceClasses: ["gpu.nvidia.com"]
+            entityValueAttribute: uuid
+          - driver: gpu.nvidia.com
+            deviceClasses: ["mig.nvidia.com"]
+            entityValueAttribute: serial
+        scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes.GPU_UUID lists driver gpu.nvidia.com with entityValueAttribute uuid and serial. A driver can have only one.
+
   - it: fails for a DeviceClass under two entity types
     template: templates/partial-remediation-entity-types-validation.yaml
     set:

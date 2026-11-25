@@ -62,6 +62,17 @@ func TestLoadPartialRemediationEntityTypes_InvalidInput_ReturnsError(t *testing.
 		{"missing key", "otherKey = 1\n", ErrPartialRemediationEntityTypesMissing.Error()},
 		{"invalid entry", "[partialRemediationEntityTypes.GPU_UUID]\nscopedActions = []\n", "has no devices"},
 		{"invalid TOML", "[partialRemediationEntityTypes\n", "failed to decode TOML config"},
+		{"driver with two attributes", `
+[[partialRemediationEntityTypes.GPU_UUID.devices]]
+driver = "gpu.nvidia.com"
+deviceClasses = ["gpu.nvidia.com"]
+entityValueAttribute = "uuid"
+
+[[partialRemediationEntityTypes.GPU_UUID.devices]]
+driver = "gpu.nvidia.com"
+deviceClasses = ["mig.nvidia.com"]
+entityValueAttribute = "serial"
+`, "lists driver gpu.nvidia.com with entityValueAttribute uuid and serial"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := LoadPartialRemediationEntityTypes(writeConfig(t, tt.content))
