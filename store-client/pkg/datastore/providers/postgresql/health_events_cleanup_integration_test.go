@@ -285,3 +285,104 @@ func TestHealthEventsCleaner_Integration_KeepsDrainsInProgress(t *testing.T) {
 	require.NoError(t, rows.Close())
 	require.Equal(t, []string{"keep-in-progress", "keep-legacy-in-progress", "keep-fresh"}, kept)
 }
+
+// A drain that stayed InProgress after its quarantine ended keeps the later UnQuarantined and
+// Cancelled events of its node, which node-drainer's cold start needs to cancel it. Once the drain
+// is no longer InProgress, both expire. A legacy Status of InProgress counts even when the current
+// key is empty.
+func TestHealthEventsCleaner_Integration_KeepsTheEndOfAKeptDrain(t *testing.T) {
+	dsn := os.Getenv("NVSENTINEL_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set NVSENTINEL_TEST_POSTGRES_DSN to run PostgreSQL retention tests")
+	}
+
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		var err error
+		dsn, err = pq.ParseURL(dsn)
+		require.NoError(t, err)
+	}
+
+	admin, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	defer admin.Close()
+
+	schema := fmt.Sprintf("events_ends_%d", time.Now().UnixNano())
+	_, err = admin.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema))
+	require.NoError(t, err)
+
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := admin.ExecContext(cleanupCtx, "DROP SCHEMA "+pq.QuoteIdentifier(schema)+" CASCADE")
+		require.NoError(t, err)
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("postgres", dsn+" search_path="+schema+",public")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, createTables(ctx, db))
+
+	const (
+		inProgress    = `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"InProgress"}}}`
+		unquarantined = `{"healtheventstatus":{"nodequarantined":"UnQuarantined","userpodsevictionstatus":{"status":"Succeeded"}}}`
+		cancelled     = `{"healtheventstatus":{"nodequarantined":"Cancelled","userpodsevictionstatus":{"status":"Cancelled"}}}`
+		legacyStatus  = `{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"","Status":"InProgress"}}}`
+	)
+
+	// Oldest first, all expired.
+	for i, event := range []struct{ key, node, document string }{
+		{"x-end-before-drain", "node-x", unquarantined},
+		{"x-drain", "node-x", inProgress},
+		{"x-unquarantined", "node-x", unquarantined},
+		{"x-cancelled", "node-x", cancelled},
+		{"y-end-without-drain", "node-y", unquarantined},
+		{"z-legacy-drain", "node-z", legacyStatus},
+		{"z-unquarantined", "node-z", unquarantined},
+	} {
+		_, err := db.ExecContext(ctx, `INSERT INTO health_events (node_name, event_type, document, created_at)
+ VALUES ($1, $2, $3::jsonb, clock_timestamp() - interval '40 days' + make_interval(secs => $4))`,
+			event.node, event.key, event.document, i)
+		require.NoError(t, err)
+	}
+
+	kept := func(t *testing.T) []string {
+		t.Helper()
+
+		rows, err := db.QueryContext(ctx, `SELECT event_type FROM health_events ORDER BY created_at`)
+		require.NoError(t, err)
+
+		var keys []string
+
+		for rows.Next() {
+			var key string
+			require.NoError(t, rows.Scan(&key))
+			keys = append(keys, key)
+		}
+
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+
+		return keys
+	}
+
+	cleaner := &healthEventsCleaner{db: db, config: healthEventsCleanupConfig{720 * time.Hour, time.Hour, 2, 10}}
+
+	n, err := cleaner.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), n)
+	require.Equal(t, []string{"x-drain", "x-unquarantined", "x-cancelled", "z-legacy-drain", "z-unquarantined"}, kept(t))
+
+	// node-drainer's cold start cancels node-x's stale drain: its end events are no longer needed.
+	_, err = db.ExecContext(ctx, `UPDATE health_events SET document = $1::jsonb WHERE event_type = 'x-drain'`,
+		`{"healtheventstatus":{"nodequarantined":"Quarantined","userpodsevictionstatus":{"status":"Cancelled"}}}`)
+	require.NoError(t, err)
+
+	n, err = cleaner.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), n)
+	require.Equal(t, []string{"z-legacy-drain", "z-unquarantined"}, kept(t))
+}

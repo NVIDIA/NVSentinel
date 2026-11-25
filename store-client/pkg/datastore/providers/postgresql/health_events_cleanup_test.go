@@ -301,7 +301,8 @@ func TestHealthEventsCleaner_DeleteSQL_ExpiresByInsertTimeAndDropsOwnChanges(t *
 	require.Contains(t, healthEventsDeleteQuery, "ORDER BY created_at, id LIMIT $2")
 	// Inside the candidates and again on the row deleted, as a concurrent writer may update it.
 	require.Equal(t, 2, strings.Count(healthEventsDeleteQuery, "AND NOT "+healthEventsDrainInProgress))
-	require.NotContains(t, healthEventsDrainInProgress, "= NULL")
+	require.Equal(t, 2, strings.Count(healthEventsDeleteQuery, "AND NOT "+healthEventsEndsKeptDrain))
+	require.NotContains(t, healthEventsDrainInProgress, "COALESCE", "an empty key must not hide the other spelling")
 	require.Contains(t, healthEventsDeleteChangesQuery, "table_name = 'health_events'")
 	require.Contains(t, healthEventsDeleteChangesQuery, "operation = 'DELETE'")
 	require.Contains(t, healthEventsDeleteChangesQuery, "record_id = ANY($1::uuid[])")

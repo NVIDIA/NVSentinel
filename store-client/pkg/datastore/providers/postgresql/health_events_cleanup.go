@@ -36,13 +36,17 @@ const minimumHealthEventsRetention = 24 * time.Hour
 
 const minimumHealthEventsCleanupInterval = time.Minute
 
-// The batches walk idx_health_events_created_id and remove their changelog rows through
-// idx_changelog_table_record. Without them each batch would scan a whole table.
+// The batches walk idx_health_events_created_id, find kept drains through idx_health_events_document_gin
+// and remove their changelog rows through idx_changelog_table_record. Without them each batch would
+// scan a whole table.
 const healthEventsCleanupPrerequisitesQuery = `SELECT
  to_regclass('health_events') IS NOT NULL
  AND to_regclass('datastore_changelog') IS NOT NULL
  AND EXISTS (SELECT 1 FROM pg_index i
  WHERE i.indexrelid = to_regclass('idx_health_events_created_id')
+ AND i.indrelid = to_regclass('health_events') AND i.indisvalid)
+ AND EXISTS (SELECT 1 FROM pg_index i
+ WHERE i.indexrelid = to_regclass('idx_health_events_document_gin')
  AND i.indrelid = to_regclass('health_events') AND i.indisvalid)
  AND EXISTS (SELECT 1 FROM pg_index i
  WHERE i.indexrelid = to_regclass('idx_changelog_table_record')
@@ -51,23 +55,39 @@ const healthEventsCleanupPrerequisitesQuery = `SELECT
 // healthEventsDrainInProgress matches an event whose drain node-drainer is running: its cold start
 // resumes it. A quarantined event whose drain never started is not kept. Kept, it could outlive the
 // later event that ended its quarantine, and a cold start would then replay it as active. Older
-// documents spell the key Status. The COALESCE falls back to an empty string, so the condition is
-// never NULL.
-const healthEventsDrainInProgress = `(COALESCE(document->'healtheventstatus'->'userpodsevictionstatus'->>'status',
-  document->'healtheventstatus'->'userpodsevictionstatus'->>'Status', '') = 'InProgress')`
+// documents spell the key Status; each spelling is checked on its own, so an empty one cannot hide
+// the other. Containment uses idx_health_events_document_gin and is never NULL.
+const healthEventsDrainInProgress = `(
+ document @> '{"healtheventstatus":{"userpodsevictionstatus":{"status":"InProgress"}}}'
+ OR document @> '{"healtheventstatus":{"userpodsevictionstatus":{"Status":"InProgress"}}}')`
+
+// healthEventsEndsKeptDrain matches an UnQuarantined or Cancelled event of a node whose kept drain
+// started before it. A drain can stay InProgress after its quarantine ended, as when node-drainer
+// restarts before it stores the cancellation. Its cold start then cancels the drain only while
+// this later event exists, so the event stays until the drain is no longer InProgress.
+const healthEventsEndsKeptDrain = `((document @> '{"healtheventstatus":{"nodequarantined":"UnQuarantined"}}'
+  OR document @> '{"healtheventstatus":{"nodequarantined":"Cancelled"}}'
+  OR document @> '{"healtheventstatus":{"nodeQuarantined":"UnQuarantined"}}'
+  OR document @> '{"healtheventstatus":{"nodeQuarantined":"Cancelled"}}')
+ AND EXISTS (SELECT 1 FROM health_events AS drain
+  WHERE drain.node_name = health_events.node_name AND drain.created_at < health_events.created_at
+  AND (drain.document @> '{"healtheventstatus":{"userpodsevictionstatus":{"status":"InProgress"}}}'
+   OR drain.document @> '{"healtheventstatus":{"userpodsevictionstatus":{"Status":"InProgress"}}}')))`
 
 // A batch picks its rows from idx_health_events_created_id, after the position the previous batch
 // of the run reached, and deletes them by primary key. It reads only its own rows and the kept
 // rows it passes, however large the expired backlog is, and a run passes each kept row once. A
 // join on the candidates lets the planner hash every expired row for each batch. The outer
-// condition is checked again against a row a concurrent writer updates.
+// conditions are checked again against a row a concurrent writer updates.
 const healthEventsDeleteQuery = `DELETE FROM health_events
 WHERE id = ANY (ARRAY(
  SELECT id FROM health_events
  WHERE created_at < $1 AND (created_at, id) > ($3, $4::uuid)
  AND NOT ` + healthEventsDrainInProgress + `
+ AND NOT ` + healthEventsEndsKeptDrain + `
  ORDER BY created_at, id LIMIT $2
 )) AND NOT ` + healthEventsDrainInProgress + `
+AND NOT ` + healthEventsEndsKeptDrain + `
 RETURNING id::text, created_at`
 
 // The health_events trigger logs every delete to the changelog with a copy of the row. No
@@ -218,8 +238,8 @@ func (c *healthEventsCleaner) run(ctx context.Context) (int64, error) {
 	}
 
 	if !ready {
-		slog.Warn("Health events cleanup requires the schema and valid idx_health_events_created_id " +
-			"and idx_changelog_table_record; run store setup or provision them")
+		slog.Warn("Health events cleanup requires the schema and valid idx_health_events_created_id, " +
+			"idx_health_events_document_gin and idx_changelog_table_record; run store setup or provision them")
 
 		return 0, nil
 	}
