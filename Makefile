@@ -56,6 +56,7 @@ GO_MODULES := \
 	janitor \
 	lifecycle-manager \
 	metadata-collector \
+	pod-device-mapper \
 	event-exporter \
 	store-client \
 	commons
@@ -529,6 +530,11 @@ lint-test-commons:
 lint-test-metadata-collector:
 	@echo "Linting and testing metadata-collector..."
 	$(MAKE) -C metadata-collector lint-test
+
+.PHONY: lint-test-pod-device-mapper
+lint-test-pod-device-mapper:
+	@echo "Linting and testing pod-device-mapper..."
+	$(MAKE) -C pod-device-mapper lint-test
 
 .PHONY: lint-test-event-exporter
 lint-test-event-exporter:

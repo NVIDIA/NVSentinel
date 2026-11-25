@@ -32,7 +32,7 @@ rules:
       - nodes/proxy
     verbs:
       - get
-  {{- if and .Values.podMapper.enabled (include "metadata-collector.hasDRADevices" .) }}
+  {{- if and (include "metadata-collector.podMapperEnabled" .) (include "metadata-collector.hasDRADevices" .) }}
   # The pod device mapper reads the entity value of DRA devices from the ResourceSlices of its node.
   - apiGroups:
       - resource.k8s.io

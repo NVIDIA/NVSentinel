@@ -151,3 +151,74 @@ then lists ResourceSlices to find the entity value of DRA devices.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+ADR-072: the chart renders two DaemonSets. nvidia-metadata-collector runs the NVIDIA discovery, and
+pod-device-mapper runs the pod device mapper. Each has its own app.kubernetes.io/name, so the selectors of the two
+DaemonSets do not overlap.
+*/}}
+{{- define "metadata-collector.discoveryName" -}}
+nvidia-metadata-collector
+{{- end -}}
+
+{{- define "metadata-collector.mapperName" -}}
+pod-device-mapper
+{{- end -}}
+
+{{- define "metadata-collector.discoverySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "metadata-collector.discoveryName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "metadata-collector.mapperSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "metadata-collector.mapperName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "metadata-collector.discoveryLabels" -}}
+helm.sh/chart: {{ include "metadata-collector.chart" . }}
+{{ include "metadata-collector.discoverySelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{- define "metadata-collector.mapperLabels" -}}
+helm.sh/chart: {{ include "metadata-collector.chart" . }}
+{{ include "metadata-collector.mapperSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+Whether the pod device mapper is enabled, as a template-truthy string. The value is compared as a string, so a quoted
+"false" turns the mapper off, as the partial-drain install check of the umbrella chart reads it.
+*/}}
+{{- define "metadata-collector.podMapperEnabled" -}}
+{{- $enabled := (.Values.podMapper | default dict).enabled -}}
+{{- if ne (lower (toString $enabled)) "false" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+The KUBELET_HOST value of the pod device mapper. The mapper runs on the pod network, where localhost is the pod
+itself, so an empty kubeletHost or a loopback address becomes the node IP (status.hostIP). Helm merges a value that an
+operator sets with the default valueFrom, so a set value is rendered alone.
+*/}}
+{{- define "metadata-collector.mapperKubeletHost" -}}
+{{- $host := .Values.kubeletHost | default dict -}}
+{{- $loopback := not $host -}}
+{{- if and $host (hasKey $host "value") -}}
+{{- $value := trim (toString $host.value) -}}
+{{- $host = dict "value" $value -}}
+{{- if or (eq $value "") (eq $value "localhost") (hasPrefix "127." $value) (eq $value "::1") -}}
+{{- $loopback = true -}}
+{{- end -}}
+{{- end -}}
+{{- if $loopback -}}
+{{- $host = dict "valueFrom" (dict "fieldRef" (dict "fieldPath" "status.hostIP")) -}}
+{{- end -}}
+{{- toYaml $host -}}
+{{- end -}}

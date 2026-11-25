@@ -32,6 +32,7 @@ MODULES_WITH_ISSUES=0
 TOTAL_ISSUES=0
 TOTAL_TIDY_ISSUES=0
 TOTAL_MONGODB_ISSUES=0
+TOTAL_BOUNDARY_ISSUES=0
 
 # Function to print colored output
 print_error() {
@@ -208,6 +209,43 @@ check_mongodb_imports() {
     return $mongodb_issues
 }
 
+# Local modules that a module must not depend on. ADR-070 keeps the vendor-neutral core apart from vendor code;
+# each entry is "<module directory>:<forbidden module path>".
+FORBIDDEN_MODULE_DEPS=(
+    # ADR-072: the pod device mapper is core code, and metadata-collector holds the NVIDIA discovery.
+    "pod-device-mapper:github.com/nvidia/nvsentinel/metadata-collector"
+)
+
+# Function to check that a module does not depend on a module that FORBIDDEN_MODULE_DEPS lists for it
+check_forbidden_module_deps() {
+    local gomod_file="$1"
+    local gomod_dir
+    gomod_dir="$(dirname "$gomod_file")"
+    local module_dir="${gomod_dir#"$REPO_ROOT"/}"
+    local boundary_issues=0
+
+    local entry
+    for entry in "${FORBIDDEN_MODULE_DEPS[@]}"; do
+        local dir="${entry%%:*}"
+        local forbidden="${entry#*:}"
+
+        if [[ "$module_dir" != "$dir" ]]; then
+            continue
+        fi
+
+        # Read the go.mod itself: a module that imports another one requires it there.
+        if (cd "$gomod_dir" && go mod edit -json | grep -q "\"Path\": \"$forbidden\""); then
+            print_error "  ✗ $module_dir depends on $forbidden, which it must not import"
+            boundary_issues=1
+            TOTAL_BOUNDARY_ISSUES=$((TOTAL_BOUNDARY_ISSUES + 1))
+        else
+            print_info "  ✓ No dependency on $forbidden"
+        fi
+    done
+
+    return $boundary_issues
+}
+
 # Function to validate a single go.mod file
 validate_gomod() {
     local gomod_file="$1"
@@ -221,6 +259,13 @@ validate_gomod() {
     if ! cd "$gomod_dir" 2>/dev/null; then
         print_error "  ✗ Cannot access directory: $gomod_dir"
         return 1
+    fi
+
+    # Check module boundaries
+    local boundary_issues=0
+    if ! check_forbidden_module_deps "$gomod_file"; then
+        boundary_issues=1
+        MODULES_WITH_ISSUES=$((MODULES_WITH_ISSUES + 1))
     fi
 
     # Get all required dependencies
@@ -238,9 +283,11 @@ validate_gomod() {
         local tidy_issues=0
         if ! check_mod_tidy "$gomod_file"; then
             tidy_issues=$((tidy_issues + 1))
-            MODULES_WITH_ISSUES=$((MODULES_WITH_ISSUES + 1))
+            if [[ $boundary_issues -eq 0 ]]; then
+                MODULES_WITH_ISSUES=$((MODULES_WITH_ISSUES + 1))
+            fi
         fi
-        return $tidy_issues
+        return $((tidy_issues + boundary_issues))
     fi
 
     # Get current replace directives (handle both single and grouped formats)
@@ -381,13 +428,13 @@ validate_gomod() {
     local tidy_issues=0
     if ! check_mod_tidy "$gomod_file"; then
         tidy_issues=$((tidy_issues + 1))
-        if [[ $issues_found -eq 0 ]]; then
+        if [[ $issues_found -eq 0 && $mongodb_issues -eq 0 && $boundary_issues -eq 0 ]]; then
             MODULES_WITH_ISSUES=$((MODULES_WITH_ISSUES + 1))
         fi
     fi
 
     # Summary for this module
-    local total_module_issues=$((issues_found + mongodb_issues + tidy_issues))
+    local total_module_issues=$((issues_found + mongodb_issues + boundary_issues + tidy_issues))
     if [[ $total_module_issues -eq 0 ]]; then
         print_info "  ✓ All validations passed"
     else
@@ -434,13 +481,14 @@ main() {
     print_info "========================================"
     print_info "Total modules checked: $TOTAL_MODULES"
 
-    if [[ $TOTAL_ISSUES -eq 0 && $TOTAL_TIDY_ISSUES -eq 0 && $TOTAL_MONGODB_ISSUES -eq 0 ]]; then
+    if [[ $TOTAL_ISSUES -eq 0 && $TOTAL_TIDY_ISSUES -eq 0 && $TOTAL_MONGODB_ISSUES -eq 0 && $TOTAL_BOUNDARY_ISSUES -eq 0 ]]; then
         print_success "All go.mod files are valid!"
         print_info "✓ No circular self-references found"
         print_info "✓ All local module dependencies have proper replace directives"
         print_info "✓ All local module dependencies use v0.0.0 version"
         print_info "✓ All modules are properly tidied"
         print_info "✓ No direct MongoDB driver usage outside store-client"
+        print_info "✓ No module depends on a module that it must not import"
     else
         print_error "Validation failed!"
         print_error "Modules with issues: $MODULES_WITH_ISSUES"
@@ -452,6 +500,9 @@ main() {
         fi
         if [[ $TOTAL_MONGODB_ISSUES -gt 0 ]]; then
             print_error "Modules with direct MongoDB driver usage: $TOTAL_MONGODB_ISSUES"
+        fi
+        if [[ $TOTAL_BOUNDARY_ISSUES -gt 0 ]]; then
+            print_error "Modules that depend on a forbidden module: $TOTAL_BOUNDARY_ISSUES"
         fi
         print_info ""
         print_info "To fix these issues:"
@@ -469,6 +520,10 @@ main() {
             print_info "   - Use database-agnostic types from store-client/pkg/datastore"
             step=$((step + 1))
         fi
+        if [[ $TOTAL_BOUNDARY_ISSUES -gt 0 ]]; then
+            print_info "$step. Remove the imports of the forbidden modules shown above (see FORBIDDEN_MODULE_DEPS)"
+            step=$((step + 1))
+        fi
         if [[ $TOTAL_TIDY_ISSUES -gt 0 ]]; then
             print_info "$step. Run 'go mod tidy' in each affected module directory"
             step=$((step + 1))
@@ -476,7 +531,7 @@ main() {
         print_info "$step. Re-run this script to verify fixes"
     fi
 
-    exit $((TOTAL_ISSUES + TOTAL_TIDY_ISSUES + TOTAL_MONGODB_ISSUES > 0 ? 1 : 0))
+    exit $((TOTAL_ISSUES + TOTAL_TIDY_ISSUES + TOTAL_MONGODB_ISSUES + TOTAL_BOUNDARY_ISSUES > 0 ? 1 : 0))
 }
 
 # Handle script arguments
@@ -499,7 +554,8 @@ DESCRIPTION:
     4. Checks that replace paths point to the correct local directories
     5. Validates that local module dependencies use v0.0.0 version (no timestamps)
     6. Verifies that 'go mod tidy' has been run (go.mod/go.sum are clean)
-    7. Ensures no direct MongoDB driver imports outside store-client module
+    7. Ensures no direct MongoDB driver imports outside store-client module, and
+       no module depends on a module that FORBIDDEN_MODULE_DEPS lists for it
     8. Reports any circular self-references
     9. Reports any missing or incorrect replace directives
     10. Reports any local modules with incorrect versions
