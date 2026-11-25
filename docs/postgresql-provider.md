@@ -119,6 +119,8 @@ While the consumer runs, do not delete its row. A running consumer saves its old
 
 With the `CREATE` mode, the new start position is the database clock. After you delete the row, the new start position can be earlier than the database clock if another client transaction was open. It can also be the Unix epoch if client activity is hidden or prepared transactions are enabled. This recovery can skip the events between the old position and the new start position.
 
+For event-exporter recovery after external pruning, see [Backfill After PostgreSQL Changelog Pruning](configuration/event-exporter.md#backfill-after-postgresql-changelog-pruning).
+
 ### Delivery Acknowledgments
 
 A consumer acknowledges an event after it processes the event. This acknowledgment also covers all events that the watcher delivered to the consumer before that event. The saved position always stays before the earliest delivered event that the consumer has not acknowledged. Thus, after a restart, the consumer gets every unacknowledged event again, and it can also get some processed events again.
