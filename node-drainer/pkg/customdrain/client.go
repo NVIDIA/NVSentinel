@@ -39,9 +39,12 @@ import (
 type Client struct {
 	dynamicClient dynamic.Interface
 	restMapper    *restmapper.DeferredDiscoveryRESTMapper
-	template      *template.Template
-	config        config.CustomDrainConfig
-	dryRunMode    []string
+	// resource is the DrainRequest resource resolved when the client was built. Deletion falls
+	// back to it when discovery does not find the kind.
+	resource   schema.GroupVersionResource
+	template   *template.Template
+	config     config.CustomDrainConfig
+	dryRunMode []string
 }
 
 // NewClient returns a client that renders drain CRs from the configured template. With dryRun
@@ -70,7 +73,7 @@ func NewClient(
 		Kind:    cfg.Kind,
 	}
 
-	_, err = restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	mapping, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		slog.Error("Failed to validate custom drain CRD",
 			"apiGroup", cfg.ApiGroup,
@@ -96,6 +99,7 @@ func NewClient(
 	return &Client{
 		dynamicClient: dynamicClient,
 		restMapper:    restMapper,
+		resource:      mapping.Resource,
 		template:      tmpl,
 		config:        cfg,
 		dryRunMode:    dryRunMode,
@@ -253,18 +257,23 @@ func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 		Kind:    c.config.Kind,
 	}
 
-	mapping, err := c.restMapper.RESTMappingWithContext(ctx, gvk.GroupKind(), gvk.Version)
-	if meta.IsNoMatchError(err) {
-		// The API server no longer serves the kind, so no DrainRequest is left to delete.
-		return nil
-	}
+	resource := c.resource
 
-	if err != nil {
+	mapping, err := c.restMapper.RESTMappingWithContext(ctx, gvk.GroupKind(), gvk.Version)
+
+	switch {
+	case err == nil:
+		resource = mapping.Resource
+	case meta.IsNoMatchError(err):
+		// Discovery can miss a kind it still serves when part of it fails, so a no-match does not
+		// show the kind is gone. Delete with the resource resolved at startup: the API server
+		// answers NotFound if the kind is no longer served.
+	default:
 		return fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
 	}
 
 	err = c.dynamicClient.
-		Resource(mapping.Resource).
+		Resource(resource).
 		Namespace(c.config.Namespace).
 		Delete(ctx, crName, metav1.DeleteOptions{DryRun: c.dryRunMode})
 

@@ -2737,6 +2737,16 @@ func newCustomDrainReconciler(t *testing.T, setup *testSetup, customDrainConfig 
 	dynamicClient dynamic.Interface) *reconciler.Reconciler {
 	t.Helper()
 
+	r, _ := newCustomDrainReconcilerWithMapper(t, setup, customDrainConfig, dynamicClient)
+
+	return r
+}
+
+// newCustomDrainReconcilerWithMapper also returns the discovery mapper of the new reconciler.
+func newCustomDrainReconcilerWithMapper(t *testing.T, setup *testSetup, customDrainConfig config.CustomDrainConfig,
+	dynamicClient dynamic.Interface) (*reconciler.Reconciler, *restmapper.DeferredDiscoveryRESTMapper) {
+	t.Helper()
+
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(setup.restConfig)
 	require.NoError(t, err)
 
@@ -2758,7 +2768,7 @@ func newCustomDrainReconciler(t *testing.T, setup *testSetup, customDrainConfig 
 	}, false, setup.client, setup.informersInstance, setup.mockDB, nil, dynamicClient, restMapper)
 	require.NoError(t, err)
 
-	return r
+	return r, restMapper
 }
 
 // A DrainRequest that cannot be deleted keeps its event retryable: the event of the deleted node is
@@ -2819,6 +2829,62 @@ func TestReconciler_CustomDrainDeletedNode_FailedCRDeletionIsRetried(t *testing.
 	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the retry marks the event Cancelled")
 	require.Eventually(t, func() bool { return !crExists() }, 10*time.Second, 500*time.Millisecond,
 		"the retry deletes the DrainRequest CR")
+}
+
+// A DrainRequest kind the API server stopped serving, as after its CRD is removed, leaves nothing to
+// delete: the event of a deleted node ends although discovery no longer finds the kind.
+func TestReconciler_CustomDrainDeletedNode_KindNoLongerServed_EventEnds(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	nodeName := "custom-drain-unserved-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "default")
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
+
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.ErrorContains(t, err, "waiting for custom drain CR to complete")
+
+	// Built while the kind is served, as at startup.
+	r, restMapper := newCustomDrainReconcilerWithMapper(t, setup, customDrainCfg, setup.dynamicClient)
+
+	require.NoError(t, setup.client.CoreV1().Nodes().Delete(setup.ctx, nodeName, metav1.DeleteOptions{}))
+	require.Eventually(t, func() bool {
+		_, err := setup.informersInstance.GetNode(nodeName)
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 100*time.Millisecond, "the node cache should drop the deleted node")
+
+	crdGVR := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+	require.NoError(t, setup.dynamicClient.Resource(crdGVR).Delete(setup.ctx, "drainrequests.drain.example.com", metav1.DeleteOptions{}))
+
+	gvr := schema.GroupVersionResource{Group: "drain.example.com", Version: "v1alpha1", Resource: "drainrequests"}
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").List(setup.ctx, metav1.ListOptions{})
+		return errors.IsNotFound(err)
+	}, 30*time.Second, 500*time.Millisecond, "the API server should stop serving DrainRequest")
+
+	// Discovery now misses the kind.
+	restMapper.Reset()
+
+	updatesBefore := setup.mockDB.updates.Load()
+
+	err = r.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+	require.NoError(t, err, "no DrainRequest is left, so the event of the deleted node ends")
+	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the event is marked Cancelled")
 }
 
 // In dry run node-drainer must not hand the node to the external drain controller, so the
