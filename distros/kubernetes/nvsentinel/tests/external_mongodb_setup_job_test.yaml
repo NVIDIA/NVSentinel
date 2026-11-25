@@ -76,6 +76,34 @@ tests:
           path: metadata.name
           pattern: ^customer-production-gpu-external-mongodb-setup-[0-9]+-[0-9a-f]{8}$
 
+  # helm-unittest cannot compare two renders, so the default name is pinned.
+  # The hash covers the rendered pod template, so a change to it, such as the
+  # fallback image or the container env, gives a new name even when no value
+  # changed: an upgrade must not try to patch the immutable template of a Job
+  # that is still within its TTL. Update the pinned name when the pod template
+  # changes on purpose.
+  - it: has the pinned default name
+    asserts:
+      - equal:
+          path: metadata.name
+          value: &externalDefaultName RELEASE-NAME-external-mongodb-setup-2592000-1b360a0a
+
+  - it: keeps the name when a value outside the Job changes
+    set:
+      global.nodeDrainer.enabled: true
+    asserts:
+      - equal:
+          path: metadata.name
+          value: *externalDefaultName
+
+  - it: changes the name when the setup image changes
+    set:
+      global.datastore.setupJob.image.tag: "0.0.0-test"
+    asserts:
+      - notEqual:
+          path: metadata.name
+          value: *externalDefaultName
+
   - it: gives the Job a 10 minute deadline by default
     asserts:
       - equal:

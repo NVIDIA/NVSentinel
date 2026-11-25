@@ -60,16 +60,17 @@ Nil/empty -> default. Strings must be base-10 digits and numbers must be whole
 {{- end }}
 
 {{/*
-<release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
-change is a new Job, not a patch on a completed one.
+<release>-external-mongodb-setup-<ttl>-<hash> so a TTL, init-script or pod
+template change is a new Job, not a patch on a completed one.
 */}}
 {{- define "nvsentinel.externalMongoInitJobName" -}}
 {{- $ttl := include "nvsentinel.collectionExpirySeconds" . | toString -}}
 {{- /* A completed Job is immutable, so every value that shapes its pod (the
      script, the datastore settings behind image, TLS and auth, pull secrets
      and placement) is part of the name: a change renders a new Job instead of
-     patching the old one. */ -}}
-{{- $hash := print (include "nvsentinel.externalMongoInitEval" .) (toJson .Values.global.datastore) (toJson .Values.global.imagePullSecrets) (toJson .Values.global.systemNodeSelector) (toJson .Values.global.systemNodeTolerations) | sha256sum | trunc 8 -}}
+     patching the old one. The rendered pod template also covers what no value
+     controls, such as the fallback image and the container env. */ -}}
+{{- $hash := print (include "nvsentinel.externalMongoInitEval" .) (toJson .Values.global.datastore) (toJson .Values.global.imagePullSecrets) (toJson .Values.global.systemNodeSelector) (toJson .Values.global.systemNodeTolerations) (include "nvsentinel.externalMongoInitPodTemplate" .) | sha256sum | trunc 8 -}}
 {{- /* The suffix carries the hash, so it is the release name that gives way
      to the 63-character limit, never the hash. */ -}}
 {{- $suffix := printf "-external-mongodb-setup-%s-%s" $ttl $hash -}}

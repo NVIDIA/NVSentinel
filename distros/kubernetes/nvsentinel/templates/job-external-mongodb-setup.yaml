@@ -27,6 +27,39 @@ inside the mongodb-store subchart instead.
                                (not .Values.global.mongodbStore.enabled) }}
 {{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
 {{- if and $useExternalMongodb (ne ($setupJob.enabled | toString) "false") }}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nvsentinel.externalMongoInitJobName" . }}
+  labels:
+    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "external-mongodb-setup") | nindent 4 }}
+    app.kubernetes.io/component: mongodb-init
+  annotations:
+    # Argo: recreate this immutable Job on sync if the first run Failed and the
+    # name (TTL, pod template hash) did not change. Not a Helm hook: the deployment
+    # platform connector's replicas are ready only once the idempotency index
+    # this script creates exists, and a post-install hook (Argo PostSync) runs
+    # only once the pods are ready, so the two would wait for each other. The
+    # bundled mongodb-store Job is a plain Job for the same reason.
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 86400
+  {{- $deadline := include "nvsentinel.jobActiveDeadlineSeconds" (dict "raw" $setupJob.activeDeadlineSeconds "default" 600 "key" "global.datastore.setupJob.activeDeadlineSeconds") | int }}
+  {{- if $deadline }}
+  activeDeadlineSeconds: {{ $deadline }}
+  {{- end }}
+  template:
+{{- include "nvsentinel.externalMongoInitPodTemplate" . }}
+{{- end }}
+{{- /*
+The pod template is a named template so that nvsentinel.externalMongoInitJobName
+can hash it. spec.template of a Job is immutable: any change here, including a
+chart default such as the fallback image, must give a new name. Its local
+variables are set inside the define, which cannot see the caller's.
+*/}}
+{{- define "nvsentinel.externalMongoInitPodTemplate" }}
+{{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
 {{- $image := ($setupJob.image) | default dict }}
 {{- $imageRepo := $image.repository | default "docker.io/percona/percona-server-mongodb" }}
 {{- $imageTag := $image.tag | default "8.0.26-11" }}
@@ -60,29 +93,6 @@ inside the mongodb-store subchart instead.
 {{- end }}
 
 {{- $needCertVolume := or (ne $caSecretName "") (ne $clientCertSecretName "") }}
-
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ include "nvsentinel.externalMongoInitJobName" . }}
-  labels:
-    {{- include "nvsentinel.labelsWithName" (dict "context" . "name" "external-mongodb-setup") | nindent 4 }}
-    app.kubernetes.io/component: mongodb-init
-  annotations:
-    # Argo: recreate this immutable Job on sync if the first run Failed and the
-    # name (TTL, script hash) did not change. Not a Helm hook: the deployment
-    # platform connector's replicas are ready only once the idempotency index
-    # this script creates exists, and a post-install hook (Argo PostSync) runs
-    # only once the pods are ready, so the two would wait for each other. The
-    # bundled mongodb-store Job is a plain Job for the same reason.
-    argocd.argoproj.io/sync-options: Force=true,Replace=true
-spec:
-  ttlSecondsAfterFinished: 86400
-  {{- $deadline := include "nvsentinel.jobActiveDeadlineSeconds" (dict "raw" $setupJob.activeDeadlineSeconds "default" 600 "key" "global.datastore.setupJob.activeDeadlineSeconds") | int }}
-  {{- if $deadline }}
-  activeDeadlineSeconds: {{ $deadline }}
-  {{- end }}
-  template:
     spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
