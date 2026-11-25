@@ -174,16 +174,14 @@ func TestResourceSliceResolver_ResolvedDevice_IsNotListedAgain(t *testing.T) {
 		"gpu-0 comes from the cache, and gpu-1 resolves on the next poll")
 }
 
-func TestResourceSliceResolver_NoNodeName_LeavesDevicesUnresolved(t *testing.T) {
-	client := startResourceSliceAPI(t)
-	createResourceSlice(t, client, "node-a-gpus", "node-a", model.GPUDRADriverName, "node-a", 1,
-		map[string]string{"gpu-0": "GPU-a0"})
+func TestCheckNodeName_DRAEntryNeedsTheNodeName(t *testing.T) {
+	deviceTypes := model.PartialRemediationEntityTypes{
+		"ACCEL_SERIAL": {Devices: []model.PartialRemediationDevice{{ResourceNames: []string{"example.com/accel"}}}},
+	}
 
-	resolver := newResourceSliceResolver(client, "", map[string]string{model.GPUDRADriverName: "uuid"})
-	resolved, err := resolver.resolve(t.Context(), []draDevice{gpuDRADevice("gpu-0")})
-	require.ErrorIs(t, err, ErrDRALookupFailed)
-	require.ErrorContains(t, err, "NODE_NAME is not set")
-	assert.Empty(t, resolved)
+	require.ErrorIs(t, CheckNodeName(modeltest.GPUEntityTypes(), ""), ErrNodeNameMissing)
+	require.NoError(t, CheckNodeName(modeltest.GPUEntityTypes(), "node-a"))
+	require.NoError(t, CheckNodeName(deviceTypes, ""), "device-plugin entries need no node name")
 }
 
 // A denied list fails the lookup of that driver only. Cached devices and other drivers still resolve.

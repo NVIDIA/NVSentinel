@@ -17,13 +17,20 @@ package mapper
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
@@ -167,32 +174,67 @@ func (mock *MockPodResourcesServer) List(ctx context.Context,
 
 func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[string]map[string][]deviceInfo) *kubeletGRPClient {
 	mockPodResourcesServer := NewMockPodResourcesServer(err, errReturnCount, podDevices)
+	filter := newDeviceFilter(modeltest.GPUEntityTypes())
+
 	return &kubeletGRPClient{
 		ctx:                context.Background(),
 		podResourcesClient: mockPodResourcesServer,
-		filter:             newDeviceFilter(modeltest.GPUEntityTypes()),
-		resolver:           &fakeDRAResolver{},
+		filter:             filter,
+		resolver:           newResourceSliceResolver(fake.NewSimpleClientset(), "node-a", filter.attributeByDriver),
 	}
 }
 
-// fakeDRAResolver resolves the devices in values, returns err, and records every device that it was asked for.
-type fakeDRAResolver struct {
-	values    map[draDevice]string
-	err       error
-	requested []draDevice
+// useResourceSlices gives the client a resolver on a fake API that holds a ResourceSlice for each driver and pool
+// of values on node-a, with each value under the configured attribute of its driver. The fake API ignores field
+// selectors, so a test keeps the slices of one driver; devices_test.go covers the selectors on a real API server.
+func useResourceSlices(client *kubeletGRPClient, values map[draDevice]string) *fake.Clientset {
+	slices := map[string]*resourcev1.ResourceSlice{}
+
+	for device, value := range values {
+		key := device.driver + "-" + device.pool
+
+		slice, ok := slices[key]
+		if !ok {
+			slice = &resourcev1.ResourceSlice{
+				ObjectMeta: metav1.ObjectMeta{Name: key},
+				Spec: resourcev1.ResourceSliceSpec{
+					Driver:   device.driver,
+					NodeName: ptr.To("node-a"),
+					Pool:     resourcev1.ResourcePool{Name: device.pool, Generation: 1, ResourceSliceCount: 1},
+				},
+			}
+			slices[key] = slice
+		}
+
+		attribute := resourcev1.QualifiedName(client.filter.attributeByDriver[device.driver])
+		slice.Spec.Devices = append(slice.Spec.Devices, resourcev1.Device{
+			Name:       device.name,
+			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{attribute: {StringValue: ptr.To(value)}},
+		})
+	}
+
+	objects := make([]runtime.Object, 0, len(slices))
+	for _, slice := range slices {
+		objects = append(objects, slice)
+	}
+
+	api := fake.NewSimpleClientset(objects...)
+	client.resolver = newResourceSliceResolver(api, "node-a", client.filter.attributeByDriver)
+
+	return api
 }
 
-func (f *fakeDRAResolver) resolve(_ context.Context, devices []draDevice) (map[draDevice]string, error) {
-	f.requested = append(f.requested, devices...)
-	resolved := map[draDevice]string{}
+// resourceSliceLists returns the field selectors of the ResourceSlice lists that the API got.
+func resourceSliceLists(api *fake.Clientset) []string {
+	var selectors []string
 
-	for _, device := range devices {
-		if value, ok := f.values[device]; ok {
-			resolved[device] = value
+	for _, action := range api.Actions() {
+		if list, ok := action.(ktesting.ListAction); ok && action.GetResource().Resource == "resourceslices" {
+			selectors = append(selectors, list.GetListRestrictions().Fields.String())
 		}
 	}
 
-	return resolved, f.err
+	return selectors
 }
 
 func TestListPodResources(t *testing.T) {
@@ -248,12 +290,11 @@ func TestListPodResources_DRADevices_RecordsTheAttributeValueUnderTheDriver(t *t
 		},
 	}
 
-	resolver := &fakeDRAResolver{values: map[draDevice]string{
+	client := newTestKubeletGRPCClient(nil, 0, draDevices)
+	api := useResourceSlices(client, map[draDevice]string{
 		gpuDRADevice("gpu-0"): "GPU-a0",
 		gpuDRADevice("gpu-1"): "GPU-a1",
-	}}
-	client := newTestKubeletGRPCClient(nil, 0, draDevices)
-	client.resolver = resolver
+	})
 
 	devicesPerPod, err := client.ListPodResources()
 	require.NoError(t, err)
@@ -263,8 +304,8 @@ func TestListPodResources_DRADevices_RecordsTheAttributeValueUnderTheDriver(t *t
 			"nvidia.com/gpu":       {"GPU-plugin"},
 		}},
 	}, devicesPerPod)
-	assert.NotContains(t, resolver.requested, draDevice{driver: "other.example.com", pool: "node-a", name: "gpu-0"},
-		"a driver that the configuration does not list is not resolved")
+	assert.Equal(t, []string{"spec.driver=" + model.GPUDRADriverName + ",spec.nodeName=node-a"},
+		resourceSliceLists(api), "a driver that the configuration does not list is not looked up")
 }
 
 // A partial annotation would make node-drainer miss the pod, so a pod with an unresolved DRA device gets none,
@@ -284,7 +325,7 @@ func TestListPodResources_UnresolvedDRADevice_LeavesThePodOut(t *testing.T) {
 	}
 
 	client := newTestKubeletGRPCClient(nil, 0, draDevices)
-	client.resolver = &fakeDRAResolver{values: map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"}}
+	useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
 
 	devicesPerPod, err := client.ListPodResources()
 	require.NoError(t, err)
@@ -317,7 +358,7 @@ func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.
 		},
 	})
 	client.filter = newDeviceFilter(entityTypes)
-	client.resolver = &fakeDRAResolver{values: map[draDevice]string{accel: "SN-dra"}}
+	useResourceSlices(client, map[draDevice]string{accel: "SN-dra"})
 
 	devicesPerPod, err := client.ListPodResources()
 	require.NoError(t, err)
@@ -330,13 +371,12 @@ func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.
 }
 
 func TestListPodResources_NoDRADevices_DoesNotCallTheResolver(t *testing.T) {
-	resolver := &fakeDRAResolver{}
 	client := newTestKubeletGRPCClient(nil, 0, podDevices)
-	client.resolver = resolver
+	api := useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
 
 	_, err := client.ListPodResources()
 	require.NoError(t, err)
-	assert.Empty(t, resolver.requested)
+	assert.Empty(t, resourceSliceLists(api))
 }
 
 // A failed lookup leaves the DRA pods out, keeps the other pods, and reports the failure to the caller.
@@ -349,7 +389,11 @@ func TestListPodResources_DRALookupFails_ReturnsOtherPodsAndTheError(t *testing.
 			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-plugin"}},
 		},
 	})
-	client.resolver = &fakeDRAResolver{err: fmt.Errorf("%w: forbidden", ErrDRALookupFailed)}
+	api := useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
+	api.PrependReactor("list", "resourceslices", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "resource.k8s.io",
+			Resource: "resourceslices"}, "", errors.New("no permission"))
+	})
 
 	devicesPerPod, err := client.ListPodResources()
 	require.ErrorIs(t, err, ErrDRALookupFailed)

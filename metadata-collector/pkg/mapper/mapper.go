@@ -61,7 +61,7 @@ func WithKubeconfigs(apiPath, kubeletPath string) Option {
 }
 
 // WithNodeName sets the name of the node, which the mapper needs to list the node's ResourceSlices for DRA
-// devices. Without it, DRA devices stay unresolved and their pods get no annotation.
+// devices. It is required when the configuration has a DRA entry.
 func WithNodeName(nodeName string) Option {
 	return func(config *clientConfig) {
 		config.nodeName = nodeName
@@ -87,6 +87,10 @@ func NewPodDeviceMapper(ctx context.Context, entityTypes model.PartialRemediatio
 
 	if err := entityTypes.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
+	}
+
+	if err := CheckNodeName(entityTypes, config.nodeName); err != nil {
+		return nil, err
 	}
 
 	filter := newDeviceFilter(entityTypes)

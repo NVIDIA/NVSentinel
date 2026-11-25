@@ -255,7 +255,7 @@ The mapper lists ResourceSlices only when a pod on the node has a DRA device tha
 
 To change the `entityValueAttribute` of a driver, follow [Changing entityValueAttribute](node-drainer.md#changing-entityvalueattribute): until the mapper writes the new values, the annotations hold values of the old attribute.
 
-If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. If the mapper cannot read the ResourceSlices, for example because it has no permission or `NODE_NAME` is not set, it still updates the annotations of the other pods, and the poll counts as failed. A lasting failure then reaches the [failure limit](#pod-mapper-failure-tolerance). An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
+If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. If the mapper cannot read the ResourceSlices, for example because it has no permission, it still updates the annotations of the other pods, and the poll counts as failed. A lasting failure then reaches the [failure limit](#pod-mapper-failure-tolerance). An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
 
 ## Disabling the Pod Mapper
 
@@ -296,7 +296,7 @@ With the pod device mapper enabled, `--config` is required. It names a TOML file
     entityValueAttribute = "uuid"
 ```
 
-Set `NODE_NAME` to the name of the Kubernetes node. The mapper needs it to read the ResourceSlices of the node for DRA devices. Without it, pods with DRA devices get no annotation.
+Set `NODE_NAME` to the name of the Kubernetes node. The mapper needs it to read the ResourceSlices of the node for DRA devices. If an entity type has a DRA entry, as the default does, the collector does not start without it. In the chart, the DaemonSet sets it from the node of the pod.
 
 | Flag | Purpose | Default |
 |---|---|---|

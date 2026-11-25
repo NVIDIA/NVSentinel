@@ -36,6 +36,20 @@ type deviceFilter struct {
 	attributeByDriver map[string]string
 }
 
+// ErrNodeNameMissing means the configuration has a DRA entry but the node name is not set. The mapper needs the
+// node name to read the ResourceSlices of the node.
+var ErrNodeNameMissing = errors.New("NODE_NAME is not set; the pod device mapper needs it to read the " +
+	"ResourceSlices of the node for the DRA entries of partialRemediationEntityTypes")
+
+// CheckNodeName returns ErrNodeNameMissing when entityTypes has a DRA entry and nodeName is empty.
+func CheckNodeName(entityTypes model.PartialRemediationEntityTypes, nodeName string) error {
+	if nodeName == "" && len(entityTypes.AllDevices().Drivers()) > 0 {
+		return ErrNodeNameMissing
+	}
+
+	return nil
+}
+
 // newDeviceFilter collects the devices of every entity type. PartialRemediationEntityTypes.Validate allows one
 // attribute for each driver, because the annotation lists the devices of a driver under the driver name only.
 func newDeviceFilter(entityTypes model.PartialRemediationEntityTypes) deviceFilter {
@@ -66,14 +80,6 @@ type draDevice struct {
 // --pod-mapper-max-consecutive-failures instead of showing only in the logs.
 var ErrDRALookupFailed = errors.New("failed to look up DRA devices in ResourceSlices")
 
-// draDeviceResolver finds the entity value of DRA devices.
-type draDeviceResolver interface {
-	// resolve returns the entity value of each device that it finds. A device that is not in the result is
-	// unresolved. The error wraps ErrDRALookupFailed when a lookup failed; the result still holds the
-	// devices that resolved.
-	resolve(ctx context.Context, devices []draDevice) (map[draDevice]string, error)
-}
-
 // resourceSliceResolver reads the entity value of a DRA device from the ResourceSlices of the node. A device
 // keeps its identity while the node runs, so a resolved value is kept until the process restarts, and the
 // resolver lists ResourceSlices only for a device that it has not resolved yet.
@@ -94,6 +100,8 @@ func newResourceSliceResolver(client kubernetes.Interface, nodeName string,
 	}
 }
 
+// resolve returns the entity value of each device that it finds. A device that is not in the result is unresolved.
+// The error wraps ErrDRALookupFailed when a lookup failed; the result still holds the devices that resolved.
 func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice) (map[draDevice]string, error) {
 	driversToList := map[string]bool{}
 
@@ -125,11 +133,6 @@ func (r *resourceSliceResolver) resolve(ctx context.Context, devices []draDevice
 // loadDriver lists the ResourceSlices of the driver on this node and keeps the entity value of each device. An
 // error leaves the devices unresolved, so their pods get no annotation and a partial drain waits for them.
 func (r *resourceSliceResolver) loadDriver(ctx context.Context, driver string) error {
-	if r.nodeName == "" {
-		return fmt.Errorf("%w: NODE_NAME is not set, so the ResourceSlices of driver %s cannot be read",
-			ErrDRALookupFailed, driver)
-	}
-
 	// resourceVersion 0 lets the API server answer from its cache instead of etcd.
 	slices, err := r.client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{
 		FieldSelector: fields.AndSelectors(

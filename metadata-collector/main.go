@@ -87,7 +87,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	// The configuration is read before the collection, so a wrong file fails at once instead of after NVML.
-	entityTypes, err := loadMapperConfig(*podMapperEnabled, *configPath)
+	entityTypes, err := loadMapperConfig(*podMapperEnabled, *configPath, os.Getenv("NODE_NAME"))
 	if err != nil {
 		slog.Error("Invalid pod device mapper configuration", "error", err)
 		cancel()
@@ -161,8 +161,9 @@ func runPodMapperIfEnabled(ctx context.Context, enabled bool, run func(context.C
 	return run(ctx)
 }
 
-// loadMapperConfig reads the devices that the mapper records. A disabled mapper needs no configuration.
-func loadMapperConfig(enabled bool, path string) (model.PartialRemediationEntityTypes, error) {
+// loadMapperConfig reads the devices that the mapper records, and checks that the node name is set when the
+// mapper needs it. A disabled mapper needs no configuration.
+func loadMapperConfig(enabled bool, path, nodeName string) (model.PartialRemediationEntityTypes, error) {
 	if !enabled {
 		return nil, nil
 	}
@@ -170,6 +171,10 @@ func loadMapperConfig(enabled bool, path string) (model.PartialRemediationEntity
 	entityTypes, err := config.LoadPartialRemediationEntityTypes(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the pod device mapper configuration: %w", err)
+	}
+
+	if err := mapper.CheckNodeName(entityTypes, nodeName); err != nil {
+		return nil, err
 	}
 
 	return entityTypes, nil

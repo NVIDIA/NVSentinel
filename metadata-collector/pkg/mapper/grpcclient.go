@@ -45,12 +45,12 @@ type kubeletGRPClient struct {
 	// filter holds the configured devices. The client records no other device.
 	filter deviceFilter
 	// resolver finds the entity value of DRA devices.
-	resolver draDeviceResolver
+	resolver *resourceSliceResolver
 }
 
 // NewKubeletGRPClient connects to the kubelet PodResources socket. It records the devices that filter lists,
 // and finds the entity value of DRA devices through resolver.
-func NewKubeletGRPClient(ctx context.Context, filter deviceFilter, resolver draDeviceResolver) (KubeletGRPClient,
+func NewKubeletGRPClient(ctx context.Context, filter deviceFilter, resolver *resourceSliceResolver) (KubeletGRPClient,
 	error) {
 	_, err := os.Stat(podResourcesKubeletSocket)
 	if err != nil {
