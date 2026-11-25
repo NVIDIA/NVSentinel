@@ -77,6 +77,36 @@ type mockDataStore struct {
 	documents map[string]map[string]any
 	mu        sync.RWMutex
 	updates   atomic.Int32
+	// evictionStatuses holds the user pods eviction status of each update that sets one.
+	evictionStatuses []string
+}
+
+// recordedEvictionStatuses returns the eviction statuses the updates set, oldest first.
+func (m *mockDataStore) recordedEvictionStatuses() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return append([]string(nil), m.evictionStatuses...)
+}
+
+// updateEvictionStatus returns the user pods eviction status an update sets, if it sets one.
+func updateEvictionStatus(update any) (string, bool) {
+	updateMap, ok := update.(map[string]any)
+	if !ok {
+		return "", false
+	}
+
+	setMap, ok := updateMap["$set"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+
+	statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+
+	return fmt.Sprintf("%v", statusMap["status"]), true
 }
 
 func newMockDataStore() *mockDataStore {
@@ -93,6 +123,13 @@ func (m *mockDataStore) storeEvent(nodeName string, event map[string]any) {
 
 func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update any) (*sdkclient.UpdateResult, error) {
 	m.updates.Add(1)
+
+	if status, ok := updateEvictionStatus(update); ok {
+		m.mu.Lock()
+		m.evictionStatuses = append(m.evictionStatuses, status)
+		m.mu.Unlock()
+	}
+
 	// Mock implementation - just return success
 	return &sdkclient.UpdateResult{
 		MatchedCount:  1,
@@ -2831,14 +2868,19 @@ func TestReconciler_CustomDrainDeletedNode_FailedCRDeletionIsRetried(t *testing.
 	err = failing.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.ErrorContains(t, err, "injected DrainRequest delete failure", "a failed deletion keeps the event retryable")
 	require.True(t, sawDeadline.Load(), "the cleanup has its own deadline")
-	require.Equal(t, updatesBefore, setup.mockDB.updates.Load(), "the event is not marked Cancelled yet")
+	require.Equal(t, updatesBefore, setup.mockDB.updates.Load(), "no status is written while the cleanup fails")
 	require.True(t, crExists())
 
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err)
-	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the retry marks the event Cancelled")
-	require.Eventually(t, func() bool { return !crExists() }, 10*time.Second, 500*time.Millisecond,
-		"the retry deletes the DrainRequest CR")
+
+	statuses := setup.mockDB.recordedEvictionStatuses()
+	require.NotEmpty(t, statuses)
+	require.Equal(t, string(model.Cancelled), statuses[len(statuses)-1], "the retry marks the event Cancelled")
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 500*time.Millisecond, "the retry deletes the DrainRequest CR")
 }
 
 // A DrainRequest kind the API server stopped serving, as after its CRD is removed, leaves nothing to
@@ -2894,7 +2936,10 @@ func TestReconciler_CustomDrainDeletedNode_KindNoLongerServed_EventEnds(t *testi
 
 	err = r.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err, "no DrainRequest is left, so the event of the deleted node ends")
-	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore, "the event is marked Cancelled")
+	require.Greater(t, setup.mockDB.updates.Load(), updatesBefore)
+
+	statuses := setup.mockDB.recordedEvictionStatuses()
+	require.Equal(t, string(model.Cancelled), statuses[len(statuses)-1], "the event is marked Cancelled")
 }
 
 // partialDiscovery fails discovery of one group version while the rest answers. client-go then
@@ -2970,8 +3015,13 @@ func TestReconciler_CustomDrainDeletedNode_PartialDiscovery_StillDeletesTheCR(t 
 
 	err = r.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return !crExists() }, 10*time.Second, 500*time.Millisecond,
-		"the DrainRequest CR is deleted although discovery misses its kind")
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 500*time.Millisecond, "the DrainRequest CR is deleted although discovery misses its kind")
+
+	statuses := setup.mockDB.recordedEvictionStatuses()
+	require.Equal(t, string(model.Cancelled), statuses[len(statuses)-1], "the event is marked Cancelled")
 }
 
 // In dry run node-drainer must not hand the node to the external drain controller, so the
