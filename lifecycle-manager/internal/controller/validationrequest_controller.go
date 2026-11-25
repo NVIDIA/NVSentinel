@@ -706,6 +706,13 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 		return fmt.Errorf("checking provider resource: %w", err)
 	}
 
+	// A missing provider object reads as a failure, but it is also what a finished and cleaned up attempt looks like.
+	if testGroupObjectFailed {
+		if err := r.checkValidationRequestIsCurrent(ctx, validationRequest); err != nil {
+			return err
+		}
+	}
+
 	var failedNodes []string
 
 	var newGroupPhase, attemptPhase v1alpha1.Phase
@@ -769,6 +776,24 @@ func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Conte
 	slog.InfoContext(ctx, "TestGroup attempt finished", "validationRequest", validationRequestName,
 		"testGroup", currentTestGroup.Name, "phase", attemptPhase, "failureReason", attemptFailureReason,
 		"failedNodes", failedNodes)
+
+	return nil
+}
+
+// checkValidationRequestIsCurrent does a live read to reject a cached ValidationRequest that is behind the API server.
+// Acting on one could fail an attempt that already passed and create an untracked retry object before the status
+// write conflicts.
+func (r *ValidationRequestReconciler) checkValidationRequestIsCurrent(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest) error {
+	var live v1alpha1.ValidationRequest
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(validationRequest), &live); err != nil {
+		return fmt.Errorf("get ValidationRequest %q: %w", validationRequest.Name, err)
+	}
+
+	if live.ResourceVersion != validationRequest.ResourceVersion {
+		return fmt.Errorf("ValidationRequest %q is stale: read resourceVersion %s, current is %s",
+			validationRequest.Name, validationRequest.ResourceVersion, live.ResourceVersion)
+	}
 
 	return nil
 }

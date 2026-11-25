@@ -102,6 +102,53 @@ var _ = Describe("ValidationRequest provider cleanup", func() {
 		Entry("terminal request with deletion failure", true, false),
 	)
 
+	It("does not retry a passed attempt when reconciling a stale ValidationRequest", func() {
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		vrName, nodeName := "vr-cleanup-stale-"+suffix, "node-cleanup-stale-"+suffix
+		testConfig := defaultTestConfig()
+		for name, provider := range testConfig.Validation.Spec.Providers {
+			provider.Retries = 1
+			testConfig.Validation.Spec.Providers[name] = provider
+		}
+
+		var stale *v1alpha1.ValidationRequest
+
+		// Model an informer cache that has not yet seen the latest status write.
+		cached := interceptor.NewClient(k8sClient.(client.WithWatch), interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+				opts ...client.GetOption) error {
+				if vr, ok := obj.(*v1alpha1.ValidationRequest); ok && stale != nil {
+					stale.DeepCopyInto(vr)
+					return nil
+				}
+
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		r, req := newValidationRequestTestSetup(ctx, vrName, validationRequestTestCase{
+			config: testConfig, client: cached, nodeNames: []string{nodeName},
+			spec: v1alpha1.ValidationRequestSpec{Nodes: []v1alpha1.NodeSpec{{Name: nodeName}}},
+		})
+		r.APIReader = k8sClient
+		vr := reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, maxReconcileIterations)
+		snapshot := vr.DeepCopy()
+		objectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
+		Expect(updateObjectStatus(ctx, objectName, testSuccessCondType)).To(Succeed())
+		reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseSucceeded, maxReconcileIterations)
+
+		stale = snapshot
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).To(MatchError(ContainSubstring("is stale")))
+
+		retry := &unstructured.Unstructured{}
+		retry.SetGroupVersionKind(testJobGVK)
+		key := types.NamespacedName{
+			Name:      attemptObjectName(vrName, snapshot.Status.TestGroups[0].Name, 2),
+			Namespace: testNamespace,
+		}
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, retry))).To(BeTrue())
+	})
+
 	It("does not fail a terminal request whose provider is no longer configured", func() {
 		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		vrName, nodeName := "vr-cleanup-removed-"+suffix, "node-cleanup-removed-"+suffix
