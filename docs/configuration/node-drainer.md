@@ -176,10 +176,12 @@ Change the `entityValueAttribute` of a driver only while partial drains for its 
        -o jsonpath='{.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}'
      ```
 
-   - On each pod, `metadata_collector_pod_mapper_last_success_timestamp_seconds` is not 0. A new pod starts it at 0, and sets it after a poll that updated the annotation of every pod on the node. A failed poll does not set it.
+   - Each pod has finished a successful poll: its `metadata_collector_pod_mapper_last_success_timestamp_seconds` is not 0. A new pod starts it at 0, and sets it after a successful poll. A failed poll does not set it. If the metrics endpoint is disabled (`metadata-collector.metrics.enabled: false`), look for the log line `Device mapper pod annotation updates` in the pod log instead. The mapper logs it only after a successful poll.
 
-   A node without a running metadata-collector pod keeps the old values.
+   After a successful poll, no annotation on the node holds values of the old attribute: each one has the new values or is removed. A node without a running metadata-collector pod keeps the old values.
 4. Restore `scopedActions`, and upgrade.
+
+If a pod has no annotation after this, the new attribute is missing on one of its DRA devices. The mapper logs `DRA device has no entity value yet` for that pod. Partial drains on its node wait and retry until the attribute is fixed, and they never evict the wrong pods.
 
 ### Partial Drain Entity Metric
 

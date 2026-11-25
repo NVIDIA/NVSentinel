@@ -21,7 +21,7 @@ import (
 
 // podMapperMetrics is the alertable surface for the poll loop: a total to alert on a rising
 // rate, the current streak, which is the value the exit threshold acts on, and the time of the
-// last successful poll, which shows that the annotations on the node are up to date.
+// last successful poll, after which no device annotation on the node is older than that poll.
 //
 // The registerer is injected rather than taken from the default so tests get a fresh registry
 // instead of sharing counters between cases.
@@ -47,7 +47,7 @@ func newPodMapperMetrics(reg prometheus.Registerer) *podMapperMetrics {
 		lastSuccess: factory.NewGauge(prometheus.GaugeOpts{
 			Name: "metadata_collector_pod_mapper_last_success_timestamp_seconds",
 			Help: "Unix time of the last successful pod device mapper poll, or 0 before the first one. " +
-				"A successful poll has updated the device annotation of every pod on the node.",
+				"After a successful poll, each device annotation on the node is current or removed.",
 		}),
 	}
 }
