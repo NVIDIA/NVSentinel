@@ -70,6 +70,10 @@ UPTIME_LIMIT_ERROR_CODE = "GPU_UPTIME_LIMIT_EXCEEDED"
 # How long GpuUptimeLimitWatch waits before it reads the versions of a GPU again
 # when DCGM did not return them.
 GPU_VERSIONS_RETRY_SECONDS = 600.0
+# Older 4.x DCGM servers cannot handle newer GPU attribute requests.
+GPU_ATTRIBUTES_UNSUPPORTED_MESSAGE = (
+    "DCGM server does not support GPU attribute requests; continuing without GPU serials"
+)
 
 
 @dataclass(frozen=True)
@@ -766,42 +770,60 @@ class DCGMWatcher:
 
         return dcgm_group, supported_switches
 
-    def _get_gpu_serial_numbers(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, str]:
-        dcgm_system = dcgm_handle.GetSystem()
-        gpu_serials = {}
+    def _get_gpu_identifiers(
+        self, dcgm_handle: pydcgm.DcgmHandle, read_serials: bool = True
+    ) -> tuple[dict[int, str], dict[int, GpuVersions]]:
+        """List the GPUs and read the identifiers of each GPU once.
 
-        with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
-            supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+        Returns the serial of each GPU and, when GpuUptimeLimitWatch is enabled, its
+        versions. With read_serials False, only the versions are read. The two results
+        handle a failure in different ways:
 
-        # Get serial numbers for each GPU
-        for gpu in supported_gpus:
-            with metrics.dcgm_api_latency.labels("get_latest_values").time():
-                serial = dcgm_system.discovery.GetGpuAttributes(gpu).identifiers.serial
-                gpu_serials[gpu] = serial
-
-        return gpu_serials
-
-    def _get_gpu_versions(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, GpuVersions]:
-        """Read the driver and vBIOS versions of each GPU for GpuUptimeLimitWatch.
-
-        A failure is logged and counted, and the GPUs it affects are left out of the
-        result. A failure for one GPU does not affect the others, and a failure does not
-        stop other checks. _refresh_gpu_versions reads missing versions again.
+        - Serials: a DCGM server that does not support GPU attribute requests raises
+          DCGMError_FunctionNotFound, and the result is empty. Any other failure
+          propagates, so the caller sets up the connection again.
+        - Versions: a failure is logged and counted, and the GPUs it affects are left
+          out of the result. A failure for one GPU does not affect the others, and a
+          failure does not stop other checks. _refresh_gpu_versions reads missing
+          versions again.
         """
+        read_versions = self._uptime_limit_enabled
         try:
             dcgm_system = dcgm_handle.GetSystem()
             with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
                 supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
         except Exception as e:
-            log.warning("Cannot list GPUs to read their versions; GpuUptimeLimitWatch skips all GPUs: %s", e)
-            metrics.dcgm_api_failures.labels("get_gpu_versions").inc()
-            return {}
+            if read_serials and not isinstance(e, dcgm_structs.DCGMError_FunctionNotFound):
+                raise
+            if read_serials:
+                log.warning(GPU_ATTRIBUTES_UNSUPPORTED_MESSAGE)
+            if read_versions:
+                log.warning("Cannot list GPUs to read their versions; GpuUptimeLimitWatch skips all GPUs: %s", e)
+                metrics.dcgm_api_failures.labels("get_gpu_versions").inc()
+            return {}, {}
 
-        gpu_versions = {}
+        gpu_serials: dict[int, str] = {}
+        gpu_versions: dict[int, GpuVersions] = {}
+        serials_unsupported = False
         for gpu in supported_gpus:
             try:
-                with metrics.dcgm_api_latency.labels("get_gpu_versions").time():
+                with metrics.dcgm_api_latency.labels("get_latest_values").time():
                     identifiers = dcgm_system.discovery.GetGpuAttributes(gpu).identifiers
+            except Exception as e:
+                if read_serials and not serials_unsupported:
+                    if not isinstance(e, dcgm_structs.DCGMError_FunctionNotFound):
+                        raise
+                    serials_unsupported = True
+                if not read_versions:
+                    break
+                log.warning("Cannot read the versions of GPU %s; GpuUptimeLimitWatch skips it: %s", gpu, e)
+                metrics.dcgm_api_failures.labels("get_gpu_versions").inc()
+                continue
+            if read_serials and not serials_unsupported:
+                gpu_serials[gpu] = identifiers.serial
+            if not read_versions:
+                continue
+            try:
                 gpu_versions[gpu] = GpuVersions(
                     driver=_identifier_text(identifiers.driverVersion),
                     vbios=_identifier_text(identifiers.vbios),
@@ -809,11 +831,16 @@ class DCGMWatcher:
             except Exception as e:
                 log.warning("Cannot read the versions of GPU %s; GpuUptimeLimitWatch skips it: %s", gpu, e)
                 metrics.dcgm_api_failures.labels("get_gpu_versions").inc()
-        log.info(
-            "GPU versions for GpuUptimeLimitWatch: %s",
-            {gpu: f"driver={v.driver} vbios={v.vbios}" for gpu, v in sorted(gpu_versions.items())},
-        )
-        return gpu_versions
+
+        if serials_unsupported:
+            log.warning(GPU_ATTRIBUTES_UNSUPPORTED_MESSAGE)
+            gpu_serials = {}
+        if read_versions:
+            log.info(
+                "GPU versions for GpuUptimeLimitWatch: %s",
+                {gpu: f"driver={v.driver} vbios={v.vbios}" for gpu, v in sorted(gpu_versions.items())},
+            )
+        return gpu_serials, gpu_versions
 
     def _versions_complete(self, versions: GpuVersions | None) -> bool:
         """True when every version that has a configured list is known."""
@@ -841,7 +868,7 @@ class DCGMWatcher:
         if now < self._gpu_versions_retry_at:
             return
         self._gpu_versions_retry_at = now + GPU_VERSIONS_RETRY_SECONDS
-        fresh = self._get_gpu_versions(dcgm_handle)
+        _, fresh = self._get_gpu_identifiers(dcgm_handle, read_serials=False)
         for gpu in incomplete:
             if gpu in fresh:
                 self._gpu_versions[gpu] = fresh[gpu]
@@ -1435,14 +1462,8 @@ class DCGMWatcher:
                 dcgm_group.health.Set(health_mask)
 
             gpu_ids = dcgm_group.GetGpuIds()
-            try:
-                gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
-            except dcgm_structs.DCGMError_FunctionNotFound:
-                # Older 4.x servers cannot handle newer GPU attribute requests.
-                log.warning("DCGM server does not support GPU attribute requests; continuing without GPU serials")
-                gpu_serials = {}
+            gpu_serials, self._gpu_versions = self._get_gpu_identifiers(dcgm_handle)
             log.info(f"dcgm gpu_id are {gpu_ids}")
-            self._gpu_versions = self._get_gpu_versions(dcgm_handle) if self._uptime_limit_enabled else {}
             self._gpu_versions_retry_at = time.monotonic() + GPU_VERSIONS_RETRY_SECONDS
 
             # One field group covers every enabled field monitor; each evaluator

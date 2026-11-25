@@ -287,16 +287,20 @@ def test_refresh_reads_missing_versions_after_the_retry_interval(watchers, monke
     watcher = _make_watcher()
     watchers.append(watcher)
     watcher._gpu_versions = {0: _versions()}
-    watcher._get_gpu_versions = MagicMock(return_value={0: _versions(driver=FIXED_DRIVER), 1: _versions()})
+    watcher._get_gpu_identifiers = MagicMock(return_value=({}, {0: _versions(driver=FIXED_DRIVER), 1: _versions()}))
     now = 1000.0
     monkeypatch.setattr(dcgm.time, "monotonic", lambda: now)
     watcher._gpu_versions_retry_at = now + 1
 
     watcher._refresh_gpu_versions(MagicMock(), [0, 1])
-    watcher._get_gpu_versions.assert_not_called()
+    watcher._get_gpu_identifiers.assert_not_called()
 
     now += 2
-    watcher._refresh_gpu_versions(MagicMock(), [0, 1])
+    handle = MagicMock()
+    watcher._refresh_gpu_versions(handle, [0, 1])
+
+    # The refresh reads only the versions; the serials are read only on connect.
+    watcher._get_gpu_identifiers.assert_called_once_with(handle, read_serials=False)
 
     # Only the GPU that was missing is updated; GPU 0 keeps the versions it had.
     assert watcher._gpu_versions == {0: _versions(), 1: _versions()}
@@ -307,11 +311,18 @@ def test_refresh_does_nothing_when_versions_are_complete(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
     watcher._gpu_versions = {0: _versions(), 1: _versions(driver=FIXED_DRIVER)}
-    watcher._get_gpu_versions = MagicMock()
+    watcher._get_gpu_identifiers = MagicMock()
 
     watcher._refresh_gpu_versions(MagicMock(), [0, 1])
 
-    watcher._get_gpu_versions.assert_not_called()
+    watcher._get_gpu_identifiers.assert_not_called()
+
+
+def _read_versions(watcher: dcgm.DCGMWatcher, handle: MagicMock) -> dict[int, dcgm.GpuVersions]:
+    """Read only the versions, as the refresh in the poll loop does."""
+    serials, versions = watcher._get_gpu_identifiers(handle, read_serials=False)
+    assert serials == {}
+    return versions
 
 
 def _dcgm_handle(identifiers_by_gpu: dict[int, SimpleNamespace]) -> MagicMock:
@@ -322,7 +333,7 @@ def _dcgm_handle(identifiers_by_gpu: dict[int, SimpleNamespace]) -> MagicMock:
     return handle
 
 
-def test_get_gpu_versions_reads_dcgm_identifiers(watchers) -> None:
+def test_version_read_uses_dcgm_identifiers(watchers) -> None:
     """The DCGM bindings return the identifiers as str; raw bytes are accepted too."""
     watcher = _make_watcher()
     watchers.append(watcher)
@@ -333,7 +344,7 @@ def test_get_gpu_versions_reads_dcgm_identifiers(watchers) -> None:
         }
     )
 
-    assert watcher._get_gpu_versions(handle) == {
+    assert _read_versions(watcher, handle) == {
         0: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
         1: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=""),
     }
@@ -350,13 +361,13 @@ def test_unsupported_vbios_with_unlisted_driver_is_not_evaluated(watchers, uptim
     watcher = _make_watcher(vbios_versions=frozenset({AFFECTED_VBIOS}))
     watchers.append(watcher)
     handle = _dcgm_handle({0: SimpleNamespace(driverVersion=FIXED_DRIVER, vbios="<<<NOT_SUPPORTED>>>")})
-    watcher._gpu_versions = watcher._get_gpu_versions(handle)
+    watcher._gpu_versions = _read_versions(watcher, handle)
 
     assert watcher._gpu_versions == {0: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios="")}
     assert watcher._evaluate_uptime_limit([0]) is None
 
 
-def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
+def test_version_read_keeps_gpus_read_before_and_after_a_failure(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
     good = SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)
@@ -371,13 +382,13 @@ def test_get_gpu_versions_keeps_gpus_read_before_and_after_a_failure(watchers) -
     handle.GetSystem.return_value.discovery.GetGpuAttributes.side_effect = attributes
     before = dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get()
 
-    versions = watcher._get_gpu_versions(handle)
+    versions = _read_versions(watcher, handle)
 
     assert set(versions) == {0, 2}
     assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 1
 
 
-def test_get_gpu_versions_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -> None:
+def test_version_read_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
     handle = _dcgm_handle(
@@ -387,10 +398,10 @@ def test_get_gpu_versions_skips_a_gpu_whose_identifiers_lack_a_field(watchers) -
         }
     )
 
-    assert set(watcher._get_gpu_versions(handle)) == {1}
+    assert set(_read_versions(watcher, handle)) == {1}
 
 
-def test_get_gpu_versions_skips_a_gpu_whose_identifiers_fail_to_decode(watchers) -> None:
+def test_version_read_skips_a_gpu_whose_identifiers_fail_to_decode(watchers) -> None:
     """The bindings decode on attribute access, so a bad byte raises there; only that GPU is skipped."""
 
     class Undecodable:
@@ -404,19 +415,19 @@ def test_get_gpu_versions_skips_a_gpu_whose_identifiers_fail_to_decode(watchers)
     watchers.append(watcher)
     handle = _dcgm_handle({0: Undecodable(), 1: SimpleNamespace(driverVersion=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS)})
 
-    assert set(watcher._get_gpu_versions(handle)) == {1}
+    assert set(_read_versions(watcher, handle)) == {1}
 
 
-def test_get_gpu_versions_discovery_failure_returns_empty_map(watchers) -> None:
+def test_version_read_discovery_failure_returns_empty_map(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
     handle = MagicMock()
     handle.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = RuntimeError("no discovery")
 
-    assert watcher._get_gpu_versions(handle) == {}
+    assert _read_versions(watcher, handle) == {}
 
 
-def test_get_gpu_versions_failure_returns_empty_map(watchers) -> None:
+def test_version_read_failure_returns_empty_map(watchers) -> None:
     watcher = _make_watcher()
     watchers.append(watcher)
     handle = MagicMock()
@@ -426,25 +437,126 @@ def test_get_gpu_versions_failure_returns_empty_map(watchers) -> None:
     handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0]
     before = dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get()
 
-    assert watcher._get_gpu_versions(handle) == {}
+    assert _read_versions(watcher, handle) == {}
     assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 1
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_initialize_reads_versions_only_when_enabled(watchers, enabled: bool) -> None:
-    watcher = _make_watcher(enabled=enabled)
+def test_initialize_reads_serials_and_versions_in_one_walk(watchers) -> None:
+    watcher = _make_watcher()
     watchers.append(watcher)
     dcgm_group = MagicMock()
     dcgm_group.GetGpuIds.return_value = [0]
     watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(dcgm_group, []))
-    watcher._get_gpu_serial_numbers = MagicMock(return_value={})
     versions = {0: _versions()}
-    watcher._get_gpu_versions = MagicMock(return_value=versions)
+    handle = MagicMock()
+    watcher._get_gpu_identifiers = MagicMock(return_value=({0: "SERIAL0"}, versions))
 
-    watcher._initialize_dcgm_monitoring(MagicMock())
+    _group, _gpu_ids, _switch_ids, gpu_serials = watcher._initialize_dcgm_monitoring(handle)
 
-    assert watcher._gpu_versions == (versions if enabled else {})
-    assert watcher._get_gpu_versions.called is enabled
+    watcher._get_gpu_identifiers.assert_called_once_with(handle)
+    assert gpu_serials == {0: "SERIAL0"}
+    assert watcher._gpu_versions == versions
+
+
+def _identifiers(serial: str, driver: str = AFFECTED_DRIVER, vbios: str = AFFECTED_VBIOS) -> SimpleNamespace:
+    return SimpleNamespace(serial=serial, driverVersion=driver, vbios=vbios)
+
+
+def test_connect_reads_the_attributes_of_each_gpu_once(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = _dcgm_handle({0: _identifiers("SERIAL0"), 1: _identifiers("SERIAL1", driver=FIXED_DRIVER)})
+
+    serials, versions = watcher._get_gpu_identifiers(handle)
+
+    assert serials == {0: "SERIAL0", 1: "SERIAL1"}
+    assert versions == {
+        0: dcgm.GpuVersions(driver=AFFECTED_DRIVER, vbios=AFFECTED_VBIOS),
+        1: dcgm.GpuVersions(driver=FIXED_DRIVER, vbios=AFFECTED_VBIOS),
+    }
+    discovery = handle.GetSystem.return_value.discovery
+    assert discovery.GetEntityGroupEntities.call_count == 1
+    assert [c.args for c in discovery.GetGpuAttributes.call_args_list] == [(0,), (1,)]
+
+
+def test_connect_with_the_check_disabled_reads_only_serials(watchers) -> None:
+    """Without the check, identifiers that lack the version fields are not an error."""
+    watcher = _make_watcher(enabled=False)
+    watchers.append(watcher)
+    handle = _dcgm_handle({0: SimpleNamespace(serial="SERIAL0")})
+
+    assert watcher._get_gpu_identifiers(handle) == ({0: "SERIAL0"}, {})
+
+
+def test_connect_without_attribute_support_continues_without_serials_and_versions(watchers, caplog) -> None:
+    """An older 4.x server raises DCGMError_FunctionNotFound; the connection still comes up."""
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0, 1]
+    handle.GetSystem.return_value.discovery.GetGpuAttributes.side_effect = (
+        dcgm.dcgm_structs.DCGMError_FunctionNotFound()
+    )
+    before = dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get()
+
+    with caplog.at_level("WARNING"):
+        assert watcher._get_gpu_identifiers(handle) == ({}, {})
+
+    assert dcgm.GPU_ATTRIBUTES_UNSUPPORTED_MESSAGE in caplog.text
+    assert dcgm.metrics.dcgm_api_failures.labels("get_gpu_versions")._value.get() == before + 2
+
+
+def test_connect_drops_serials_read_before_an_unsupported_attribute_request(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+
+    def attributes(gpu: int) -> SimpleNamespace:
+        if gpu == 1:
+            raise dcgm.dcgm_structs.DCGMError_FunctionNotFound()
+        return SimpleNamespace(identifiers=_identifiers(f"SERIAL{gpu}"))
+
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0, 1, 2]
+    handle.GetSystem.return_value.discovery.GetGpuAttributes.side_effect = attributes
+
+    serials, versions = watcher._get_gpu_identifiers(handle)
+
+    assert serials == {}
+    assert set(versions) == {0, 2}
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_connect_attribute_failure_propagates(watchers, enabled: bool) -> None:
+    """A failure other than an unsupported request fails the connect, so the monitor reconnects."""
+    watcher = _make_watcher(enabled=enabled)
+    watchers.append(watcher)
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.return_value = [0]
+    handle.GetSystem.return_value.discovery.GetGpuAttributes.side_effect = RuntimeError("attributes unavailable")
+
+    with pytest.raises(RuntimeError, match="attributes unavailable"):
+        watcher._get_gpu_identifiers(handle)
+
+
+def test_connect_listing_failure_propagates(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = MagicMock()
+    handle.GetSystem.return_value.discovery.GetEntityGroupEntities.side_effect = RuntimeError("no discovery")
+
+    with pytest.raises(RuntimeError, match="no discovery"):
+        watcher._get_gpu_identifiers(handle)
+
+
+def test_connect_keeps_the_serial_of_a_gpu_whose_versions_fail(watchers) -> None:
+    watcher = _make_watcher()
+    watchers.append(watcher)
+    handle = _dcgm_handle({0: SimpleNamespace(serial="SERIAL0", vbios=AFFECTED_VBIOS), 1: _identifiers("SERIAL1")})
+
+    serials, versions = watcher._get_gpu_identifiers(handle)
+
+    assert serials == {0: "SERIAL0", 1: "SERIAL1"}
+    assert set(versions) == {1}
 
 
 def test_poll_loop_publishes_uptime_limit_watch(watchers, uptime) -> None:
