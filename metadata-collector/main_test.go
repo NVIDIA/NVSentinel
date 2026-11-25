@@ -27,6 +27,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 // scriptedMapper returns the given results in order, then blocks the poll loop from making
@@ -316,7 +318,7 @@ current-context: test
 			// Client construction must reject the missing file before polling starts.
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()), nil)
+			err := runMapper(ctx, newPodMapperMetrics(prometheus.NewRegistry()), modeltest.GPUEntityTypes())
 			require.ErrorContains(t, err, tt.want)
 			require.ErrorContains(t, err, missing)
 		})

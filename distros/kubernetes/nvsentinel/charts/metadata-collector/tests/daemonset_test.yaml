@@ -17,6 +17,7 @@ templates:
   - templates/daemonset.yaml
 set:
   global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+  global.partialRemediationEntityTypes: {}
 tests:
   - it: must emit runtimeClassName nvidia by default
     asserts:
@@ -33,12 +34,13 @@ tests:
 
   - it: must not add extra volumes or env by default
     asserts:
+      # output, sys, pod-resources, and the pod device mapper configuration
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 3
+          count: 4
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
-          count: 3
+          count: 4
       - notExists:
           path: spec.template.spec.resourceClaims
       - notExists:
@@ -234,7 +236,7 @@ tests:
             - name: gpus
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 3
+          count: 4
 
   - it: must fail on a quoted global.gpuDraEnabled
     set:
@@ -246,7 +248,7 @@ tests:
   - it: must not add the NRI CDI annotation by default
     asserts:
       - notExists:
-          path: spec.template.metadata.annotations
+          path: spec.template.metadata.annotations["nvidia.cdi.k8s.io/container.metadata-collector"]
       - equal:
           path: spec.template.spec.runtimeClassName
           value: nvidia
@@ -267,7 +269,7 @@ tests:
           path: spec.template.spec.resourceClaims
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 3
+          count: 4
 
   - it: must keep user pod annotations alongside the NRI CDI annotation
     set:
@@ -275,6 +277,8 @@ tests:
       nriPlugin.cdiDevice: management.nvidia.com/gpu=all,k8s.device-plugin.nvidia.com/gpu=GPU-0
       podAnnotations:
         example.com/team: gpu
+      # The checksum annotation of the mapper configuration is covered in configmap_test.yaml.
+      podMapper.enabled: false
     asserts:
       - equal:
           path: spec.template.metadata.annotations

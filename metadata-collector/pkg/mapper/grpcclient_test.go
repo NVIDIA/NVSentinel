@@ -20,10 +20,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 /*
@@ -164,10 +166,36 @@ func (mock *MockPodResourcesServer) List(ctx context.Context,
 
 func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[string]map[string][]deviceInfo) *kubeletGRPClient {
 	mockPodResourcesServer := NewMockPodResourcesServer(err, errReturnCount, podDevices)
+	filter, filterErr := newDeviceFilter(modeltest.GPUEntityTypes())
+	if filterErr != nil {
+		panic(filterErr)
+	}
+
 	return &kubeletGRPClient{
 		ctx:                context.Background(),
 		podResourcesClient: mockPodResourcesServer,
+		filter:             filter,
+		resolver:           &fakeDRAResolver{},
 	}
+}
+
+// fakeDRAResolver resolves the devices in values and records every device that it was asked for.
+type fakeDRAResolver struct {
+	values    map[draDevice]string
+	requested []draDevice
+}
+
+func (f *fakeDRAResolver) resolve(_ context.Context, devices []draDevice) map[draDevice]string {
+	f.requested = append(f.requested, devices...)
+	resolved := map[draDevice]string{}
+
+	for _, device := range devices {
+		if value, ok := f.values[device]; ok {
+			resolved[device] = value
+		}
+	}
+
+	return resolved
 }
 
 func TestListPodResources(t *testing.T) {
@@ -206,8 +234,11 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 	assert.NotNil(t, devicesPerPod)
 }
 
-func TestListPodResourcesWithDRA(t *testing.T) {
-	uuids := draDeviceUUIDs(map[int]string{0: "GPU-a0", 1: "GPU-a1"})
+func gpuDRADevice(name string) draDevice {
+	return draDevice{driver: model.GPUDRADriverName, pool: "node-a", name: name}
+}
+
+func TestListPodResources_DRADevices_RecordsTheAttributeValueUnderTheDriver(t *testing.T) {
 	draDevices := map[string]map[string][]deviceInfo{
 		"dra-pod": {
 			"container-1": {
@@ -218,30 +249,98 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
 			},
 		},
-		"unresolved-pod": {
-			"container-2": {
-				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-9"},
-			},
-		},
 	}
 
+	resolver := &fakeDRAResolver{values: map[draDevice]string{
+		gpuDRADevice("gpu-0"): "GPU-a0",
+		gpuDRADevice("gpu-1"): "GPU-a1",
+	}}
 	client := newTestKubeletGRPCClient(nil, 0, draDevices)
-	client.draDeviceUUIDs = uuids
+	client.resolver = resolver
+
 	devicesPerPod, err := client.ListPodResources()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
 		"default/dra-pod": {Devices: map[string][]string{
 			model.GPUDRADriverName: {"GPU-a0", "GPU-a1"},
 			"nvidia.com/gpu":       {"GPU-plugin"},
 		}},
-		// unresolved-pod is absent until its device name resolves.
 	}, devicesPerPod)
+	assert.NotContains(t, resolver.requested, draDevice{driver: "other.example.com", pool: "node-a", name: "gpu-0"},
+		"a driver that the configuration does not list is not resolved")
+}
 
-	// With no known GPUs DRA allocations are skipped entirely.
-	client = newTestKubeletGRPCClient(nil, 0, draDevices)
-	devicesPerPod, err = client.ListPodResources()
-	assert.NoError(t, err)
+// A partial annotation would make node-drainer miss the pod, so a pod with an unresolved DRA device gets none,
+// even when its other devices resolve.
+func TestListPodResources_UnresolvedDRADevice_LeavesThePodOut(t *testing.T) {
+	draDevices := map[string]map[string][]deviceInfo{
+		"mixed-pod": {
+			"container-1": {
+				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-9"},
+			},
+		},
+		"plugin-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-other"}},
+		},
+	}
+
+	client := newTestKubeletGRPCClient(nil, 0, draDevices)
+	client.resolver = &fakeDRAResolver{values: map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"}}
+
+	devicesPerPod, err := client.ListPodResources()
+	require.NoError(t, err)
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
-		"default/dra-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-plugin"}}},
+		"default/plugin-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-other"}}},
 	}, devicesPerPod)
+}
+
+func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.T) {
+	entityTypes := model.PartialRemediationEntityTypes{
+		"ACCEL_SERIAL": {
+			Devices: []model.PartialRemediationDevice{
+				{ResourceNames: []string{"example.com/accel"}},
+				{Driver: "accel.example.com", DeviceClasses: []string{"accel"}, EntityValueAttribute: "serial"},
+			},
+		},
+	}
+	filter, err := newDeviceFilter(entityTypes)
+	require.NoError(t, err)
+
+	accel := draDevice{driver: "accel.example.com", pool: "node-a", name: "accel-0"}
+	client := newTestKubeletGRPCClient(nil, 0, map[string]map[string][]deviceInfo{
+		"accel-pod": {
+			"container-1": {
+				{resourceName: "example.com/accel", id: "SN-plugin"},
+				{driverName: "accel.example.com", resourceName: "node-a", id: "accel-0"},
+				{resourceName: "nvidia.com/gpu", id: "GPU-1"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"},
+			},
+		},
+		"gpu-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-2"}},
+		},
+	})
+	client.filter = filter
+	client.resolver = &fakeDRAResolver{values: map[draDevice]string{accel: "SN-dra"}}
+
+	devicesPerPod, err := client.ListPodResources()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/accel-pod": {Devices: map[string][]string{
+			"example.com/accel": {"SN-plugin"},
+			"accel.example.com": {"SN-dra"},
+		}},
+	}, devicesPerPod)
+}
+
+func TestListPodResources_NoDRADevices_DoesNotCallTheResolver(t *testing.T) {
+	resolver := &fakeDRAResolver{}
+	client := newTestKubeletGRPCClient(nil, 0, podDevices)
+	client.resolver = resolver
+
+	_, err := client.ListPodResources()
+	require.NoError(t, err)
+	assert.Empty(t, resolver.requested)
 }

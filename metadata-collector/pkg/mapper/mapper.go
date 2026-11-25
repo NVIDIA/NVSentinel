@@ -44,7 +44,7 @@ type PodDeviceMapper interface {
 type clientConfig struct {
 	kubeconfigPath        string
 	kubeletKubeconfigPath string
-	uuidsByMinor          map[int]string
+	nodeName              string
 }
 
 // Option configures mapper clients without changing the in-cluster defaults.
@@ -59,17 +59,11 @@ func WithKubeconfigs(apiPath, kubeletPath string) Option {
 	}
 }
 
-// WithGPUs supplies the node's GPUs from the metadata collection so DRA device names, which the NVIDIA DRA
-// driver derives from GPU minor numbers, resolve to UUIDs without a second NVML session. GPUs without a
-// minor number are left out and their allocations stay unmapped.
-func WithGPUs(gpus []model.GPUInfo) Option {
+// WithNodeName sets the name of the node, which the mapper needs to list the node's ResourceSlices for DRA
+// devices. Without it, DRA devices stay unresolved and their pods get no annotation.
+func WithNodeName(nodeName string) Option {
 	return func(config *clientConfig) {
-		config.uuidsByMinor = make(map[int]string, len(gpus))
-		for _, gpu := range gpus {
-			if gpu.MinorNumber != nil {
-				config.uuidsByMinor[*gpu.MinorNumber] = gpu.UUID
-			}
-		}
+		config.nodeName = nodeName
 	}
 }
 
@@ -81,12 +75,18 @@ type podDeviceMapper struct {
 	kubernetesClient   kubernetes.Interface
 }
 
-// NewPodDeviceMapper creates clients for pod-to-device annotation updates.
-// Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
-func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper, error) {
+// NewPodDeviceMapper creates clients for pod-to-device annotation updates. The mapper records the devices that
+// entityTypes lists (ADR-071). Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
+func NewPodDeviceMapper(ctx context.Context, entityTypes model.PartialRemediationEntityTypes,
+	options ...Option) (PodDeviceMapper, error) {
 	config := clientConfig{}
 	for _, option := range options {
 		option(&config)
+	}
+
+	filter, err := newDeviceFilter(entityTypes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
 	}
 
 	clusterConfig, err := loadRESTConfig(config.kubeconfigPath)
@@ -104,7 +104,9 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	grpcClient, err := NewKubeletGRPClient(ctx, config.uuidsByMinor)
+	resolver := newResourceSliceResolver(k8sClient, config.nodeName, filter.attributeByDriver)
+
+	grpcClient, err := NewKubeletGRPClient(ctx, filter, resolver)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
@@ -174,9 +176,10 @@ func hasClientCredentials(config *rest.Config) bool {
 }
 
 /*
-This function will add a devices annotation to all pods running on the given node which have been allocated a GPU
-device. The annotation is named dgxc.nvidia.com/devices with keys as the device resource name, either nvidia.com/gpu or
-nvidia.com/pgpu, or the DRA driver name gpu.nvidia.com, and values a list of GPU UUIDs for the corresponding devices.
+This function will add a devices annotation to all pods running on the given node which have been allocated a device
+that global.partialRemediationEntityTypes lists. The annotation is named dgxc.nvidia.com/devices with keys as the
+device-plugin resource name, such as nvidia.com/gpu, or the DRA driver name, such as gpu.nvidia.com, and values a list
+of the entity values of the corresponding devices, such as GPU UUIDs.
 
 Example annotation:
 

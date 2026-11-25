@@ -242,6 +242,17 @@ metadata-collector:
 
 The poll period is 30 seconds. Thus, the default tolerates five minutes of failures. This time is long enough to outlast a credential rotation or a kubelet restart. It is also short enough to fail visibly when the collector has a real fault. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag that [Startup and failure handling](#startup-and-failure-handling) describes.
 
+## Recorded devices
+
+The pod device mapper records the devices that [`global.partialRemediationEntityTypes`](node-drainer.md#partial-drain) lists, the same value that the node-drainer reads. The chart renders it into a ConfigMap that the collector reads at start. A change to the value restarts the DaemonSet pods.
+
+- For a device-plugin entry, the mapper records the device IDs that the kubelet reports under each of the `resourceNames`.
+- For a DRA entry, the kubelet reports each allocated device with its driver, pool and device name. The mapper finds that device in the ResourceSlices of its node, and records the value of the `entityValueAttribute` attribute under the `driver` name. A driver can name its own attributes without its domain, so `uuid` and `gpu.nvidia.com/uuid` are the same attribute of the `gpu.nvidia.com` driver. The attribute must have a string value. Only ResourceSlices that set `spec.nodeName` to the node are read.
+
+The mapper lists ResourceSlices only when a pod on the node has a DRA device that it has not seen before. It lists only the ResourceSlices of its node and of that driver, from the cache of the API server. It keeps each value until it restarts. For this, the chart gives the metadata-collector `list` permission on ResourceSlices when an entity type has a DRA entry.
+
+If the mapper cannot find the value of a DRA device, the pod gets no annotation, and an existing annotation is removed. The mapper tries again on the next poll. An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
+
 ## Disabling the Pod Mapper
 
 The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where it cannot work. For example, the mapper cannot work when the pods that the kubelet reports are not the pods that the collector sees through the Kubernetes API.
@@ -259,16 +270,35 @@ With the mapper disabled, the collector still writes the GPU metadata file. It t
 If the collector runs outside a pod, use two explicit kubeconfigs:
 
 ```bash
-metadata-collector \
+NODE_NAME=gpu-node-1 metadata-collector \
   --kubeconfig=/etc/nvsentinel/metadata-collector/apiserver.kubeconfig \
   --kubelet-kubeconfig=/etc/nvsentinel/metadata-collector/kubelet.kubeconfig \
+  --config=/etc/nvsentinel/metadata-collector/config.toml \
   --output-path=/var/lib/nvsentinel/gpu_metadata.json
 ```
+
+With the pod device mapper enabled, `--config` is required. It names a TOML file with the [recorded devices](#recorded-devices), in the form that the chart renders into the `config.toml` key of the metadata-collector ConfigMap:
+
+```toml
+[partialRemediationEntityTypes.GPU_UUID]
+  scopedActions = ["COMPONENT_RESET"]
+
+  [[partialRemediationEntityTypes.GPU_UUID.devices]]
+    resourceNames = ["nvidia.com/gpu", "nvidia.com/pgpu"]
+
+  [[partialRemediationEntityTypes.GPU_UUID.devices]]
+    deviceClasses = ["gpu.nvidia.com"]
+    driver = "gpu.nvidia.com"
+    entityValueAttribute = "uuid"
+```
+
+Set `NODE_NAME` to the name of the Kubernetes node. The mapper needs it to read the ResourceSlices of the node for DRA devices. Without it, pods with DRA devices get no annotation.
 
 | Flag | Purpose | Default |
 |---|---|---|
 | `--kubeconfig` | Kubernetes API endpoint, trust, and credentials for pod annotation updates | In-cluster configuration |
 | `--kubelet-kubeconfig` | Kubelet HTTPS endpoint, trust, and credentials for `/pods` | `KUBELET_HOST:10250` and the projected ServiceAccount token |
+| `--config` | TOML file with the devices that the pod device mapper records | None. Required when the mapper is enabled |
 
 If `KUBELET_HOST` is not set, the default is `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not use the API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
 
@@ -278,7 +308,7 @@ Explicit configurations must use HTTPS, verify server certificates, and provide 
 
 Provision credentials at node runtime. Keep kubeconfig and credential files accessible only to the service account or root. Kubeconfigs are trusted input, because client-go can run a configured credential plugin.
 
-- The Kubernetes API identity needs `patch` on pods in each workload namespace.
+- The Kubernetes API identity needs `patch` on pods in each workload namespace. If an entity type has a DRA entry, it also needs `list` on `resourceslices` in the `resource.k8s.io` API group.
 - The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
 - The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory. The binary always uses that path. If kubelet uses a different `--root-dir`, make the socket available at that path.
 
