@@ -51,6 +51,13 @@ const QuarantineHealthEventIsCordonedAnnotationKey = "quarantineHealthEventIsCor
 // QuarantineHealthEventCordonPreExistingAnnotationKey records there was a pre-existing cordon.
 const QuarantineHealthEventCordonPreExistingAnnotationKey = "quarantineHealthEventCordonPreExisting"
 
+// QuarantinedNodeUncordonedManuallyAnnotationKey records that fault-quarantine cancelled the quarantine of a node
+// after a manual uncordon.
+const QuarantinedNodeUncordonedManuallyAnnotationKey = "quarantinedNodeUncordonedManually"
+
+// QuarantinedNodeUncordonedManuallyAnnotationValue is the value of QuarantinedNodeUncordonedManuallyAnnotationKey.
+const QuarantinedNodeUncordonedManuallyAnnotationValue = "True"
+
 type faultQuarantineConfig struct {
 	LabelPrefix    string               `toml:"label-prefix"`
 	CircuitBreaker circuitBreakerConfig `toml:"circuitBreaker"`
@@ -483,6 +490,40 @@ func SendHealthyEventsAsync(ctx context.Context, t *testing.T, client klient.Cli
 		return cleanedCount == len(nodeNames)
 	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("All %d nodes cleaned up successfully", len(nodeNames))
+}
+
+// CancelQuarantineByManualUncordon ends the quarantine of a node as an operator does. It uncordons the node and waits
+// until fault-quarantine marks the events of the quarantine Cancelled and removes its annotation. A healthy event
+// leaves the first event Quarantined, and fault-remediation remediates such an event when it next starts. It returns
+// false and does nothing if the node is not quarantined.
+func CancelQuarantineByManualUncordon(ctx context.Context, t *testing.T, client klient.Client, nodeName string) bool {
+	t.Helper()
+
+	node, err := GetNodeByName(ctx, client, nodeName)
+	require.NoError(t, err)
+
+	if isEmptyAnnotationValue(node.Annotations[QuarantineHealthEventAnnotationKey]) {
+		t.Logf("Node %s is not quarantined, no quarantine to cancel", nodeName)
+
+		return false
+	}
+
+	t.Logf("Manually uncordoning node %s to cancel its quarantine", nodeName)
+	require.NoError(t, SetNodeCordon(ctx, client, nodeName, false))
+
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, client, nodeName)
+		if err != nil {
+			return false
+		}
+
+		_, quarantined := node.Annotations[QuarantineHealthEventAnnotationKey]
+
+		return node.Annotations[QuarantinedNodeUncordonedManuallyAnnotationKey] ==
+			QuarantinedNodeUncordonedManuallyAnnotationValue && !quarantined
+	}, EventuallyWaitTimeout, WaitInterval, "fault-quarantine should cancel the quarantine of node %s", nodeName)
+
+	return true
 }
 
 // checkAnnotation validates a single annotation check and logs appropriate messages.

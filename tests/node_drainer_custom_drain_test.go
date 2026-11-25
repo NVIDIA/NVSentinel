@@ -24,6 +24,7 @@ import (
 
 	"tests/helpers"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -42,6 +43,8 @@ const (
 	// customDrainIdleWait covers one read of an unfinished DrainRequest.
 	// node-drainer reads that object about every 30 seconds, and the test pod must still be there.
 	customDrainIdleWait = 45 * time.Second
+	// cancelledQuarantineStatus is the nodequarantined status that fault-quarantine writes after a manual uncordon.
+	cancelledQuarantineStatus = "Cancelled"
 )
 
 func TestNodeDrainerCustomDrain(t *testing.T) {
@@ -165,8 +168,10 @@ func (s *customDrainTestState) teardown(ctx context.Context, t *testing.T, c *en
 
 	s.done = true
 
-	// Deferred calls run last one first, and each still runs when an earlier step stops the test.
-	// fault-remediation is restored last. The template volume stays until the custom-drain config is gone.
+	// Deferred calls run last one first, and each still runs when an earlier step stops the test, so the steps are
+	// registered in reverse. On success they run in this order: cancel the quarantine, restore the node-drainer config
+	// while the template volume is still mounted, clean the node, undo the custom drain setup, and restore
+	// fault-remediation after the quarantine is cancelled.
 	defer restoreFaultRemediationDeployment(ctx, t, client, s.restoreFaultRemediation, s.faultRemediationReplicas)
 	defer func() {
 		nodeName := ""
@@ -177,19 +182,37 @@ func (s *customDrainTestState) teardown(ctx context.Context, t *testing.T, c *en
 		helpers.TeardownCustomDrain(ctx, t, client, &s.backup, nodeName)
 	}()
 
-	if len(s.configBackup) > 0 {
-		configCtx := context.WithValue(ctx, helpers.FRKeyNodeDrainerConfigMapBackup, s.configBackup)
-		helpers.RestoreNodeDrainerConfig(configCtx, t, c)
+	if s.testCtx != nil {
+		nodeCtx := context.WithValue(ctx, helpers.NDKeyNodeName, s.testCtx.NodeName)
+		nodeCtx = context.WithValue(nodeCtx, helpers.NDKeyTestNamespace, s.testCtx.TestNamespace)
+
+		defer helpers.TeardownNodeDrainer(nodeCtx, t, c)
 	}
 
-	if s.testCtx == nil {
+	if len(s.configBackup) > 0 {
+		configCtx := context.WithValue(ctx, helpers.FRKeyNodeDrainerConfigMapBackup, s.configBackup)
+
+		defer helpers.RestoreNodeDrainerConfig(configCtx, t, c)
+	}
+
+	if s.testCtx != nil {
+		s.cancelQuarantine(ctx, t, client)
+	}
+}
+
+// cancelQuarantine closes the health event of the test before fault-remediation is restored. The event is drained
+// but not remediated, and a healthy event leaves it Quarantined. fault-remediation would then remediate the node at
+// its next start, after the node is back in service.
+func (s *customDrainTestState) cancelQuarantine(ctx context.Context, t *testing.T, client klient.Client) {
+	t.Helper()
+
+	if !helpers.CancelQuarantineByManualUncordon(ctx, t, client, s.testCtx.NodeName) {
 		return
 	}
 
-	nodeCtx := context.WithValue(ctx, helpers.NDKeyNodeName, s.testCtx.NodeName)
-	nodeCtx = context.WithValue(nodeCtx, helpers.NDKeyTestNamespace, s.testCtx.TestNamespace)
-
-	helpers.TeardownNodeDrainer(nodeCtx, t, c)
+	status, _ := helpers.HealthEventQuarantineStatus(
+		ctx, t, client.RESTConfig(), client, s.testCtx.NodeName, customDrainMessage)
+	assert.Equal(t, cancelledQuarantineStatus, status, "the health event of the test should be Cancelled")
 }
 
 func restoreFaultRemediationDeployment(
