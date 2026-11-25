@@ -27,6 +27,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
 // scriptedMapper returns the given results in order, then blocks the poll loop from making
@@ -336,4 +339,50 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 
 	gauge.SetToCurrentTime()
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
+}
+
+func TestPreviousIsComplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gpu_metadata.json")
+	fresh := &model.GPUMetadata{
+		DriverVersion: "580.95.05",
+		GPUs:          []model.GPUInfo{{UUID: "GPU-a"}, {UUID: "GPU-b"}},
+	}
+
+	assert.False(t, previousIsComplete(path, fresh), "no previous file")
+
+	// writePrevious writes a complete previous file, after edit changes it.
+	writePrevious := func(edit func(*model.GPUMetadata)) {
+		t.Helper()
+
+		previous := &model.GPUMetadata{
+			DriverVersion: "580.95.05",
+			GPUs: []model.GPUInfo{
+				{UUID: "GPU-a", NVLinks: []model.NVLink{{LinkID: 0, RemoteLinkID: 34}}},
+				{UUID: "GPU-b"},
+			},
+			NICTopology: map[string][]string{"mlx5_0": {"PIX", "SYS"}},
+		}
+		edit(previous)
+
+		metadataWriter, err := writer.NewWriter(path)
+		require.NoError(t, err)
+		require.NoError(t, metadataWriter.Write(previous))
+	}
+
+	writePrevious(func(*model.GPUMetadata) {})
+	assert.True(t, previousIsComplete(path, fresh))
+
+	writePrevious(func(p *model.GPUMetadata) { p.GPUs[1].UUID = "GPU-c" })
+	assert.False(t, previousIsComplete(path, fresh), "different GPU")
+
+	writePrevious(func(p *model.GPUMetadata) { p.DriverVersion = "570.172.08" })
+	assert.False(t, previousIsComplete(path, fresh), "different driver version")
+
+	// Either step's data missing makes the file incomplete, whichever step failed now, so a
+	// file without nic_topology is not kept over a run that collected it but failed nvlink.
+	writePrevious(func(p *model.GPUMetadata) { p.NICTopology = nil })
+	assert.False(t, previousIsComplete(path, fresh), "topo data missing")
+
+	writePrevious(func(p *model.GPUMetadata) { p.GPUs[0].NVLinks[0].RemoteLinkID = -1 })
+	assert.False(t, previousIsComplete(path, fresh), "nvlink data missing")
 }

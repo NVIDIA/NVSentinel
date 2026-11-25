@@ -18,13 +18,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvidiasmi"
 )
 
 type GPUNVLinkTopology struct {
@@ -41,9 +41,7 @@ func DetectNVLinkTopology(ctx context.Context) (map[int]GPUNVLinkTopology, error
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "nvidia-smi", "nvlink", "-R")
-
-	output, err := cmd.CombinedOutput()
+	output, err := nvidiasmi.Run(ctx, "nvlink", "-R")
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi nvlink -R failed: %w (output: %s)", err, string(output))
 	}
