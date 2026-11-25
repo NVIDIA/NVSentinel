@@ -659,9 +659,8 @@ func (r *Reconciler) checkCircuitBreakerAndHalt(ctx context.Context) (bool, erro
 	}
 
 	if tripped {
-		slog.ErrorContext(ctx, "Circuit breaker TRIPPED. Halting event processing until the breaker is reset: "+
-			"patch the circuit-breaker ConfigMap status to CLOSED and restart (docs/runbooks/circuit-breaker.md). "+
-			"Restarting without the ConfigMap change has no effect.")
+		slog.ErrorContext(ctx, "Circuit breaker TRIPPED. Halting event processing until the breaker is reset; "+
+			"restarting alone has no effect - reset procedure: docs/runbooks/circuit-breaker.md.")
 
 		span.SetAttributes(
 			attribute.String("fault_quarantine.circuit_breaker.state", "tripped"),
