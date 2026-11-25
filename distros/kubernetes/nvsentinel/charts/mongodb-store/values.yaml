@@ -472,8 +472,15 @@ psmdb-db:
                 secretKeyRef:
                   name: internal-mongodb-users
                   key: MONGODB_CLUSTER_MONITOR_PASSWORD
+            # mongod has a CA file and doesn't allow connections without a
+            # certificate, so present the member's own certificate from the
+            # operator's "ssl" volume (secret <cluster>-ssl), mounted below.
             - name: MONGODB_URI
-              value: "mongodb://localhost:27017/admin?directConnection=true&tls=true&tlsInsecure=true&authMechanism=SCRAM-SHA-256"
+              value: "mongodb://localhost:27017/admin?directConnection=true&tls=true&tlsInsecure=true&tlsCertificateFile=/etc/mongodb-ssl/tls.crt&tlsPrivateKeyFile=/etc/mongodb-ssl/tls.key&authMechanism=SCRAM-SHA-256"
+          volumeMounts:
+            - name: ssl
+              mountPath: /etc/mongodb-ssl
+              readOnly: true
           ports:
             - name: metrics
               containerPort: 9216

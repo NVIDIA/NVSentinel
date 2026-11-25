@@ -20,10 +20,20 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 /*
@@ -164,10 +174,67 @@ func (mock *MockPodResourcesServer) List(ctx context.Context,
 
 func newTestKubeletGRPCClient(err error, errReturnCount int, podDevices map[string]map[string][]deviceInfo) *kubeletGRPClient {
 	mockPodResourcesServer := NewMockPodResourcesServer(err, errReturnCount, podDevices)
+	filter := newDeviceFilter(modeltest.GPUEntityTypes())
+
 	return &kubeletGRPClient{
 		ctx:                context.Background(),
 		podResourcesClient: mockPodResourcesServer,
+		filter:             filter,
+		resolver:           newResourceSliceResolver(fake.NewSimpleClientset(), "node-a", filter.attributeByDriver),
 	}
+}
+
+// useResourceSlices gives the client a resolver on a fake API that holds a ResourceSlice for each driver and pool
+// of values on node-a, with each value under the configured attribute of its driver. The fake API ignores field
+// selectors, so a test keeps the slices of one driver; devices_test.go covers the selectors on a real API server.
+func useResourceSlices(client *kubeletGRPClient, values map[draDevice]string) *fake.Clientset {
+	slices := map[string]*resourcev1.ResourceSlice{}
+
+	for device, value := range values {
+		key := device.driver + "-" + device.pool
+
+		slice, ok := slices[key]
+		if !ok {
+			slice = &resourcev1.ResourceSlice{
+				ObjectMeta: metav1.ObjectMeta{Name: key},
+				Spec: resourcev1.ResourceSliceSpec{
+					Driver:   device.driver,
+					NodeName: ptr.To("node-a"),
+					Pool:     resourcev1.ResourcePool{Name: device.pool, Generation: 1, ResourceSliceCount: 1},
+				},
+			}
+			slices[key] = slice
+		}
+
+		attribute := resourcev1.QualifiedName(client.filter.attributeByDriver[device.driver])
+		slice.Spec.Devices = append(slice.Spec.Devices, resourcev1.Device{
+			Name:       device.name,
+			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{attribute: {StringValue: ptr.To(value)}},
+		})
+	}
+
+	objects := make([]runtime.Object, 0, len(slices))
+	for _, slice := range slices {
+		objects = append(objects, slice)
+	}
+
+	api := fake.NewSimpleClientset(objects...)
+	client.resolver = newResourceSliceResolver(api, "node-a", client.filter.attributeByDriver)
+
+	return api
+}
+
+// resourceSliceLists returns the field selectors of the ResourceSlice lists that the API got.
+func resourceSliceLists(api *fake.Clientset) []string {
+	var selectors []string
+
+	for _, action := range api.Actions() {
+		if list, ok := action.(ktesting.ListAction); ok && action.GetResource().Resource == "resourceslices" {
+			selectors = append(selectors, list.GetListRestrictions().Fields.String())
+		}
+	}
+
+	return selectors
 }
 
 func TestListPodResources(t *testing.T) {
@@ -206,8 +273,11 @@ func TestListPodResourcesErrorWithRetry(t *testing.T) {
 	assert.NotNil(t, devicesPerPod)
 }
 
-func TestListPodResourcesWithDRA(t *testing.T) {
-	uuids := draDeviceUUIDs(map[int]string{0: "GPU-a0", 1: "GPU-a1"})
+func gpuDRADevice(name string) draDevice {
+	return draDevice{driver: model.GPUDRADriverName, pool: "node-a", name: name}
+}
+
+func TestListPodResources_DRADevices_RecordsTheAttributeValueUnderTheDriver(t *testing.T) {
 	draDevices := map[string]map[string][]deviceInfo{
 		"dra-pod": {
 			"container-1": {
@@ -218,30 +288,116 @@ func TestListPodResourcesWithDRA(t *testing.T) {
 				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
 			},
 		},
-		"unresolved-pod": {
-			"container-2": {
-				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-9"},
-			},
-		},
 	}
 
 	client := newTestKubeletGRPCClient(nil, 0, draDevices)
-	client.draDeviceUUIDs = uuids
+	api := useResourceSlices(client, map[draDevice]string{
+		gpuDRADevice("gpu-0"): "GPU-a0",
+		gpuDRADevice("gpu-1"): "GPU-a1",
+	})
+
 	devicesPerPod, err := client.ListPodResources()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
 		"default/dra-pod": {Devices: map[string][]string{
 			model.GPUDRADriverName: {"GPU-a0", "GPU-a1"},
 			"nvidia.com/gpu":       {"GPU-plugin"},
 		}},
-		// unresolved-pod is absent until its device name resolves.
 	}, devicesPerPod)
+	assert.Equal(t, []string{"spec.driver=" + model.GPUDRADriverName + ",spec.nodeName=node-a"},
+		resourceSliceLists(api), "a driver that the configuration does not list is not looked up")
+}
 
-	// With no known GPUs DRA allocations are skipped entirely.
-	client = newTestKubeletGRPCClient(nil, 0, draDevices)
-	devicesPerPod, err = client.ListPodResources()
-	assert.NoError(t, err)
+// A partial annotation would make node-drainer miss the pod, so a pod with an unresolved DRA device gets none,
+// even when its other devices resolve.
+func TestListPodResources_UnresolvedDRADevice_LeavesThePodOut(t *testing.T) {
+	draDevices := map[string]map[string][]deviceInfo{
+		"mixed-pod": {
+			"container-1": {
+				{resourceName: "nvidia.com/gpu", id: "GPU-plugin"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-9"},
+			},
+		},
+		"plugin-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-other"}},
+		},
+	}
+
+	client := newTestKubeletGRPCClient(nil, 0, draDevices)
+	useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
+
+	devicesPerPod, err := client.ListPodResources()
+	require.NoError(t, err)
 	assert.Equal(t, map[string]*model.DeviceAnnotation{
-		"default/dra-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-plugin"}}},
+		"default/plugin-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-other"}}},
+	}, devicesPerPod)
+}
+
+func TestListPodResources_ConfiguredEntityType_RecordsOnlyItsDevices(t *testing.T) {
+	entityTypes := model.PartialRemediationEntityTypes{
+		"ACCEL_SERIAL": {
+			Devices: []model.PartialRemediationDevice{
+				{ResourceNames: []string{"example.com/accel"}},
+				{Driver: "accel.example.com", DeviceClasses: []string{"accel"}, EntityValueAttribute: "serial"},
+			},
+		},
+	}
+	accel := draDevice{driver: "accel.example.com", pool: "node-a", name: "accel-0"}
+	client := newTestKubeletGRPCClient(nil, 0, map[string]map[string][]deviceInfo{
+		"accel-pod": {
+			"container-1": {
+				{resourceName: "example.com/accel", id: "SN-plugin"},
+				{driverName: "accel.example.com", resourceName: "node-a", id: "accel-0"},
+				{resourceName: "nvidia.com/gpu", id: "GPU-1"},
+				{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"},
+			},
+		},
+		"gpu-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-2"}},
+		},
+	})
+	client.filter = newDeviceFilter(entityTypes)
+	useResourceSlices(client, map[draDevice]string{accel: "SN-dra"})
+
+	devicesPerPod, err := client.ListPodResources()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/accel-pod": {Devices: map[string][]string{
+			"example.com/accel": {"SN-plugin"},
+			"accel.example.com": {"SN-dra"},
+		}},
+	}, devicesPerPod)
+}
+
+func TestListPodResources_NoDRADevices_DoesNotCallTheResolver(t *testing.T) {
+	client := newTestKubeletGRPCClient(nil, 0, podDevices)
+	api := useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
+
+	_, err := client.ListPodResources()
+	require.NoError(t, err)
+	assert.Empty(t, resourceSliceLists(api))
+}
+
+// A failed lookup leaves the DRA pods out, keeps the other pods, and reports the failure to the caller.
+func TestListPodResources_DRALookupFails_ReturnsOtherPodsAndTheError(t *testing.T) {
+	client := newTestKubeletGRPCClient(nil, 0, map[string]map[string][]deviceInfo{
+		"dra-pod": {
+			"container-1": {{driverName: model.GPUDRADriverName, resourceName: "node-a", id: "gpu-0"}},
+		},
+		"plugin-pod": {
+			"container-2": {{resourceName: "nvidia.com/gpu", id: "GPU-plugin"}},
+		},
+	})
+	api := useResourceSlices(client, map[draDevice]string{gpuDRADevice("gpu-0"): "GPU-a0"})
+	api.PrependReactor("list", "resourceslices", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "resource.k8s.io",
+			Resource: "resourceslices"}, "", errors.New("no permission"))
+	})
+
+	devicesPerPod, err := client.ListPodResources()
+	require.ErrorIs(t, err, ErrDRALookupFailed)
+	assert.Equal(t, map[string]*model.DeviceAnnotation{
+		"default/plugin-pod": {Devices: map[string][]string{"nvidia.com/gpu": {"GPU-plugin"}}},
 	}, devicesPerPod)
 }

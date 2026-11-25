@@ -26,7 +26,7 @@ import (
 // TestPodPolicyMatcherMatch_OverlappingPolicies_SelectsFirstMatchingMode
 // checks selector semantics and policy precedence.
 func TestPodPolicyMatcherMatch_OverlappingPolicies_SelectsFirstMatchingMode(t *testing.T) {
-	cfg, err := LoadTomlConfigFromString(`
+	cfg, err := loadTestConfig(`
 [[podDrainPolicies]]
 name = "protected-training"
 namespace = "train-*"
@@ -78,7 +78,7 @@ func ownedBy(kind string, controller bool) []metav1.OwnerReference {
 // TestPodPolicyMatcherMatch_OwnerKinds_SelectsByControllerKind
 // checks owner-kind matching on its own, combined with a selector, and for pods without a controller.
 func TestPodPolicyMatcherMatch_OwnerKinds_SelectsByControllerKind(t *testing.T) {
-	cfg, err := LoadTomlConfigFromString(`
+	cfg, err := loadTestConfig(`
 [[podDrainPolicies]]
 name = "checkpointing-statefulsets"
 podSelector = "checkpoint"
@@ -155,7 +155,7 @@ mode = "Immediate"
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadTomlConfigFromString(input)
+			_, err := loadTestConfig(input)
 			require.ErrorContains(t, err, "podDrainPolicies")
 		})
 	}
@@ -164,7 +164,7 @@ mode = "Immediate"
 // TestPodPolicyMatcherLabelKeys_NamespaceOnlyConfig_ReturnsNoKeys
 // keeps namespace-only deployments from retaining policy labels.
 func TestPodPolicyMatcherLabelKeys_NamespaceOnlyConfig_ReturnsNoKeys(t *testing.T) {
-	cfg, err := LoadTomlConfigFromString("[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n")
+	cfg, err := loadTestConfig("[[userNamespaces]]\nname = \"*\"\nmode = \"AllowCompletion\"\n")
 	require.NoError(t, err)
 	matcher, err := CompilePodDrainPolicies(cfg.PodDrainPolicies)
 	require.NoError(t, err)

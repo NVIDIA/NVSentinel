@@ -269,6 +269,25 @@ global:
   # the nvidia RuntimeClass.
   gpuDraEnabled: false
 
+  # Entity types that get partial drains when node-drainer.partialDrainEnabled is
+  # true. Each key is an entity type of health events. devices lists how pods get
+  # a device of that type: a device-plugin entry with resourceNames, or a DRA
+  # entry with driver, deviceClasses and entityValueAttribute (the ResourceSlice
+  # attribute whose value health events report). scopedActions lists the actions,
+  # built-in or custom, that repair one device of the type; node-drainer drains
+  # only the pods that use that device for them. An action can be scoped to only
+  # one entity type. Add a device type under another key. To stop partial drains
+  # for GPUs, set GPU_UUID.scopedActions to []; a null value does not remove the
+  # default from subcharts. See docs/configuration/node-drainer.md#partial-drain.
+  partialRemediationEntityTypes:
+    GPU_UUID:
+      devices:
+        - resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
+        - driver: gpu.nvidia.com
+          deviceClasses: ["gpu.nvidia.com"]
+          entityValueAttribute: uuid
+      scopedActions: ["COMPONENT_RESET"]
+
   # SELinux options for the pods that share host directories without running
   # privileged: platform-connectors, syslog-health-monitor and
   # nic-health-monitor. Privileged pods already run as spc_t.
