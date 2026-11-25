@@ -250,8 +250,8 @@ Handles `TerminateNode` CRs. `timeout` overrides `config.timeout` for terminate 
 `rateLimit` paces the terminate signals the Janitor sends across the cluster: at most `maxTerminations` in any `window`. `maxTerminations: 0`, the default, is no limit. `window` defaults to `1m`.
 
 - A request over the limit waits; it does not fail. Its `SignalSent` condition is `Unknown` with the reason `RateLimited`, and the Janitor sends the signal when an earlier one leaves the window. fault-remediation sees a terminate in progress, so the wait does not use up a remediation attempt, as a rejection by an admission webhook would.
-- The limit counts the signals that `TerminateNode` statuses record, so it holds when the Janitor restarts. A signal the provider accepted just before a restart, whose status was not written yet, is not counted after the restart.
-- The limit holds for one active Janitor. Each Janitor also counts the signals it sent whose status it does not see yet, and a second replica does not see those. Keep `replicaCount: 1`, the default: the chart does not enable leader election, so more replicas could each admit a signal in the same window.
+- The limit counts the signals that `TerminateNode` statuses record, so it holds when the Janitor restarts. A signal the provider accepted just before a restart, whose status was not written yet, is not counted after the restart. Nor is a signal whose `TerminateNode` was deleted while the signal was still in the window.
+- The limit holds for one active Janitor. Each Janitor also counts the signals it sent whose status it does not see yet, and a second replica does not see those. Keep `replicaCount: 1`, the default: the chart does not enable leader election, so more replicas could each admit a signal in the same window. During a rolling update the old and the new Janitor pods overlap briefly, and each can admit a signal in that time.
 - The limit covers every CSP provider, because it applies before the Janitor calls the provider.
 - In manual mode the Janitor sends no signals, so the limit does not apply.
 
