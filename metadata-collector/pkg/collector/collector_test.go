@@ -355,9 +355,9 @@ func (f *topoFunc) run(context.Context) (string, error) {
 }
 
 // snapshotFunc is a test double for the PCI address snapshots: it
-// returns the next map in sequence on each call (before then after,
-// per attempt) and counts them. A nil entry stands for an unreadable
-// snapshot.
+// returns the next map in sequence on each call (before, after and
+// settle reads, in call order) and counts them. A nil entry stands
+// for an unreadable snapshot.
 type snapshotFunc struct {
 	maps  []map[string]string
 	calls int
@@ -370,8 +370,9 @@ func (f *snapshotFunc) take(string) (map[string]string, error) {
 }
 
 // TestDefaultNICTopoCollectorCollect_RetryLoop drives the retry loop
-// with faked topo output, snapshots and sleeps: the retry, the cap
-// and dropping the addresses after the last attempt.
+// with faked topo output, snapshots and sleeps: the settle wait
+// between attempts, the attempt cap and dropping the addresses when
+// the names never settle.
 func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
 	addrA := map[string]string{"mlx5_0": "0000:41:00.0", "mlx5_1": "0000:9a:00.0"}
 	addrB := map[string]string{"mlx5_0": "0000:9a:00.0", "mlx5_1": "0000:41:00.0"}
@@ -384,6 +385,7 @@ func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
 		sleepOK       bool
 		wantTopoCalls int
 		wantSleeps    int
+		wantSnapCalls int
 		wantAddresses map[string]string
 		wantErr       bool
 	}{
@@ -393,33 +395,59 @@ func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
 			sleepOK:       true,
 			wantTopoCalls: 1,
 			wantSleeps:    0,
+			wantSnapCalls: 2,
 			wantAddresses: addrA,
 		},
 		{
-			name:          "rename then settle across the gap retries once",
-			snapshots:     []map[string]string{addrA, addrB, addrB, addrB},
+			name: "rename during a run waits for the names to settle and retries",
+			// Run 1 sees the names swap mid-run. The first settle
+			// read already matches the run's after snapshot, so
+			// the names have settled, and run 2 is accepted on
+			// its own two snapshots.
+			snapshots:     []map[string]string{addrA, addrB, addrB, addrB, addrB},
 			sleepOK:       true,
 			wantTopoCalls: 2,
 			wantSleeps:    1,
+			wantSnapCalls: 5,
 			wantAddresses: addrB,
 		},
 		{
-			name: "gap instability retries once more",
-			// Attempt 2 is stable within itself but its before
-			// snapshot differs from attempt 1's after snapshot, so
-			// the names were still moving across the settle wait.
+			name: "names still moving during the settle wait delay the retry",
+			// The first settle read still differs from the run's
+			// after snapshot; only the second read matches the
+			// one before it. The retry is then accepted on its
+			// own two snapshots — no comparison against the
+			// earlier run decides it.
 			snapshots:     []map[string]string{addrA, addrB, addrC, addrC, addrC, addrC},
 			sleepOK:       true,
-			wantTopoCalls: 3,
+			wantTopoCalls: 2,
 			wantSleeps:    2,
+			wantSnapCalls: 6,
 			wantAddresses: addrC,
 		},
 		{
-			name:          "never settles drops addresses after the cap",
-			snapshots:     []map[string]string{addrA, addrB, addrA, addrB, addrA, addrB},
+			name: "names that never settle drop the addresses",
+			// Every settle read differs from the one before it,
+			// so the bounded wait ends without two reads in a
+			// row agreeing and no retry is attempted.
+			snapshots:     []map[string]string{addrA, addrB, addrC, addrA, addrC, addrA, addrC},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    5,
+			wantSnapCalls: 7,
+			wantAddresses: nil,
+		},
+		{
+			name: "unstable runs up to the cap drop the addresses",
+			// Each run settles during the wait but sees the
+			// names move again while nvidia-smi runs, so the
+			// topo attempt cap ends the collection without
+			// addresses.
+			snapshots:     []map[string]string{addrA, addrB, addrB, addrB, addrA, addrA, addrA, addrB},
 			sleepOK:       true,
 			wantTopoCalls: 3,
 			wantSleeps:    2,
+			wantSnapCalls: 8,
 			wantAddresses: nil,
 		},
 		{
@@ -437,11 +465,24 @@ func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
 			sleepOK:       true,
 			wantTopoCalls: 1,
 			wantSleeps:    0,
+			wantSnapCalls: 2,
+			wantAddresses: nil,
+		},
+		{
+			name: "unreadable settle read publishes without addresses",
+			// Stability cannot be shown without a readable
+			// snapshot, so the wait ends and the matrix goes
+			// out without addresses.
+			snapshots:     []map[string]string{addrA, addrB, nil},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    1,
+			wantSnapCalls: 3,
 			wantAddresses: nil,
 		},
 		{
 			name:          "cancelled sleep aborts the collection",
-			snapshots:     []map[string]string{addrA, addrB, addrB, addrB},
+			snapshots:     []map[string]string{addrA, addrB},
 			sleepOK:       false,
 			wantTopoCalls: 1,
 			wantSleeps:    1,
@@ -490,7 +531,7 @@ func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
 			require.NotNil(t, matrix)
 			assert.Equal(t, []string{"mlx5_0", "mlx5_1"}, matrix.NICs)
 			assert.Equal(t, tc.wantAddresses, matrix.NICPCIAddresses)
-			assert.Equal(t, 2*tc.wantTopoCalls, snap.calls, "two snapshots per topo run")
+			assert.Equal(t, tc.wantSnapCalls, snap.calls, "snapshot reads")
 		})
 	}
 }
