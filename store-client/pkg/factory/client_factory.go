@@ -16,6 +16,7 @@ package factory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 
@@ -78,39 +79,11 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 
 	switch provider {
 	case string(datastore.ProviderPostgreSQL):
-		// Create PostgreSQL connection with OTel instrumentation
-		db, err := otelsql.Open("postgres", f.dbConfig.GetConnectionURI(),
-			otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
-			otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
-		)
-		if err != nil {
-			return nil, datastore.NewConnectionError(
-				datastore.ProviderPostgreSQL,
-				"failed to open PostgreSQL connection",
-				err,
-			)
-		}
-
-		// Test the connection
-		if err := db.PingContext(ctx); err != nil {
-			db.Close()
-
-			return nil, datastore.NewConnectionError(
-				datastore.ProviderPostgreSQL,
-				"failed to connect to PostgreSQL",
-				err,
-			)
-		}
-
-		// Bound the connection pool so DATASTORE_MAX_CONNECTIONS takes effect
-		// on this path too, with the
-		// same idle and lifetime defaults NewPostgreSQLStore applies.
-		providers_postgresql.ConfigureConnectionPool(db, nil)
-
-		// Return the provider's PostgreSQL database client which has health event field extraction
-		tableName := f.dbConfig.GetCollectionName() // In PostgreSQL context, collection = table
-
-		return providers_postgresql.NewPostgreSQLDatabaseClient(db, tableName), nil
+		return f.createPostgreSQLDatabaseClient(ctx, func(uri string) (*sql.DB, error) {
+			return otelsql.Open("postgres", uri,
+				otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+				otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()))
+		})
 
 	case string(datastore.ProviderMongoDB), "":
 		// Default to MongoDB for backward compatibility
@@ -123,6 +96,40 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 			fmt.Errorf("provider '%s' is not supported", provider),
 		).WithMetadata("supportedProviders", []string{"mongodb", "postgresql"})
 	}
+}
+
+func (f *ClientFactory) createPostgreSQLDatabaseClient(
+	ctx context.Context, open func(string) (*sql.DB, error),
+) (client.DatabaseClient, error) {
+	db, err := open(f.dbConfig.GetConnectionURI())
+	if err != nil {
+		return nil, datastore.NewConnectionError(
+			datastore.ProviderPostgreSQL,
+			"failed to open PostgreSQL connection",
+			err,
+		)
+	}
+
+	// Test the connection
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+
+		return nil, datastore.NewConnectionError(
+			datastore.ProviderPostgreSQL,
+			"failed to connect to PostgreSQL",
+			err,
+		)
+	}
+
+	// Bound the connection pool so DATASTORE_MAX_CONNECTIONS takes effect
+	// on this path too, with the
+	// same idle and lifetime defaults NewPostgreSQLStore applies.
+	providers_postgresql.ConfigureConnectionPool(db, nil)
+
+	// Return the provider's PostgreSQL database client which has health event field extraction
+	tableName := f.dbConfig.GetCollectionName() // In PostgreSQL context, collection = table
+
+	return providers_postgresql.NewOwnedPostgreSQLDatabaseClient(ctx, db, tableName), nil
 }
 
 // CreateCollectionClient creates a new collection-specific client

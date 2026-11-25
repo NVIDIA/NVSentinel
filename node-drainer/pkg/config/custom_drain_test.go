@@ -44,7 +44,7 @@ mode = "AllowCompletion"
 // TestCustomDrainNodeMatcher_Selector_SplitsNodesBetweenDrainPaths
 // checks selector semantics for the nodes custom drain owns.
 func TestCustomDrainNodeMatcher_Selector_SplitsNodesBetweenDrainPaths(t *testing.T) {
-	cfg, err := LoadTomlConfigFromString(nativeEvictionRules + validCustomDrain +
+	cfg, err := loadTestConfig(nativeEvictionRules + validCustomDrain +
 		`nodeSelector = "scheduler in (slurm,lsf),!drain.example.com/native"` + "\n")
 	require.NoError(t, err)
 
@@ -81,7 +81,7 @@ func TestCustomDrainNodeMatcher_NoSelector_KeepsWholeClusterOnCustomDrain(t *tes
 		"whitespace": validCustomDrain + "nodeSelector = \"  \"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := LoadTomlConfigFromString(input)
+			cfg, err := loadTestConfig(input)
 			require.NoError(t, err)
 
 			matcher, err := CompileCustomDrainNodeSelector(cfg.CustomDrain)
@@ -114,10 +114,10 @@ func TestLoadTomlConfigFromString_ScopedCustomDrain_AcceptsNativeEvictionRules(t
 	}
 	for name, rules := range nativeRules {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadTomlConfigFromString(rules + validCustomDrain)
+			_, err := loadTestConfig(rules + validCustomDrain)
 			require.ErrorContains(t, err, "unless customDrain.nodeSelector is set")
 
-			cfg, err := LoadTomlConfigFromString(rules + validCustomDrain + "nodeSelector = \"scheduler=slurm\"\n")
+			cfg, err := loadTestConfig(rules + validCustomDrain + "nodeSelector = \"scheduler=slurm\"\n")
 			require.NoError(t, err)
 			require.Equal(t, "scheduler=slurm", cfg.CustomDrain.NodeSelector)
 		})
@@ -129,13 +129,13 @@ func TestLoadTomlConfigFromString_ScopedCustomDrain_AcceptsNativeEvictionRules(t
 // it the evaluator has no namespace and no policy to act on, so it marks those nodes
 // drained and logs a success without evicting a single pod.
 func TestLoadTomlConfigFromString_ScopedCustomDrain_RequiresNativeEvictionRules(t *testing.T) {
-	_, err := LoadTomlConfigFromString(validCustomDrain + "nodeSelector = \"scheduler=slurm\"\n")
+	_, err := loadTestConfig(validCustomDrain + "nodeSelector = \"scheduler=slurm\"\n")
 	require.ErrorContains(t, err, "customDrain.nodeSelector requires userNamespaces or podDrainPolicies")
 }
 
 // TestLoadTomlConfigFromString_InvalidNodeSelector_ReturnsValidationError
 // rejects a malformed selector at startup rather than on the first health event.
 func TestLoadTomlConfigFromString_InvalidNodeSelector_ReturnsValidationError(t *testing.T) {
-	_, err := LoadTomlConfigFromString(validCustomDrain + "nodeSelector = \"scheduler in (\"\n")
+	_, err := loadTestConfig(validCustomDrain + "nodeSelector = \"scheduler in (\"\n")
 	require.ErrorContains(t, err, "invalid customDrain.nodeSelector")
 }

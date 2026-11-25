@@ -18,6 +18,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,7 +95,17 @@ type TomlConfig struct {
 	// unrelated to updateRetry.maxRetries, which retries a failing API update.
 	// Zero disables the cap (legacy behavior).
 	MaxRemediationAttempts int `toml:"maxRemediationAttempts"`
+
+	// PartialRemediationEntityTypes lists the entity types that get partial drains. The chart renders it
+	// from global.partialRemediationEntityTypes, which holds the default. An ImpactedEntityScope must name
+	// one of its entity types. Validation fails without the key; an empty table configures no entity type.
+	PartialRemediationEntityTypes model.PartialRemediationEntityTypes `toml:"partialRemediationEntityTypes"`
 }
+
+// ErrPartialRemediationEntityTypesMissing means the configuration has no partialRemediationEntityTypes key.
+// The Helm chart always renders it from global.partialRemediationEntityTypes, which holds the default.
+var ErrPartialRemediationEntityTypesMissing = errors.New(
+	"partialRemediationEntityTypes is missing; set global.partialRemediationEntityTypes in the Helm values")
 
 // Validate checks the configuration for consistency and completeness.
 //
@@ -117,6 +128,14 @@ func (c *TomlConfig) Validate() error {
 
 	if err := c.validateTemplate(); err != nil {
 		return err
+	}
+
+	if c.PartialRemediationEntityTypes == nil {
+		return ErrPartialRemediationEntityTypesMissing
+	}
+
+	if err := c.PartialRemediationEntityTypes.Validate(); err != nil {
+		return fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
 	}
 
 	actionNames := sortedActionNames(c.RemediationActions)
@@ -162,14 +181,14 @@ Per-action validation. Checks constraints that do not depend on other actions:
 - Scope must be valid and consistent with the namespace field.
 - If ImpactedEntityScope is set, the action must be COMPONENT_RESET or a
 custom (non-built-in) action, and the entity type must be in
-EntityTypeToResourceNames (i.e. partial draining is enabled for it).
+PartialRemediationEntityTypes.
 */
 func (c *TomlConfig) validateRemediationAction(actionName string, resource MaintenanceResource) error {
 	if len(resource.EquivalenceGroup) == 0 {
 		return fmt.Errorf("action '%s' must have a non-empty EquivalenceGroup", actionName)
 	}
 
-	if err := validateResourceImpactedEntityScope(actionName, resource); err != nil {
+	if err := c.validateResourceImpactedEntityScope(actionName, resource); err != nil {
 		return err
 	}
 
@@ -236,7 +255,7 @@ func validateOneSupersedingGroup(actionName, group string, resource MaintenanceR
 	return nil
 }
 
-func validateResourceImpactedEntityScope(actionName string, resource MaintenanceResource) error {
+func (c *TomlConfig) validateResourceImpactedEntityScope(actionName string, resource MaintenanceResource) error {
 	if len(resource.ImpactedEntityScope) == 0 {
 		return nil
 	}
@@ -248,9 +267,9 @@ func validateResourceImpactedEntityScope(actionName string, resource Maintenance
 				"only COMPONENT_RESET and custom actions support this", actionName)
 	}
 
-	if _, ok := model.EntityTypeToResourceNames[resource.ImpactedEntityScope]; !ok {
-		return fmt.Errorf("action '%s' cannot use ImpactedEntityScope '%s': entity type does not support partial draining",
-			actionName, resource.ImpactedEntityScope)
+	if _, ok := c.PartialRemediationEntityTypes[resource.ImpactedEntityScope]; !ok {
+		return fmt.Errorf("action '%s' cannot use ImpactedEntityScope '%s': the entity type is not in "+
+			"partialRemediationEntityTypes", actionName, resource.ImpactedEntityScope)
 	}
 
 	return nil
