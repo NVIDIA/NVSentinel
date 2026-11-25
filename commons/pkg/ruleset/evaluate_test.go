@@ -176,16 +176,17 @@ func TestEvaluate_ErrorInsideMatchList(t *testing.T) {
 		name        string
 		ruleSet     testRuleSet
 		wantMatched bool
-		wantErr     bool
+		// wantErrRule is the rule the error names. Empty means no error.
+		wantErrRule string
 	}{
 		{name: "All_FalseThenError_DoesNotMatch", ruleSet: ruleSetAll("rs", 0, nodeMisses, nodeFails)},
 		{name: "All_ErrorThenFalse_DoesNotMatch", ruleSet: ruleSetAll("rs", 0, nodeFails, nodeMisses)},
-		{name: "All_TrueAndError_Fails", ruleSet: ruleSetAll("rs", 0, nodeMatches, nodeFails), wantErr: true},
-		{name: "All_ErrorAndTrue_Fails", ruleSet: ruleSetAll("rs", 0, nodeFails, nodeMatches), wantErr: true},
+		{name: "All_TrueAndError_Fails", ruleSet: ruleSetAll("rs", 0, nodeMatches, nodeFails), wantErrRule: "match.all[1]"},
+		{name: "All_ErrorAndTrue_Fails", ruleSet: ruleSetAll("rs", 0, nodeFails, nodeMatches), wantErrRule: "match.all[0]"},
 		{name: "Any_TrueThenError_Matches", ruleSet: ruleSetAny("rs", 0, nodeMatches, nodeFails), wantMatched: true},
 		{name: "Any_ErrorThenTrue_Matches", ruleSet: ruleSetAny("rs", 0, nodeFails, nodeMatches), wantMatched: true},
-		{name: "Any_FalseAndError_Fails", ruleSet: ruleSetAny("rs", 0, nodeMisses, nodeFails), wantErr: true},
-		{name: "Any_EventErrorAndFalse_Fails", ruleSet: ruleSetAny("rs", 0, eventFails, eventMisses), wantErr: true},
+		{name: "Any_FalseAndError_Fails", ruleSet: ruleSetAny("rs", 0, nodeMisses, nodeFails), wantErrRule: "match.any[1]"},
+		{name: "Any_EventErrorAndFalse_Fails", ruleSet: ruleSetAny("rs", 0, eventFails, eventMisses), wantErrRule: "match.any[0]"},
 	}
 
 	for _, tt := range tests {
@@ -195,8 +196,9 @@ func TestEvaluate_ErrorInsideMatchList(t *testing.T) {
 			_, matched, err := compile(t, []testRuleSet{tt.ruleSet}).Evaluate(fullInput())
 			require.Equal(t, tt.wantMatched, matched)
 
-			if tt.wantErr {
+			if tt.wantErrRule != "" {
 				requireEvaluationError(t, err, "rs")
+				require.ErrorContains(t, err, `rule set "rs": `+tt.wantErrRule+": ")
 				return
 			}
 
@@ -225,6 +227,7 @@ func TestEvaluate_MissingInput(t *testing.T) {
 			require.False(t, matched)
 			requireEvaluationError(t, err, "rs")
 			require.ErrorIs(t, err, ruleset.ErrMissingInput)
+			require.ErrorContains(t, err, `rule set "rs": match.all[0]: `)
 		})
 	}
 }
@@ -280,13 +283,13 @@ func TestCompile_Errors(t *testing.T) {
 			name:     "BadExpression",
 			ruleSet:  ruleSetAll("bad", 0, "node.metadata.name =="),
 			want:     ruleset.ErrRuleExpression,
-			contains: `rule set "bad"`,
+			contains: `rule set "bad": match.all[0].expression: `,
 		},
 		{
 			name:     "BadKind",
 			ruleSet:  testRuleSet{RuleSet: ruleset.RuleSet{Name: "pod", Match: ruleset.Match{All: []ruleset.Rule{{Kind: "Pod", Expression: "true"}}}}},
 			want:     ruleset.ErrRuleKind,
-			contains: `rule set "pod"`,
+			contains: `rule set "pod": match.all[0].kind: `,
 		},
 		{
 			// A disabled rule set is not evaluated, so it is not compiled either.

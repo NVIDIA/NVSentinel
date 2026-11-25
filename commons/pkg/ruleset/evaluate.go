@@ -63,8 +63,10 @@ type compiledRuleSet[T Entry] struct {
 	any   []compiledRule
 }
 
-// compiledRule holds one of the two rule kinds.
+// compiledRule holds one of the two rule kinds. path names the rule in errors, such as
+// match.all[1].
 type compiledRule struct {
+	path  string
 	event *celrule.HealthEventRule
 	node  *celrule.NodeRule
 }
@@ -114,25 +116,24 @@ func compileRuleSet[T Entry](entry T, common RuleSet) (compiledRuleSet[T], error
 
 	var err error
 
-	if compiled.all, err = compileRules(common.Match.All); err != nil {
-		return compiled, fmt.Errorf("rule set %q: match.all: %w", common.Name, err)
+	if compiled.all, err = compileRules("all", common.Match.All); err != nil {
+		return compiled, fmt.Errorf("rule set %q: %w", common.Name, err)
 	}
 
-	if compiled.any, err = compileRules(common.Match.Any); err != nil {
-		return compiled, fmt.Errorf("rule set %q: match.any: %w", common.Name, err)
+	if compiled.any, err = compileRules("any", common.Match.Any); err != nil {
+		return compiled, fmt.Errorf("rule set %q: %w", common.Name, err)
 	}
 
 	return compiled, nil
 }
 
-func compileRules(rules []Rule) ([]compiledRule, error) {
+func compileRules(list string, rules []Rule) ([]compiledRule, error) {
 	compiled := make([]compiledRule, 0, len(rules))
 
 	for i, rule := range rules {
-		var (
-			out compiledRule
-			err error
-		)
+		out := compiledRule{path: fmt.Sprintf("match.%s[%d]", list, i)}
+
+		var err error
 
 		switch rule.Kind {
 		case KindHealthEvent:
@@ -140,11 +141,11 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		case KindNode:
 			out.node, err = celrule.NewNodeRule(rule.Expression)
 		default:
-			return nil, fmt.Errorf("[%d].kind: %w: %q", i, ErrRuleKind, rule.Kind)
+			return nil, fmt.Errorf("%s.kind: %w: %q", out.path, ErrRuleKind, rule.Kind)
 		}
 
 		if err != nil {
-			return nil, fmt.Errorf("[%d].expression: %w: %w", i, ErrRuleExpression, err)
+			return nil, fmt.Errorf("%s.expression: %w: %w", out.path, ErrRuleExpression, err)
 		}
 
 		compiled = append(compiled, out)
@@ -162,11 +163,9 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 // logs the error, and tries again.
 func (e *Evaluator[T]) Evaluate(input Input) (winner T, matched bool, err error) {
 	for _, ruleSet := range e.ruleSets {
-		isMatch, err := ruleSet.matches(input)
-		if err != nil {
-			var zero T
-
-			return zero, false, &EvaluationError{RuleSet: ruleSet.name, Err: err}
+		isMatch, matchErr := ruleSet.matches(input)
+		if matchErr != nil {
+			return winner, false, &EvaluationError{RuleSet: ruleSet.name, Err: matchErr}
 		}
 
 		if isMatch {
@@ -174,9 +173,7 @@ func (e *Evaluator[T]) Evaluate(input Input) (winner T, matched bool, err error)
 		}
 	}
 
-	var zero T
-
-	return zero, false, nil
+	return winner, false, nil
 }
 
 // matches evaluates the match list of the rule set. Validate allows only one of all and any,
@@ -233,7 +230,17 @@ func evaluateAny(rules []compiledRule, input Input) (bool, error) {
 	return false, firstErr
 }
 
+// evaluate names the rule in the error, so the error shows which rule of the rule set failed.
 func (r compiledRule) evaluate(input Input) (bool, error) {
+	isMatch, err := r.evaluateInput(input)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", r.path, err)
+	}
+
+	return isMatch, nil
+}
+
+func (r compiledRule) evaluateInput(input Input) (bool, error) {
 	if r.event != nil {
 		if input.Event == nil {
 			return false, fmt.Errorf("%w: a %s rule needs the event", ErrMissingInput, KindHealthEvent)
