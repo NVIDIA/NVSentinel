@@ -356,7 +356,7 @@ While the counter is below the threshold, the GPU Health Monitor reports the GPU
 
 When the check is enabled, the GPU Health Monitor reads the driver version and the vBIOS version of each GPU from DCGM. It reads them each time that it connects to DCGM. On each poll, it reads the time since the node booted from `CLOCK_BOOTTIME`, the kernel clock behind `/proc/uptime`. A per-container view of `/proc/uptime`, for example from LXCFS, does not change this clock. A GPU fails when it runs a listed version and the node uptime is more than `maxUptimeHours`.
 
-`GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel cordons, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
+`GPU_UPTIME_LIMIT_EXCEEDED` maps to `RESTART_BM` in `dcgmerrorsmapping.csv`. Thus, NVSentinel quarantines, drains and reboots the node in the same way as for other faults that need a reboot. After the reboot, the node uptime is low again, and the GPU Health Monitor reports the GPUs as healthy.
 
 The check uses the node uptime for every GPU. A driver reload or a GPU reset does not change the node uptime. Thus, the check does not fire later than the limit.
 
@@ -383,7 +383,7 @@ If you disable the check, the GPU Health Monitor stops sending its health events
 
 ### storeOnly
 
-This value enables a dry run for this check. When it is true, the GPU Health Monitor emits the health events of this check with `processingStrategy=STORE_ONLY`. NVSentinel persists these health events and exports them as metrics, but it excludes them from the remediation pipeline. Thus, there is no node condition, no cordon and no reboot. The default is true, so after you enable the check, you can observe it before it can act.
+This value enables a dry run for this check. When it is true, the GPU Health Monitor emits the health events of this check with `processingStrategy=STORE_ONLY`. NVSentinel persists these health events and exports them as metrics, but it excludes them from the remediation pipeline. Thus, there is no node condition, no quarantine and no reboot. The default is true, so after you enable the check, you can observe it before it can act.
 
 ### affectedDriverVersions and affectedVbiosVersions
 

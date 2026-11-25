@@ -1287,7 +1287,7 @@ class DCGMWatcher:
         makes NVLink stop working after more than 60 days of uptime.
         Until a fixed version is installed, the mitigation is to reboot each affected
         node before the limit. A failure recommends a reboot through
-        dcgmerrorsmapping.csv, so NVSentinel cordons, drains and reboots the node in
+        dcgmerrorsmapping.csv, so NVSentinel quarantines, drains and reboots the node in
         the same way as for other faults.
 
         The node uptime is used for every GPU. A driver reload or GPU reset does not

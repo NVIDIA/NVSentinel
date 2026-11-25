@@ -121,7 +121,7 @@ dcgmFieldsMonitoring:
 # defect makes NVLink fail after more than 60 days of uptime.
 # When this check is enabled, each GPU that runs a listed driver or vBIOS version
 # fails after the node uptime is more than maxUptimeHours. The failure recommends
-# RESTART_BM, so NVSentinel cordons, drains and reboots the node before the defect.
+# RESTART_BM, so NVSentinel quarantines, drains and reboots the node before the defect.
 # Off by default so existing deployments see no change in behaviour.
 uptimeLimit:
   # Enables the check. If true, list at least one version and set
