@@ -36,9 +36,10 @@ The JSON file persists on the node. Health monitors read it through a shared vol
 To create the pod-to-GPU mapping annotation, the Metadata Collector does these steps:
 
 1. To find all pods that run on the node, the Metadata Collector calls the Kubelet /pods HTTPS endpoint.
-2. To find the GPU devices that are allocated to each pod, the Metadata Collector uses the Kubelet PodResourcesLister gRPC service:
-   - Device-plugin allocations (`nvidia.com/gpu`, `nvidia.com/pgpu`): the collector records them with the device IDs that the plugin reported. For the NVIDIA device plugin, these IDs are GPU UUIDs.
-   - DRA allocations (GPU Operator GPUCluster mode, driver `gpu.nvidia.com`): they arrive as device names such as `gpu-1`. The NVIDIA DRA driver derives these names from the GPU minor number (`/dev/nvidia1`). The collector maps them to UUIDs through NVML on the node and writes them under the `gpu.nvidia.com` key. The kubelet reports DRA allocations only with the `KubeletPodResourcesDynamicResources` feature gate. This feature gate is enabled by default from Kubernetes 1.34.
+2. To find the devices that are allocated to each pod, the Metadata Collector uses the Kubelet PodResourcesLister gRPC service. It records only the devices that `global.partialRemediationEntityTypes` lists. By default, these are the NVIDIA GPUs:
+   - Device-plugin allocations (by default `nvidia.com/gpu` and `nvidia.com/pgpu`): the collector records them under the resource name, with the device IDs that the plugin reported. For the NVIDIA device plugin, these IDs are GPU UUIDs.
+   - DRA allocations (by default the `gpu.nvidia.com` driver of GPU Operator GPUCluster mode): they arrive as a driver, a pool, and a device name such as `gpu-1`. The collector finds that device in the ResourceSlices of its node, and records the value of the configured attribute under the driver name. For NVIDIA GPUs, the attribute is `uuid`, so the collector records the GPU UUID. The kubelet reports DRA allocations only with the `KubeletPodResourcesDynamicResources` feature gate. This feature gate is enabled by default from Kubernetes 1.34.
+   - If a DRA device of a pod is not in the ResourceSlices yet, or has no such attribute, the pod gets no annotation, and an existing one is removed. An annotation that lists only some devices of a pod would make a partial drain miss that pod. Without an annotation, the partial drain waits instead.
 3. If the GPU device allocation of a pod changes, the Metadata Collector updates the tracking annotation on the pod object.
 4. The Metadata Collector runs this logic in a loop at a fixed interval, to continually update the mapping for new and existing pods.
 

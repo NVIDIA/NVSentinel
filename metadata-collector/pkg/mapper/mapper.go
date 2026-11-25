@@ -17,6 +17,7 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -44,7 +45,7 @@ type PodDeviceMapper interface {
 type clientConfig struct {
 	kubeconfigPath        string
 	kubeletKubeconfigPath string
-	uuidsByMinor          map[int]string
+	nodeName              string
 }
 
 // Option configures mapper clients without changing the in-cluster defaults.
@@ -59,17 +60,11 @@ func WithKubeconfigs(apiPath, kubeletPath string) Option {
 	}
 }
 
-// WithGPUs supplies the node's GPUs from the metadata collection so DRA device names, which the NVIDIA DRA
-// driver derives from GPU minor numbers, resolve to UUIDs without a second NVML session. GPUs without a
-// minor number are left out and their allocations stay unmapped.
-func WithGPUs(gpus []model.GPUInfo) Option {
+// WithNodeName sets the name of the node, which the mapper needs to list the node's ResourceSlices for DRA
+// devices. It is required when the configuration has a DRA entry.
+func WithNodeName(nodeName string) Option {
 	return func(config *clientConfig) {
-		config.uuidsByMinor = make(map[int]string, len(gpus))
-		for _, gpu := range gpus {
-			if gpu.MinorNumber != nil {
-				config.uuidsByMinor[*gpu.MinorNumber] = gpu.UUID
-			}
-		}
+		config.nodeName = nodeName
 	}
 }
 
@@ -81,13 +76,24 @@ type podDeviceMapper struct {
 	kubernetesClient   kubernetes.Interface
 }
 
-// NewPodDeviceMapper creates clients for pod-to-device annotation updates.
-// Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
-func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper, error) {
+// NewPodDeviceMapper creates clients for pod-to-device annotation updates. The mapper records the devices that
+// entityTypes lists (ADR-071). Explicit kubeconfigs must provide credentials and verified HTTPS endpoints.
+func NewPodDeviceMapper(ctx context.Context, entityTypes model.PartialRemediationEntityTypes,
+	options ...Option) (PodDeviceMapper, error) {
 	config := clientConfig{}
 	for _, option := range options {
 		option(&config)
 	}
+
+	if err := entityTypes.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
+	}
+
+	if err := CheckNodeName(entityTypes, config.nodeName); err != nil {
+		return nil, err
+	}
+
+	filter := newDeviceFilter(entityTypes)
 
 	clusterConfig, err := loadRESTConfig(config.kubeconfigPath)
 	if err != nil {
@@ -104,7 +110,9 @@ func NewPodDeviceMapper(ctx context.Context, options ...Option) (PodDeviceMapper
 		return nil, fmt.Errorf("got an error creating Kubelet HTTPS client: %w", err)
 	}
 
-	grpcClient, err := NewKubeletGRPClient(ctx, config.uuidsByMinor)
+	resolver := newResourceSliceResolver(k8sClient, config.nodeName, filter.attributeByDriver)
+
+	grpcClient, err := NewKubeletGRPClient(ctx, filter, resolver)
 	if err != nil {
 		return nil, fmt.Errorf("got an error creating Kubelet gRPC client: %w", err)
 	}
@@ -174,9 +182,10 @@ func hasClientCredentials(config *rest.Config) bool {
 }
 
 /*
-This function will add a devices annotation to all pods running on the given node which have been allocated a GPU
-device. The annotation is named dgxc.nvidia.com/devices with keys as the device resource name, either nvidia.com/gpu or
-nvidia.com/pgpu, or the DRA driver name gpu.nvidia.com, and values a list of GPU UUIDs for the corresponding devices.
+This function will add a devices annotation to all pods running on the given node which have been allocated a device
+that global.partialRemediationEntityTypes lists. The annotation is named dgxc.nvidia.com/devices with keys as the
+device-plugin resource name, such as nvidia.com/gpu, or the DRA driver name, such as gpu.nvidia.com, and values a list
+of the entity values of the corresponding devices, such as GPU UUIDs.
 
 Example annotation:
 
@@ -225,11 +234,32 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 		return 0, fmt.Errorf("error listing pods from Kubelet pods endpoint: %w", err)
 	}
 
+	// A failed DRA lookup leaves only the pods of those devices without an annotation. The other pods are still
+	// updated, and the poll then counts as failed.
 	devicesPerPod, err := mapper.kubeletGRPCClient.ListPodResources()
-	if err != nil {
+	lookupErr := err
+
+	if err != nil && !stderrors.Is(err, ErrDRALookupFailed) {
 		return 0, fmt.Errorf("error listing pod resources from Kubelet ListPodResources service: %w", err)
 	}
 
+	numPodDevicesAnnotationsModified, err := mapper.updateAnnotations(pods, devicesPerPod)
+	if err != nil {
+		return numPodDevicesAnnotationsModified, err
+	}
+
+	if lookupErr != nil {
+		return numPodDevicesAnnotationsModified, fmt.Errorf("pods with DRA devices got no device annotation: %w",
+			lookupErr)
+	}
+
+	return numPodDevicesAnnotationsModified, nil
+}
+
+// updateAnnotations patches the device annotation of each pod whose annotation differs from devicesPerPod, and
+// returns the number of patched pods.
+func (mapper *podDeviceMapper) updateAnnotations(pods []KubeletPod,
+	devicesPerPod map[string]*model.DeviceAnnotation) (int, error) {
 	numPodDevicesAnnotationsModified := 0
 
 	for _, pod := range pods {
@@ -238,17 +268,19 @@ func (mapper *podDeviceMapper) UpdatePodDevicesAnnotations() (int, error) {
 			return numPodDevicesAnnotationsModified, fmt.Errorf("error getting patch for pod: %w", err)
 		}
 
-		if len(patchBytes) > 0 {
-			err = mapper.patchPodWithRetry(pod.Name, pod.Namespace, patchType, patchBytes)
-			switch {
-			case errors.IsNotFound(err):
-				slog.Info("Skipping device annotation update because pod no longer exists",
-					"podKey", pod.Namespace+"/"+pod.Name)
-			case err != nil:
-				return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
-			default:
-				numPodDevicesAnnotationsModified++
-			}
+		if len(patchBytes) == 0 {
+			continue
+		}
+
+		err = mapper.patchPodWithRetry(pod.Name, pod.Namespace, patchType, patchBytes)
+		switch {
+		case errors.IsNotFound(err):
+			slog.Info("Skipping device annotation update because pod no longer exists",
+				"podKey", pod.Namespace+"/"+pod.Name)
+		case err != nil:
+			return numPodDevicesAnnotationsModified, fmt.Errorf("error patching device annotation: %w", err)
+		default:
+			numPodDevicesAnnotationsModified++
 		}
 	}
 
@@ -291,7 +323,8 @@ func (mapper *podDeviceMapper) getPatchRequestForPod(pod KubeletPod,
 			patchBytes = []byte(fmt.Sprintf(mergePatchPath, model.PodDeviceAnnotationName, string(deviceAnnotationJSON)))
 		}
 	} else if podHasDeviceAnnotation { // !podHasGPUDevices
-		slog.Info("Removing devices annotation for pod since it no longer has devices allocated", "podKey", podKey)
+		slog.Info("Removing devices annotation for pod: it has no configured device, or a DRA device of the pod "+
+			"has no entity value yet", "podKey", podKey)
 
 		patchType = types.JSONPatchType
 		patch := []map[string]string{
