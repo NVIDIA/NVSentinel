@@ -1,0 +1,155 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package health.verdict.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/dsx-ai-factory/health-validation/proto/go/health/v1;healthv1";
+
+// VerdictService evaluates one node on demand. Every severity is a successful response.
+service VerdictService {
+  rpc Evaluate(EvaluateRequest) returns (NodeVerdict);
+}
+
+message EvaluateRequest {
+  optional SchedulingCadence cadence = 1;
+  optional ExecutionContext execution_context = 2;
+  optional string node_id = 3;
+  // Exclusive Unix-second bounds; omitted fields inherit the service defaults.
+  optional int64 xid_from = 4;
+  optional int64 xid_to = 5;
+}
+
+// Valid enum spellings match the catalog JSON contract, including lowercase names.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  PASS = 1;
+  INFO = 2;
+  WARNING = 3;
+  UNKNOWN = 4;
+  CRITICAL = 5;
+}
+
+enum Category {
+  gpu = 0;
+  nvlink = 1;
+  pcie = 2;
+  infiniband = 3;
+  storage = 4;
+  node = 5;
+  xid = 6;
+  cpu = 7;
+}
+
+enum ConditionScope {
+  NODE = 0;
+  DOMAIN = 1;
+  CLUSTER = 2;
+}
+
+enum SkipReason {
+  NOT_SKIPPED = 0;
+  SIGNAL_UNAVAILABLE_ARCHITECTURE = 1;
+  SIGNAL_UNAVAILABLE_DEPLOYMENT_MODEL = 2;
+  CHECK_DISABLED = 3;
+  INSUFFICIENT_HISTORY = 4;
+  THRESHOLD_UNCONFIGURED = 5;
+  NO_APPLICABLE_MEASUREMENT = 6;
+  SENSOR_MISSING = 7;
+  CADENCE_MISMATCH = 8;
+}
+
+enum MaturityLevel {
+  stable = 0;
+  experimental = 1;
+}
+
+enum ThresholdCategory {
+  DEFAULT = 0;
+  FIXED = 1;
+  ADJUSTABLE = 2;
+}
+
+enum OperationalState {
+  OPERATIONAL_STATE_UNSPECIFIED = 0;
+  ready = 1;
+  monitor = 2;
+  drain = 3;
+}
+
+enum SchedulingCadence {
+  CONTINUOUS = 0;
+  PROLOG = 1;
+  MAINTENANCE = 2;
+}
+
+enum ExecutionContext {
+  OPERATOR_INFRA = 0;
+  TENANT_GUEST = 1;
+  OUT_OF_BAND = 2;
+}
+
+// The schema version follows catalog/health/node-verdict.schema.json, currently 0.6.
+// Required catalog scalars use presence so protojson retains zero-valued fields.
+// Timestamps are RFC3339 strings to preserve the catalog's offset and precision.
+message NodeVerdict {
+  optional string schema_version = 1;
+  optional string catalog_version = 2;
+  optional string timestamp = 3;
+  optional string node_id = 4;
+  optional string trace_id = 5;
+  optional Severity overall_severity = 6;
+  map<string, Severity> severity_by_domain = 7;
+  RecommendedAction recommended_action = 8;
+  repeated AffectedComponent affected_components = 9;
+  repeated CheckVerdict check_results = 10;
+  repeated CheckVerdict skipped_checks = 11;
+}
+
+message CheckVerdict {
+  optional string timestamp = 1;
+  optional string check_id = 2;
+  optional string span_id = 3;
+  optional string trace_id = 4;
+  optional Severity severity = 5;
+  optional Category category = 6;
+  optional ConditionScope condition_scope = 7;
+  optional MaturityLevel maturity_level = 8;
+  optional bool skipped = 9;
+  optional bool nvidia_endorsed = 10;
+  optional SkipReason skip_reason = 11;
+  optional string skip_detail = 12;
+  repeated string messages = 13;
+  RecommendedAction recommended_action = 14;
+  repeated string affected_entities = 15;
+  map<string, google.protobuf.Value> observed_values = 16;
+  map<string, ResolvedThreshold> thresholds = 17;
+}
+
+message RecommendedAction {
+  optional OperationalState operational_state = 1;
+  repeated string remediation_actions = 2;
+}
+
+message ResolvedThreshold {
+  google.protobuf.Value value = 1;
+  google.protobuf.Value original_value = 2;
+  optional ThresholdCategory category = 3;
+  optional bool overridden = 4;
+}
+
+message AffectedCheck {
+  optional string check_id = 1;
+  repeated string entities = 2;
+}
+
+message AffectedComponent {
+  reserved 1, 4;
+  reserved "check_ids", "entities";
+  repeated AffectedCheck checks = 5;
+  optional Category category = 2;
+  optional Severity max_severity = 3;
+}
