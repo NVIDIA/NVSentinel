@@ -1142,7 +1142,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	drainScope, partialEntity := evaluator.ScopeForEvent(metricDecision, healthEvent.HealthEvent,
-		r.Config.TomlConfig.PartialDrainEnabled)
+		r.Config.TomlConfig.PartialDrainEnabled, r.Config.TomlConfig.PartialRemediationEntityTypes)
 
 	slog.InfoContext(ctx, "Health event status has been updated",
 		"documentID", documentID,

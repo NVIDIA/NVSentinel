@@ -65,7 +65,7 @@ Include acknowledgment-safe idle checkpoints in this proposal. Quiet consumers a
   - `DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE`: default `10000`.
   - `DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES`: default `100` per run.
 
-  Malformed, negative, overflowing or below-minimum retention values log a warning and disable the cleaner. Invalid intervals or non-positive batch settings also disable it. Report once at configuration load; never fail datastore construction, pod startup or ingestion. Explicitly disabled cleanup needs no warning. The interval must be positive.
+  Malformed, negative, overflowing or below-minimum retention values log a warning and disable the cleaner. Invalid intervals or non-positive batch settings also disable it. Report once at configuration load; never fail datastore construction, pod startup or ingestion. Explicitly disabled cleanup needs no warning. The interval must be at least one hour, because the previous-snapshot guard must age at least one interval; shorter values disable cleanup with a warning.
 
   The chart sets them from new keys under `global.datastore.changelogCleanup`. These are new keys with defaults that keep current behaviour.
 - **Metrics.** The cleaner adds new metrics only:
