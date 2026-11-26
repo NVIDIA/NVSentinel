@@ -38,6 +38,7 @@ import (
 const (
 	defaultRebootImage         = "public.ecr.aws/docker/library/busybox:1.37.0"
 	defaultRebootJobTTLSeconds = 3600
+	defaultRebootWindow        = 30 * time.Minute
 	jobLabelKey                = "nvsentinel.nvidia.com/reboot-job"
 	jobNodeLabelKey            = "nvsentinel.nvidia.com/reboot-node"
 	hostMountPath              = "/host"
@@ -45,6 +46,7 @@ const (
 	// preRebootBootIDEnvVar is the reboot container env var holding the node's boot ID
 	// recorded when the Job was created.
 	preRebootBootIDEnvVar = "PRE_REBOOT_BOOT_ID"
+	rebootDeadlineEnvVar  = "REBOOT_DEADLINE_UNIX_SECONDS"
 	// bootIDPath is the kernel boot ID file. It is not namespaced, so the container reads
 	// the host's value.
 	bootIDPath = "/proc/sys/kernel/random/boot_id"
@@ -55,7 +57,10 @@ const (
 	rejectedPodGracePeriod = 2 * time.Minute
 )
 
-var _ model.CSPClient = (*Client)(nil)
+var (
+	_ model.CSPClient            = (*Client)(nil)
+	_ model.DeadlineRebootClient = (*Client)(nil)
+)
 
 // Config holds the configuration for the generic provider.
 type Config struct {
@@ -114,17 +119,23 @@ func NewClientWithK8s(k8sClient kubernetes.Interface, config Config) *Client {
 	}
 }
 
-// SendRebootSignal creates a privileged Job on the target node that executes
-// the configured reboot command. Returns the node's pre-reboot bootID as the requestID.
-//
-// A Job left by an earlier attempt is removed first, and the attempt is not started when
-// that fails. The janitor does not tell the provider when it gives up on a RebootNode
-// (timeout, failed readiness check), so such a Job stays until the node is deleted: its
-// pod would run the reboot command whenever the node next schedules it, and its state
-// would be read as this attempt's by IsNodeReady. Background deletion may briefly
-// leave pods from both attempts running. Each pod's boot ID guard skips the reboot
-// if the node has already rebooted since that pod's Job was created.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName string) (model.ResetSignalRequestRef, error) {
+// SendRebootSignal uses a bounded fallback for callers without an explicit deadline.
+func (c *Client) SendRebootSignal(
+	ctx context.Context, node corev1.Node, crName string,
+) (model.ResetSignalRequestRef, error) {
+	return c.SendRebootSignalWithDeadline(ctx, node, crName, time.Now().Add(defaultRebootWindow))
+}
+
+// SendRebootSignalWithDeadline creates a reboot Job and returns the original boot ID.
+// An expired request must not remove a Job belonging to an earlier attempt.
+func (c *Client) SendRebootSignalWithDeadline(
+	ctx context.Context, node corev1.Node, crName string, deadline time.Time,
+) (model.ResetSignalRequestRef, error) {
+	deadline = deadline.Truncate(time.Second)
+	if !time.Now().Before(deadline) {
+		return "", fmt.Errorf("reboot deadline has expired for node %s", node.Name)
+	}
+
 	preRebootBootID := node.Status.NodeInfo.BootID
 	if preRebootBootID == "" {
 		slog.ErrorContext(ctx, "Node has no bootID", "node", node.Name)
@@ -135,7 +146,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, crName 
 		return "", fmt.Errorf("failed to remove the previous reboot job for node %s: %w", node.Name, err)
 	}
 
-	job := c.buildRebootJob(node.Name, crName, preRebootBootID)
+	if !time.Now().Before(deadline) {
+		return "", fmt.Errorf("reboot deadline has expired for node %s", node.Name)
+	}
+
+	job := c.buildRebootJob(node.Name, crName, preRebootBootID, deadline)
 
 	slog.InfoContext(ctx, "Creating reboot Job", "node", node.Name, "namespace", c.config.RebootJobNamespace,
 		"useSysrqReboot", c.config.UseSysrqReboot, "writeSyslog", c.config.WriteSyslog)
@@ -199,7 +214,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 // buildRebootJob constructs the privileged batchv1.Job specification for rebooting the node.
 // preRebootBootID is passed to the container as an env var so the reboot command can
 // skip the reboot once the node has booted again.
-func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batchv1.Job {
+func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string, deadline time.Time) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
 	command := c.config.rebootCommand(nodeName, crName)
@@ -263,6 +278,7 @@ func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batch
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            new(int32(0)),
+			ActiveDeadlineSeconds:   new(max(1, deadline.Unix()-time.Now().Unix())),
 			TTLSecondsAfterFinished: new(ttl),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -286,6 +302,7 @@ func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batch
 							Command: command,
 							Env: []corev1.EnvVar{
 								{Name: preRebootBootIDEnvVar, Value: preRebootBootID},
+								{Name: rebootDeadlineEnvVar, Value: strconv.FormatInt(deadline.Unix(), 10)},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: new(true),
@@ -305,7 +322,7 @@ func (c *Client) buildRebootJob(nodeName, crName, preRebootBootID string) *batch
 // same pod again after the node boots, because the reboot killed the container before it
 // reported a terminal status; the guard makes that second run exit without rebooting.
 func (c Config) rebootCommand(nodeName, crName string) []string {
-	return []string{"sh", "-c", bootIDGuard() + c.rebootAction(nodeName, crName)}
+	return []string{"sh", "-c", bootIDGuard() + rebootDeadlineGuard() + c.rebootAction(nodeName, crName)}
 }
 
 // bootIDGuard returns a shell prefix that exits 0 when the host boot ID differs from
@@ -321,8 +338,18 @@ func bootIDGuard() string {
 		bootIDPath, preRebootBootIDEnvVar)
 }
 
+// rebootDeadlineGuard prevents a late start even if the Job controller has not
+// removed the pod. The boot ID guard runs first so a completed reboot still
+// exits successfully if the kubelet starts the pod again.
+func rebootDeadlineGuard() string {
+	return fmt.Sprintf(
+		`now=$(date +%%s) || exit 1; `+
+			`[ "$now" -lt "$%s" ] || { echo "nvsentinel-reboot: execution deadline expired or invalid" >&2; exit 1; }; `,
+		rebootDeadlineEnvVar)
+}
+
 // rebootAction returns the shell commands that write the optional syslog entry and reboot
-// the node. The reboot runs last so a failed reboot makes the container exit non-zero.
+// the node. Some paths prepare first, so recheck the deadline before issuing the reboot.
 func (c Config) rebootAction(nodeName, crName string) string {
 	attribution := fmt.Sprintf("NVSentinel reboot: node=%s", nodeName)
 	if crName != "" {
@@ -332,16 +359,16 @@ func (c Config) rebootAction(nodeName, crName string) string {
 	if c.UseSysrqReboot {
 		if c.WriteSyslog {
 			return fmt.Sprintf(
-				"chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; echo b > %s/sysrq-trigger",
-				hostMountPath, attribution, hostProcMountPath)
+				"chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; sync || true; %secho b > %s/sysrq-trigger",
+				hostMountPath, attribution, rebootDeadlineGuard(), hostProcMountPath)
 		}
 
 		return fmt.Sprintf("echo b > %s/sysrq-trigger", hostProcMountPath)
 	}
 
 	if c.WriteSyslog {
-		return fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; chroot %s reboot",
-			hostMountPath, attribution, hostMountPath)
+		return fmt.Sprintf("chroot %s logger -t nvsentinel-reboot -p daemon.notice %q || true; %schroot %s reboot",
+			hostMountPath, attribution, rebootDeadlineGuard(), hostMountPath)
 	}
 
 	return fmt.Sprintf("chroot %s reboot", hostMountPath)
