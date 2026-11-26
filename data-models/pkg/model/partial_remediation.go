@@ -78,6 +78,8 @@ func (t PartialRemediationEntityTypes) Validate() error {
 			}
 		}
 
+		errs = append(errs, entityType.validateDriverAttributes(name)...)
+
 		for _, action := range entityType.ScopedActions {
 			if action == "" {
 				errs = append(errs, fmt.Errorf("entity type %s has an empty scoped action", name))
@@ -113,6 +115,33 @@ func (t PartialRemediationEntityTypes) validateUniqueDeviceNames() []error {
 		entityType := t[name]
 		errs = append(errs, claimNames(nameOwner, name, entityType.AnnotationKeys(), "device name")...)
 		errs = append(errs, claimNames(deviceClassOwner, name, entityType.DeviceClasses(), "DeviceClass")...)
+	}
+
+	return errs
+}
+
+// validateDriverAttributes reports a driver that two entries list with different entityValueAttribute values. The
+// pod device annotation lists the devices of a driver under the driver name only, so the pod device mapper can
+// record one attribute for each driver.
+func (e PartialRemediationEntityType) validateDriverAttributes(entityType string) []error {
+	var errs []error
+
+	attributeByDriver := map[string]string{}
+
+	for _, device := range e.Devices {
+		if device.Driver == "" || device.EntityValueAttribute == "" {
+			continue
+		}
+
+		attribute, ok := attributeByDriver[device.Driver]
+		if ok && attribute != device.EntityValueAttribute {
+			errs = append(errs, fmt.Errorf("entity type %s lists driver %s with entityValueAttribute %s and %s; "+
+				"a driver can have only one", entityType, device.Driver, attribute, device.EntityValueAttribute))
+
+			continue
+		}
+
+		attributeByDriver[device.Driver] = device.EntityValueAttribute
 	}
 
 	return errs

@@ -33,6 +33,7 @@ data:
     PollIntervalSeconds = {{ $poll }}
     ProbeDeadlineSeconds = {{ $deadline }}
     ProbeStoreOnly = {{ .Values.dcgm.probeStoreOnly }}
+    NvswitchStoreOnly = {{ .Values.dcgm.nvswitchStoreOnly }}
 
     [dcgmfieldsmonitoring]
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
