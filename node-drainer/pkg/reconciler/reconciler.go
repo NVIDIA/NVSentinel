@@ -20,12 +20,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -929,6 +931,14 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 		return fmt.Errorf("missing UserPodsEvictionStatus for node %s", nodeName)
 	}
 
+	// The label moves before the status is stored, as in executeUpdateStatus: a failed write requeues the
+	// event, while a stored AlreadyDrained status is terminal and would leave the label behind.
+	if len(action.DrainSucceededFrom) > 0 {
+		if err := r.markDrainSucceeded(ctx, nodeName, action.DrainSucceededFrom); err != nil {
+			return err
+		}
+	}
+
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(action.Status)
 
@@ -940,6 +950,40 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, healthEvent, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped, record)
+}
+
+// markDrainSucceeded moves the node state label to drain-succeeded when it reads one of the given values.
+// A label another module has moved on, or removed, stays as it is. A deleted node has no label to move and
+// nothing left to drain, so its event is still marked AlreadyDrained.
+func (r *Reconciler) markDrainSucceeded(ctx context.Context, nodeName string,
+	from []statemanager.NVSentinelStateLabelValue) error {
+	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName,
+		statemanager.DrainSucceededLabelValue, from...)
+	if err != nil && !apierrors.IsNotFound(err) {
+		slog.ErrorContext(ctx, "Failed to update node label",
+			"label", statemanager.DrainSucceededLabelValue,
+			"node", nodeName,
+			"error", err)
+		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
+
+		span := tracing.SpanFromContext(ctx)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "label_update_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+
+		return fmt.Errorf("failed to update node %s label to %s: %w", nodeName,
+			statemanager.DrainSucceededLabelValue, err)
+	}
+
+	// A result that may replace draining comes from a completed drain, so the node leaves the draining state
+	// whether or not the label moved.
+	if slices.Contains(from, statemanager.DrainingLabelValue) {
+		r.queueManager.ClearNodeDraining(nodeName)
+	}
+
+	return nil
 }
 
 func (r *Reconciler) executeCancelStatus(ctx context.Context,

@@ -394,11 +394,13 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 	defer span.End()
 
 	// Update state to "remediating"
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediatingLabelValue, false)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error updating node label to remediating", "error", err)
+		slog.ErrorContext(ctx, "Error updating node label to remediating",
+			"nodeModified", nodeModified,
+			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 
 		tracing.RecordError(span, err)
@@ -407,7 +409,18 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return "", fmt.Errorf("error updating node label to remediating: %w", err)
+		labelErr := fmt.Errorf("error updating node label to remediating: %w", err)
+		if !nodeModified {
+			return "", labelErr
+		}
+
+		// The state manager wrote the label and reports a transition it did not expect. Go on only while the
+		// node still quarantines the event: fault-quarantine removes the label when a quarantine ends, and
+		// eventResolvedInStore checks the live quarantine only after a failed attempt, so this error is what
+		// stops an event of an ended session on its first attempt.
+		if active, activeErr := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent); !active {
+			return "", errors.Join(labelErr, activeErr)
+		}
 	}
 
 	healthEventData := &events.HealthEventData{
@@ -431,12 +444,13 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 		// don't throw error yet so we can update state
 	}
 
-	_, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	nodeModified, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		remediationLabelValue, false)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error updating node label",
 			"label", remediationLabelValue,
+			"nodeModified", nodeModified,
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 		tracing.RecordError(span, err)
@@ -445,7 +459,9 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return "", errors.Join(createMaintenanceResourceError, err)
+		if !nodeModified {
+			return "", errors.Join(createMaintenanceResourceError, err)
+		}
 	}
 
 	if createMaintenanceResourceError != nil {

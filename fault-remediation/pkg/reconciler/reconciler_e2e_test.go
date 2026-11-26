@@ -2606,3 +2606,203 @@ func assertRecordedAction(t *testing.T, eventID, action string) {
 	require.True(t, ok, "a remediation decision should be recorded for event %s", eventID)
 	assert.Equal(t, datastore.RemediationDecision{Action: action}, recorded)
 }
+
+// TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUnhealthyEvent covers the
+// fault-remediation side of issue #2539. An older node-drainer marks a completed custom drain, or a drain skipped by DrainOverrides.Skip,
+// AlreadyDrained and leaves the state label at draining or quarantined. The remediating write then sets the label
+// and still reports an unexpected transition, which must not fail the first attempt while the node still
+// quarantines the event. An event whose quarantine ended before its first attempt must still fail without a CR,
+// and a healthy event on such a node must not create a CR.
+func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUnhealthyEvent(t *testing.T) {
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	tests := []struct {
+		name string
+		// stateLabels are written in order, as fault-quarantine and an older node-drainer left them.
+		stateLabels []statemanager.NVSentinelStateLabelValue
+		// quarantined lists the event in the node's quarantine annotation, as fault-quarantine does.
+		quarantined bool
+		healthy     bool
+		wantErr     bool
+		wantCR      bool
+		// wantLabel is checked when it is set.
+		wantLabel statemanager.NVSentinelStateLabelValue
+	}{
+		{
+			name: "custom drain left the label at draining",
+			stateLabels: []statemanager.NVSentinelStateLabelValue{
+				statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+			},
+			quarantined: true,
+			wantCR:      true,
+			wantLabel:   statemanager.RemediationSucceededLabelValue,
+		},
+		{
+			name:        "drain skip left the label at quarantined",
+			stateLabels: []statemanager.NVSentinelStateLabelValue{statemanager.QuarantinedLabelValue},
+			quarantined: true,
+			wantCR:      true,
+			wantLabel:   statemanager.RemediationSucceededLabelValue,
+		},
+		{
+			// fault-quarantine removed the label and the annotation when the quarantine ended, so the
+			// remediating write reports none -> remediating, and the event must not get a CR.
+			name:    "quarantine ended before the first attempt",
+			wantErr: true,
+		},
+		{
+			name: "healthy event with the label at draining",
+			stateLabels: []statemanager.NVSentinelStateLabelValue{
+				statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+			},
+			quarantined: true,
+			healthy:     true,
+			wantLabel:   statemanager.DrainingLabelValue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
+			defer cancel()
+
+			nodeName := testutils.GenerateTestNodeName("stale-state-label")
+			eventID := "stale-state-label-event"
+			crName := "maintenance-" + nodeName + "-" + eventID
+
+			quarantineStatus, action := model.Quarantined, protos.RecommendedAction_RESTART_BM
+			if tt.healthy {
+				// A recovery event for one failure while other failures keep the node quarantined.
+				quarantineStatus, action = model.AlreadyQuarantined, protos.RecommendedAction_NONE
+			}
+
+			var annotations map[string]string
+			if tt.quarantined {
+				// fault-quarantine writes the record key as the id of the annotation entry.
+				annotations = quarantineAnnotationForTest(t, &protos.HealthEvent{
+					Id:                eventID,
+					NodeName:          nodeName,
+					RecommendedAction: action,
+				})
+			}
+
+			createTestNode(ctx, nodeName, annotations, map[string]string{"test": "label"})
+			defer func() {
+				_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+			}()
+
+			stateManager := statemanager.NewStateManager(testClient)
+			for _, label := range tt.stateLabels {
+				_, err := stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, label, false)
+				require.NoError(t, err)
+			}
+
+			// The reconciler reads the node through the cache, so wait until the cache has the last label.
+			lastLabel := ""
+			if len(tt.stateLabels) > 0 {
+				lastLabel = string(tt.stateLabels[len(tt.stateLabels)-1])
+			}
+
+			require.Eventually(t, func() bool {
+				cached := &corev1.Node{}
+				err := ctrlRuntimeClient.Get(ctx, client.ObjectKey{Name: nodeName}, cached)
+
+				return err == nil && cached.Labels[statemanager.NVSentinelStateLabelKey] == lastLabel
+			}, 5*time.Second, 50*time.Millisecond, "the cache should show the state label")
+
+			var faultRemediated []bool
+
+			store := &MockHealthEventStore{}
+			store.UpdateHealthEventStatusFn = func(
+				_ context.Context,
+				id string,
+				status datastore.HealthEventStatus,
+			) error {
+				if id == eventID && status.FaultRemediated != nil {
+					faultRemediated = append(faultRemediated, *status.FaultRemediated)
+				}
+
+				return nil
+			}
+			store.SeedEvent(t, datastore.Event{
+				"_id": eventID,
+				"healtheventstatus": map[string]any{
+					"nodequarantined": string(quarantineStatus),
+					"userpodsevictionstatus": map[string]any{
+						"status": string(model.AlreadyDrained),
+					},
+				},
+				"healthevent": map[string]any{
+					"nodename":          nodeName,
+					"ishealthy":         tt.healthy,
+					"recommendedaction": int32(action),
+				},
+			})
+
+			remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
+			require.NoError(t, err)
+
+			cfg := ReconcilerConfig{
+				RemediationClient: remediationClient,
+				StateManager:      stateManager,
+				NodeReader:        ctrlRuntimeAPIReader,
+				UpdateMaxRetries:  3,
+				UpdateRetryDelay:  100 * time.Millisecond,
+			}
+			watcher := NewMockChangeStreamWatcher()
+			r := NewFaultRemediationReconciler(nil, watcher, store, cfg, false)
+
+			resumeToken := "stale-state-label-token"
+			result, err := r.Reconcile(ctx, reconcileRequest{documentID: eventID, resumeToken: resumeToken})
+
+			if tt.wantErr {
+				require.Error(t, err, "an event whose quarantine ended must fail as before")
+			} else {
+				require.NoError(t, err, "the first attempt must not fail")
+				assert.True(t, result.IsZero(), "the first attempt must not be requeued")
+			}
+
+			// Read the API server, not the cache, to see what this single attempt left.
+			crs, err := testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+			require.NoError(t, err)
+
+			var nodeCRs []string
+			for _, cr := range crs.Items {
+				spec, _ := cr.Object["spec"].(map[string]any)
+				if spec["nodeName"] == nodeName {
+					nodeCRs = append(nodeCRs, cr.GetName())
+				}
+			}
+
+			if tt.wantCR {
+				assert.Equal(t, []string{crName}, nodeCRs, "the first attempt should create the CR")
+			} else {
+				assert.Empty(t, nodeCRs, "the attempt must not create a CR")
+			}
+
+			if tt.wantLabel != "" {
+				node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+				require.NoError(t, err)
+				assert.Equal(t, string(tt.wantLabel), node.Labels[statemanager.NVSentinelStateLabelKey],
+					"unexpected state label after the attempt")
+			}
+
+			if tt.wantErr {
+				// The failed attempt is recorded, so the next pass checks the live quarantine and closes it.
+				assert.Equal(t, []bool{false}, faultRemediated, "the failed attempt should be recorded")
+				assert.Empty(t, watcher.MarkProcessedTokens(), "a failed attempt must not be checkpointed")
+
+				return
+			}
+
+			assert.Equal(t, []bool{true}, faultRemediated, "the event should be closed as remediated")
+			assert.Equal(t, [][]byte{[]byte(resumeToken)}, watcher.MarkProcessedTokens(),
+				"the event should be checkpointed")
+		})
+	}
+}

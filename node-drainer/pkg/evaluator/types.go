@@ -21,6 +21,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
@@ -93,6 +94,10 @@ type DrainActionResult struct {
 	// AlreadyDrained result carries a decision with only Scope set. A nil Scope is a drain of
 	// the full node.
 	DrainDecision *protos.DrainDecision
+	// DrainSucceededFrom lists the node state label values that move to drain-succeeded when the event is
+	// marked AlreadyDrained. It is set when a drain CR of the node completed and for DrainOverrides.Skip.
+	// The other AlreadyDrained results, such as a healthy event, leave the label as it is.
+	DrainSucceededFrom []statemanager.NVSentinelStateLabelValue
 	// drainedByOtherCR marks an AlreadyDrained result that comes from the CR of another event.
 	// This event records only the drain scope, not a method. A result from the CR of this
 	// event still records the method.

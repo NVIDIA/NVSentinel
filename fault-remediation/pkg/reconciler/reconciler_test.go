@@ -673,49 +673,165 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 	assert.Empty(t, crName)
 }
 
-func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
-	ctx := context.Background()
-	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
-			_ *common.EquivalenceGroupConfig) (string, error) {
-			return "test-cr-label-error", nil
+// The state manager writes an unexpected transition and still returns an error, so a written remediating label
+// must not stop the remediation of an event the node still quarantines. An unwritten remediating label, an event
+// whose quarantine ended (fault-quarantine removed the label, so the write reports none -> remediating), or a live
+// node read that fails stops the attempt before the CR. An unwritten final label fails the attempt after the CR.
+func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEventQuarantined(t *testing.T) {
+	type labelResult struct {
+		modified bool
+		err      error
+	}
+
+	transitionErr := errors.New("unexpected state transition: draining -> remediating")
+	writeErr := errors.New("failed to update node")
+	createErr := errors.New("failed to create maintenance CR")
+	nodeReadErr := errors.New("failed to read node")
+
+	tests := []struct {
+		name            string
+		remediating     labelResult
+		final           labelResult
+		createErr       error
+		notQuarantined  bool
+		nodeReadErr     error
+		wantFinalLabel  statemanager.NVSentinelStateLabelValue
+		wantErr         error
+		wantCRName      string
+		wantCreateCalls int
+	}{
+		{
+			name:            "both labels written with an unexpected transition",
+			remediating:     labelResult{modified: true, err: transitionErr},
+			final:           labelResult{modified: true, err: transitionErr},
+			wantFinalLabel:  statemanager.RemediationSucceededLabelValue,
+			wantCRName:      "test-cr-label-error",
+			wantCreateCalls: 1,
+		},
+		{
+			name:            "remediating label written but the quarantine of the event ended",
+			remediating:     labelResult{modified: true, err: transitionErr},
+			notQuarantined:  true,
+			wantErr:         transitionErr,
+			wantCreateCalls: 0,
+		},
+		{
+			name:            "remediating label written but the live node cannot be read",
+			remediating:     labelResult{modified: true, err: transitionErr},
+			nodeReadErr:     nodeReadErr,
+			wantErr:         nodeReadErr,
+			wantCreateCalls: 0,
+		},
+		{
+			name:            "remediating label not written",
+			remediating:     labelResult{modified: false, err: writeErr},
+			wantErr:         writeErr,
+			wantCreateCalls: 0,
+		},
+		{
+			name:            "final label not written",
+			remediating:     labelResult{modified: true},
+			final:           labelResult{modified: false, err: writeErr},
+			wantFinalLabel:  statemanager.RemediationSucceededLabelValue,
+			wantErr:         writeErr,
+			wantCreateCalls: 1,
+		},
+		{
+			name:            "CR creation fails and remediation-failed is written with an unexpected transition",
+			remediating:     labelResult{modified: true},
+			final:           labelResult{modified: true, err: transitionErr},
+			createErr:       createErr,
+			wantFinalLabel:  statemanager.RemediationFailedLabelValue,
+			wantErr:         createErr,
+			wantCreateCalls: 1,
 		},
 	}
-	stateManager := &statemanager.MockStateManager{
-		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
-			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
-			// Simulate error but allow the function to continue
-			return true, fmt.Errorf("got an error calling UpdateNVSentinelStateNodeLabel")
-		},
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			createCalls := 0
+			k8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+					*common.EquivalenceGroupConfig) (string, error) {
+					createCalls++
+					if tt.createErr != nil {
+						return "", tt.createErr
+					}
+
+					return "test-cr-label-error", nil
+				},
+			}
+
+			labelCalls := 0
+			stateManager := &statemanager.MockStateManager{
+				UpdateNVSentinelStateNodeLabelFn: func(_ context.Context, nodeName string,
+					newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+					labelCalls++
+					assert.Equal(t, "node1", nodeName)
+					assert.False(t, removeStateLabel)
+
+					if labelCalls == 1 {
+						assert.Equal(t, statemanager.RemediatingLabelValue, newStateLabelValue)
+						return tt.remediating.modified, tt.remediating.err
+					}
+
+					assert.Equal(t, tt.wantFinalLabel, newStateLabelValue)
+
+					return tt.final.modified, tt.final.err
+				},
+			}
+
+			healthEvent := &protos.HealthEvent{
+				NodeName:          "node1",
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			}
+
+			nodeReader := newMockNodeReader(quarantineAnnotationForTest(t, healthEvent))
+			if tt.notQuarantined {
+				nodeReader = newMockNodeReader(nil)
+			}
+
+			if tt.nodeReadErr != nil {
+				nodeReader = &MockNodeReader{
+					getFn: func(context.Context, ctrlclient.ObjectKey, ctrlclient.Object) error {
+						return tt.nodeReadErr
+					},
+				}
+			}
+
+			cfg := ReconcilerConfig{
+				RemediationClient: k8sClient,
+				StateManager:      stateManager,
+				NodeReader:        nodeReader,
+				UpdateMaxRetries:  2,
+				UpdateRetryDelay:  1 * time.Microsecond,
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+			healthEventDoc := &events.HealthEventDoc{
+				ID: "test-id-123",
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					CreatedAt:   time.Now(),
+					HealthEvent: healthEvent,
+					HealthEventStatus: &protos.HealthEventStatus{
+						NodeQuarantined:        string(model.Quarantined),
+						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
+					},
+				},
+			}
+
+			crName, err := r.performRemediation(context.Background(), healthEventDoc, getGroupConfig("restart", nil))
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Empty(t, crName)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantCRName, crName)
+			}
+
+			assert.Equal(t, tt.wantCreateCalls, createCalls)
+		})
 	}
-	cfg := ReconcilerConfig{
-		RemediationClient: k8sClient,
-		StateManager:      stateManager,
-		UpdateMaxRetries:  2,
-		UpdateRetryDelay:  1 * time.Microsecond,
-	}
-	healthEvent := events.HealthEventData{
-		CreatedAt: time.Now(),
-		HealthEvent: &protos.HealthEvent{
-			NodeName:          "node1",
-			RecommendedAction: protos.RecommendedAction_RESTART_BM,
-		},
-		HealthEventStatus: &protos.HealthEventStatus{
-			NodeQuarantined:        string(model.Quarantined),
-			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
-			FaultRemediated:        nil,
-		},
-	}
-	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
-	// Convert HealthEventData to HealthEventDoc
-	healthEventDoc := &events.HealthEventDoc{
-		ID:                    "test-id-123",
-		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
-	}
-	groupConfig := getGroupConfig("restart", nil)
-	// Even with label update errors, remediation should still succeed
-	_, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
-	assert.Error(t, err)
 }
 
 func TestShouldSkipEvent(t *testing.T) {

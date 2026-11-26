@@ -49,7 +49,7 @@ Possible states:
 
 - `quarantined` - Fault detected, waiting for drain to start
 - `draining` - Drain in progress
-- `drain-succeeded` - Drain completed, waiting for remediation
+- `drain-succeeded` - Drain completed or skipped (`drainOverrides.skip`), waiting for remediation
 - `drain-failed` - **TERMINAL STATE** - Drain failed
 - `remediating` - CR creation in progress (transitions quickly)
 - `remediation-succeeded` - CR created, remediation possibly in progress
