@@ -88,6 +88,13 @@ func (s *janitorProviderServer) SendRebootSignal(
 	ctx, span := tracing.StartSpan(ctx, "janitor_provider.SendRebootSignal")
 	defer span.End()
 
+	deadline := req.GetExecutionDeadline()
+	if deadline != nil {
+		if err := deadline.CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid execution deadline: %v", err)
+		}
+	}
+
 	slog.InfoContext(ctx, "Sending reboot signal", "node", req.NodeName)
 
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
@@ -101,7 +108,14 @@ func (s *janitorProviderServer) SendRebootSignal(
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
 
-	requestID, err := s.cspClient.SendRebootSignal(ctx, *node, req.CrName)
+	var requestID model.ResetSignalRequestRef
+
+	if deadlineClient, ok := s.cspClient.(model.DeadlineRebootClient); ok && deadline != nil {
+		requestID, err = deadlineClient.SendRebootSignalWithDeadline(ctx, *node, req.CrName, deadline.AsTime())
+	} else {
+		requestID, err = s.cspClient.SendRebootSignal(ctx, *node, req.CrName)
+	}
+
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("janitor_provider.error.type", "csp_api_error"),
