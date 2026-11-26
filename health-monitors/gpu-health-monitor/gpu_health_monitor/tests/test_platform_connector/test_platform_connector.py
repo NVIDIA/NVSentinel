@@ -375,6 +375,63 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    def test_uptime_limit_failure_recommends_reboot_on_gpu_only(self) -> None:
+        """GpuUptimeLimitWatch publishes a GPU event with the mapped reboot and never an NVSwitch event."""
+        temp_file_path = metadata_file()
+        processor = platform_connector.PlatformConnectorEventProcessor(
+            config=platform_connector.PlatformConnectorConfig(
+                socket_path=socket_path,
+                node_name=node_name,
+                dcgm_errors_info_dict={"GPU_UPTIME_LIMIT_EXCEEDED": "RESTART_BM"},
+                state_file_path="statefile",
+                metadata_path=temp_file_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+                store_only_checks=frozenset({"GpuUptimeLimitWatch"}),
+            ),
+            exit=Event(),
+        )
+        processor.entity_cache[processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")] = (
+            platform_connector.EntityCacheEntry()
+        )
+
+        try:
+            with unittest.mock.patch.object(processor, "send_health_event_with_retries", return_value=True) as send:
+                processor.health_event_occurred(
+                    {
+                        dcgmtypes.UPTIME_LIMIT_WATCH_NAME: dcgmtypes.HealthDetails(
+                            status=dcgmtypes.HealthStatus.FAIL,
+                            entity_failures={
+                                0: [
+                                    dcgmtypes.ErrorDetails(
+                                        code="GPU_UPTIME_LIMIT_EXCEEDED", message="GPU 0 is past the uptime limit"
+                                    )
+                                ]
+                            },
+                            evaluated_gpu_ids={0, 1},
+                        )
+                    },
+                    [0, 1],
+                    [0],
+                )
+
+            events = send.call_args.args[0]
+            assert all(event.componentClass != "NVSWITCH" for event in events)
+            uptime_events = {
+                event.entitiesImpacted[0].entityValue: event
+                for event in events
+                if event.checkName == "GpuUptimeLimitWatch"
+            }
+            failed = uptime_events["0"]
+            assert not failed.isHealthy
+            assert failed.isFatal
+            assert failed.errorCode == ["GPU_UPTIME_LIMIT_EXCEEDED"]
+            assert failed.recommendedAction == platformconnector_pb2.RESTART_BM
+            assert failed.processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert uptime_events["1"].isHealthy
+            assert uptime_events["1"].recommendedAction == platformconnector_pb2.NONE
+        finally:
+            os.unlink(temp_file_path)
+
     def test_health_event_preserves_nvswitch_identity_and_recovery(self) -> None:
         temp_file_path = metadata_file()
         processor = platform_connector.PlatformConnectorEventProcessor(

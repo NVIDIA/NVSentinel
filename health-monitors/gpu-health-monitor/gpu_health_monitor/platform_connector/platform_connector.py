@@ -43,6 +43,7 @@ GPU_ONLY_FIELD_HEALTH_WATCHES = frozenset(
     {
         "DCGM_HEALTH_WATCH_POWER_BRAKE",
         "DCGM_HEALTH_WATCH_THERMAL_MARGIN",
+        dcgmtypes.UPTIME_LIMIT_WATCH_NAME,
     }
 )
 # Critical events are emitted while the DCGM loop is about to enter cleanup or
