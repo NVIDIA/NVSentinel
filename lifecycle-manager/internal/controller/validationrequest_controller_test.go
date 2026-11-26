@@ -1609,13 +1609,19 @@ var _ = Describe("ValidationRequest Controller", func() {
 			firstObjectName := vr.Status.TestGroups[0].Attempts[0].ObjectName
 
 			Expect(updateObjectStatusForAllTestGroups(ctx, &vr, testFailedCondType)).To(Succeed())
-			vr = reconcileUntilPhase(ctx, r, req, v1alpha1.PhaseRunning, 5)
-			Expect(vr.Status.TestGroups[0].Attempts).To(HaveLen(2))
+			vr = reconcileForIterations(ctx, r, req, 1)
+			Expect(vr.Status.TestGroups[0].Phase).To(Equal(v1alpha1.PhasePending))
+			Expect(vr.Status.TestGroups[0].Attempts).To(HaveLen(1))
+			Expect(vr.Status.TestGroups[0].Attempts[0].Phase).To(Equal(v1alpha1.PhaseFailed))
 
 			u := &unstructured.Unstructured{}
 			u.SetGroupVersionKind(testJobGVK)
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: firstObjectName, Namespace: testNamespace}, u)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			vr = reconcileForIterations(ctx, r, req, 1)
+			Expect(vr.Status.TestGroups[0].Phase).To(Equal(v1alpha1.PhaseRunning))
+			Expect(vr.Status.TestGroups[0].Attempts).To(HaveLen(2))
 		})
 
 		It("fails the attempt with TestTimeout", func() {
