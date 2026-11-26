@@ -2904,6 +2904,9 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 		// laterEventWaits processes a later event of the node before the CR completes. It waits on the CR and stays
 		// tracked as in progress while the completion of the CR is processed.
 		laterEventWaits bool
+		// transitionError makes the conditional label write report an unexpected transition after it lands, as a
+		// state manager that validates the transition after the write does.
+		transitionError bool
 		// wantLabel is the state label after the completion is processed. An empty value means no label.
 		wantLabel statemanager.NVSentinelStateLabelValue
 	}{
@@ -2916,6 +2919,12 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 			name:              "own CR moves draining to drain-succeeded while a later event waits on it",
 			labelAtCompletion: statemanager.DrainingLabelValue,
 			laterEventWaits:   true,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "own CR goes on when the written label reports an unexpected transition",
+			labelAtCompletion: statemanager.DrainingLabelValue,
+			transitionError:   true,
 			wantLabel:         statemanager.DrainSucceededLabelValue,
 		},
 		{
@@ -2977,6 +2986,12 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 				setNodeStateLabel(t, setup, nodeName, tt.labelAtCompletion)
 			}
 
+			if tt.transitionError {
+				stateManager := setup.reconciler.Config.StateManager
+				setup.reconciler.Config.StateManager = transitionErrorStateManager{StateManager: stateManager}
+				t.Cleanup(func() { setup.reconciler.Config.StateManager = stateManager })
+			}
+
 			completeCustomDrainCR(t, setup, nodeName)
 
 			if tt.laterEvent {
@@ -3001,6 +3016,24 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 			requireNextEventPriority(t, setup, nodeName, "high", "node_not_yet_draining")
 		})
 	}
+}
+
+// transitionErrorStateManager writes the conditional label through the wrapped state manager and then reports an
+// unexpected transition, as a state manager that validates the transition after the write does.
+type transitionErrorStateManager struct {
+	statemanager.StateManager
+}
+
+func (m transitionErrorStateManager) UpdateNVSentinelStateNodeLabelIfMatch(ctx context.Context, nodeName string,
+	newStateLabelValue statemanager.NVSentinelStateLabelValue,
+	expectedValues ...statemanager.NVSentinelStateLabelValue) (bool, error) {
+	nodeModified, err := m.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName, newStateLabelValue,
+		expectedValues...)
+	if err == nil && nodeModified {
+		err = fmt.Errorf("unexpected state transition to %s", newStateLabelValue)
+	}
+
+	return nodeModified, err
 }
 
 func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {

@@ -962,12 +962,13 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 // own while this one exists.
 func (r *Reconciler) markDrainSucceeded(ctx context.Context, nodeName string,
 	from []statemanager.NVSentinelStateLabelValue) error {
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName,
+	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName,
 		statemanager.DrainSucceededLabelValue, from...)
 	if err != nil && !apierrors.IsNotFound(err) {
 		slog.ErrorContext(ctx, "Failed to update node label",
 			"label", statemanager.DrainSucceededLabelValue,
 			"node", nodeName,
+			"nodeModified", nodeModified,
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 
@@ -978,8 +979,12 @@ func (r *Reconciler) markDrainSucceeded(ctx context.Context, nodeName string,
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 
-		return fmt.Errorf("failed to update node %s label to %s: %w", nodeName,
-			statemanager.DrainSucceededLabelValue, err)
+		// An error after the label was written reports an unexpected transition, as in executeUpdateStatus, so the
+		// event goes on. Only a write that did not land is retried.
+		if !nodeModified {
+			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName,
+				statemanager.DrainSucceededLabelValue, err)
+		}
 	}
 
 	// A result that may replace draining comes from a completed drain, so the node leaves the draining state
