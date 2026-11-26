@@ -273,17 +273,17 @@ Backfill can recover skipped health events that remain in `health_events`. The b
 
 Deleting the resume token can move the start position past undelivered health events whose changelog rows remain.
 
-1. Set `event-exporter.exporter.backfill.enabled` to `true` in the NVSentinel Helm values.
+1. Set `event-exporter.exporter.backfill.enabled` to `true` in the NVSentinel Helm values. Use `info` or `debug` for `event-exporter.logLevel` so the exporter logs `Backfill complete`.
 2. Set `event-exporter.exporter.backfill.maxAge` to cover the oldest undelivered health event at restart. Use its `created_at` time in `health_events` to determine its age. If its age is unknown, use a window that covers all retained health events.
 3. Set `event-exporter.exporter.backfill.maxEvents` high enough to include all health events in that time range.
-4. If a GitOps controller manages NVSentinel, stop its reconciliation or update the GitOps source with these values. Then apply the Helm values.
+4. If GitOps manages NVSentinel, update its source with the values from steps 1–3 or pause reconciliation. Apply the Helm values.
 5. Follow [Watcher Position Recovery](../postgresql-provider.md#watcher-position-recovery) for event-exporter. After all exporter pods stop, run this SQL statement in the NVSentinel PostgreSQL database at the token reset step.
 
    ```sql
    DELETE FROM resume_tokens WHERE client_name = 'event-exporter';
    ```
 
-6. After the exporter restarts, check its logs for `Backfill complete`.
+6. Wait for `Backfill complete` in the restarted exporter's logs before you change the recovery values. If you paused reconciliation for this recovery, resume it after that message. You can resume that reconciliation earlier if the GitOps source matches the values from steps 1–3.
 7. Verify that the expected health events reached the sink.
 
 ## Workers

@@ -103,6 +103,8 @@ A saved start position does not show that the consumer has read all changes. Thu
 
 ### Watcher Position Recovery
 
+For event-exporter recovery after changelog pruning, apply the [backfill settings](configuration/event-exporter.md#backfill-after-postgresql-changelog-pruning) before you reset the token.
+
 To reset the position of a consumer, do these steps:
 
 1. If a GitOps controller, such as Argo CD, manages NVSentinel, stop its reconciliation, as in [Stop reconciliation](./runbooks/mongodb-bitnami-to-percona-migration.md#step-2-stop-reconciliation-gitops-managed-installations-only). A running controller can restore the replicas during this procedure.
@@ -112,14 +114,12 @@ To reset the position of a consumer, do these steps:
    - For any consumer, including `event-exporter`, delete the row of the consumer from the `resume_tokens` table.
 4. If you used the `CREATE` mode, scale the Deployment to one replica. Wait until the consumer sets its key back to `RESUME`.
 5. Scale the Deployment back to its earlier number of replicas.
-6. If you stopped the reconciliation in step 1, start it again.
+6. If you paused reconciliation for an event-exporter backfill, leave it paused for the restart checks in the backfill procedure. For other resets, resume reconciliation if you paused it in step 1.
 7. Verify the saved start position of the consumer in the `resume_tokens` table.
 
 While the consumer runs, do not delete its row. A running consumer saves its old position again when it acknowledges an event. Some consumers, for example health-events-analyzer, also save their position when they stop. Then the consumer resumes from its old position.
 
 With the `CREATE` mode, the new start position is the database clock. After you delete the row, the new start position can be earlier than the database clock if another client transaction was open. It can also be the Unix epoch if client activity is hidden or prepared transactions are enabled. This recovery can skip the events between the old position and the new start position.
-
-For event-exporter recovery after external pruning, see [Backfill After PostgreSQL Changelog Pruning](configuration/event-exporter.md#backfill-after-postgresql-changelog-pruning).
 
 ### Delivery Acknowledgments
 
