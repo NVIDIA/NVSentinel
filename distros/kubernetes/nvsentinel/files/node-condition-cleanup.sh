@@ -35,9 +35,22 @@ process_node() {
   
   while true; do
     # Fetch current conditions (refetch on each retry to resolve conflicts)
-    local current_conditions
-    current_conditions=$(kubectl get node "$node" -o json 2>/dev/null | jq -c '.status.conditions // []' 2>/dev/null || echo "[]")
-    
+    local current_conditions node_json
+    # Only stdout is the node JSON; warnings and errors on stderr go straight to the job log.
+    if ! node_json=$(kubectl get node "$node" -o json --ignore-not-found); then
+      echo "⚠ $node: get failed"
+      return 1
+    fi
+    # A node deleted since the listing has nothing left to clean up.
+    if [ -z "$node_json" ]; then
+      echo "- $node: deleted before cleanup, skipping"
+      return 0
+    fi
+    if ! current_conditions=$(echo "$node_json" | jq -c '.status.conditions // []' 2>&1); then
+      echo "⚠ $node: could not parse node JSON - $current_conditions"
+      return 1
+    fi
+
     if [ "$current_conditions" = "[]" ]; then
       if [ $retry -eq 0 ]; then
         echo "- $node: no conditions found"
@@ -84,24 +97,33 @@ process_node() {
       return 1
     fi
     
+    # The node was deleted between the get and the patch: nothing left to clean up.
+    if echo "$patch_output" | grep -q "^Error from server (NotFound):"; then
+      echo "- $node: deleted before patch, skipping"
+      return 0
+    fi
+
     # Non-retriable error
     echo "⚠ $node: patch failed - $patch_output"
     return 1
   done
 }
 
-active_jobs=0
+worker_pids=()
 max_parallel=5
 processed=0
+failed=0
 
 for node in $nodes; do
   process_node "$node" &
-  active_jobs=$((active_jobs + 1))
+  worker_pids+=("$!")
   processed=$((processed + 1))
   
-  if [ $active_jobs -ge $max_parallel ]; then
-    wait -n 2>/dev/null || true
-    active_jobs=$((active_jobs - 1))
+  if [ "${#worker_pids[@]}" -ge "$max_parallel" ]; then
+    if ! wait "${worker_pids[0]}"; then
+      failed=$((failed + 1))
+    fi
+    worker_pids=("${worker_pids[@]:1}")
   fi
   
   if [ $((processed % 10)) -eq 0 ]; then
@@ -109,5 +131,16 @@ for node in $nodes; do
   fi
 done
 
-wait
+# Waiting by PID retrieves the status even if the worker has already exited.
+for pid in "${worker_pids[@]}"; do
+  if ! wait "$pid"; then
+    failed=$((failed + 1))
+  fi
+done
+
+if [ $failed -gt 0 ]; then
+  echo "Cleanup failed: $failed of $node_count nodes failed"
+  exit 1
+fi
+
 echo "Cleanup completed for $node_count nodes"

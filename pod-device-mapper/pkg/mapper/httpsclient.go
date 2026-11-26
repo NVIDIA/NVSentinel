@@ -158,25 +158,25 @@ func (path projectedTokenFile) Token() (*oauth2.Token, error) {
 This function calls the /pods Kubelet endpoint. Explicit kubeconfigs verify TLS and use
 client-go authentication. The legacy in-cluster mode described below is unchanged.
 
-- Kubelet host: by default the client connects to localhost, which works when kubelet binds to 0.0.0.0. On clusters
-where kubelet binds to the node's primary IP, set the KUBELET_HOST environment variable to the node's IP. The Helm
-chart injects this via the Kubernetes Downward API (status.hostIP).
+- Kubelet host: the client connects to the KUBELET_HOST environment variable, or to localhost when it is unset.
+pod-device-mapper runs on the pod network, where localhost is the pod itself, so the Helm chart always sets
+KUBELET_HOST to the node's IP through the Kubernetes Downward API (status.hostIP). localhost only works for a
+mapper that runs on the host, when kubelet binds to 0.0.0.0.
 
 - Insecure TLS justification: by default, Kubelet serving certificates are signed by the same certificate authority as
 the kube-apiserver. As a result, the CA mounted in the pod file system at file path
 /var/run/secrets/kubernetes.io/serviceaccount/ca.crt can be used against either server. However, this server certificate
 only has a valid SAN for the node's primary IP and not localhost. We skip certificate validation to handle both cases.
-The metadata-collector already runs with HostNetwork=true.
 
 - Kubelet AuthN + AuthZ: Kubelet's can optionally enabled authentication with a bearer token that is validated via a
-TokenReview and authorization that is validated via a SubjectAccessReview. To ensure that our metadata-collector pod
+TokenReview and authorization that is validated via a SubjectAccessReview. To ensure that our pod-device-mapper pod
 can successfully pass AuthN + AuthZ, we will pass the pod's SA token mounted in the pod at
 /var/run/secrets/kubernetes.io/serviceaccount/token. The service account for this component is bound to a cluster role
 which grants GET permission against the nodes/proxy resource (in addition to the patch pod permissions required).
 
 In summary, we require:
-- metadata-collector pods run with GET permission on nodes/proxy
-- metadata-collector pods run with HostNetwork=true and skip Kubelet server certificate validation on localhost
+- pod-device-mapper pods run with GET permission on nodes/proxy (or nodes/pods with fine-grained kubelet authorization)
+- pod-device-mapper pods reach the kubelet at the node IP and skip Kubelet server certificate validation
 
 Example for how to make an equivalent request via CLI:
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:10250/pods
