@@ -99,7 +99,7 @@ container_tools:
   cosign: 'v3.1.4'
   # Used by .github/actions/security-scan and scripts/openvex/scan.sh, so both report the same findings.
   # renovate: datasource=github-releases depName=anchore/grype depType=container_tools
-  grype: 'v0.121.3'
+  grype: 'v0.122.1'
 
 # Testing & E2E Tools
 testing_tools:
