@@ -29,8 +29,7 @@ To debug health events in NVSentinel, operators must manually correlate logs acr
 
 ## How Traces Are Different From Logs and Metrics?
 
-Logs are discrete, unordered (or time-ordered) messages from each service. To follow one health event across platform-connector, fault-quarantine, node-drainer, fault-remediation, and health-events-analyzer, you must search by event ID or node name, align timestamps, and mentally reconstruct the flow.
-Traces are structured around a single request or workflow: one trace ID ties together all spans from all modules for that event, with explicit relationships (parent-child for synchronous calls and links for asynchronous handoffs).
+Logs are discrete, unordered (or time-ordered) messages from each service. To follow one health event across platform-connector, fault-quarantine, node-drainer, fault-remediation, and health-events-analyzer, you must search by event ID or node name, align timestamps, and mentally reconstruct the flow. Traces are structured around a single request or workflow: one trace ID ties together all spans from all modules for that event, with explicit relationships (parent-child for synchronous calls and links for asynchronous handoffs).
 
 - **End-to-end view of one event** — One trace shows the full path of one health event (ingestion → quarantine → drain → remediation). With logs you must correlate multiple services by hand.
 - **Timing and bottlenecks** — Spans have start/end times and nesting, so you see exactly where time was spent (e.g. DB query execution in health-events-analyzer vs draining operation in node-drainer). Logs give timestamps but not a single timeline or hierarchy.
@@ -39,11 +38,9 @@ Traces are structured around a single request or workflow: one trace ID ties tog
 - **Failure diagnosis** — A failed span is visible in the trace with status and attributes; you see the failing step and its parent path. With logs you must infer causality from messages and timestamps.
 - **Performance and SLOs** — Trace-based latency percentiles and service maps are built-in. With logs you'd need custom metrics or log-based metrics to get the same view.
 
-Logs are useful for detailed, free-form messages (e.g. stack traces, debug dumps). Traces complement them by giving a structured, request-scoped view of *where*, *what* and *how long* work happened across the breakfix pipeline.
-Traces are not to replace logs — we are adding it as an additional feature alongside existing logging to improve debugging and analyze system performance.
+Logs are useful for detailed, free-form messages (e.g. stack traces, debug dumps). Traces complement them by giving a structured, request-scoped view of *where*, *what* and *how long* work happened across the breakfix pipeline. Traces are not to replace logs — we are adding it as an additional feature alongside existing logging to improve debugging and analyze system performance.
 
-Metrics (e.g. Prometheus) are aggregated over time: counters, gauges, and histograms that answer "how much?" and "how fast on average?" (e.g. `fault_quarantine_event_handling_duration_seconds`, event counts per module).
-Traces are per-request: each health event gets one trace with spans across all modules, answering "what happened for this event?", "where did this event spend most time?" and "where this event handling failed and why?"
+Metrics (e.g. Prometheus) are aggregated over time: counters, gauges, and histograms that answer "how much?" and "how fast on average?" (e.g. `fault_quarantine_event_handling_duration_seconds`, event counts per module). Traces are per-request: each health event gets one trace with spans across all modules, answering "what happened for this event?", "where did this event spend most time?" and "where this event handling failed and why?"
 
 - **Granularity:** Metrics are aggregated over time (e.g. p50/p99 latency, rate per minute). Traces are per event: one trace per health event.
 - **Question answered:** Metrics answer "How is the system behaving overall?" Traces answer "Why was this event slow or failed? Why was this node not remediated? "
@@ -789,9 +786,4 @@ That manual approach has several drawbacks:
 For these reasons, we do not adopt manual curl/OTLP span creation from bash as the standard way to instrument the GPU reset Job.
 
 ## References
-Traces[https://opentelemetry.io/docs/concepts/signals/traces/#consumer]
-OpenTelemetry[https://opentelemetry.io/docs/]
-OpenTelemetry Collector[https://github.com/open-telemetry/opentelemetry-collector]
-Alloy Collector[https://grafana.com/oss/alloy-opentelemetry-collector/]
-Tracing Guide[https://vfunction.com/blog/opentelemetry-tracing-guide/]
-OTEL Logging[https://opentelemetry.io/docs/specs/otel/logs/]
+Traces[https://opentelemetry.io/docs/concepts/signals/traces/#consumer] OpenTelemetry[https://opentelemetry.io/docs/] OpenTelemetry Collector[https://github.com/open-telemetry/opentelemetry-collector] Alloy Collector[https://grafana.com/oss/alloy-opentelemetry-collector/] Tracing Guide[https://vfunction.com/blog/opentelemetry-tracing-guide/] OTEL Logging[https://opentelemetry.io/docs/specs/otel/logs/]

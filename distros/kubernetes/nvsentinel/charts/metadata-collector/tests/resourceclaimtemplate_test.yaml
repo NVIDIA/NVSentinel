@@ -17,6 +17,7 @@ templates:
   - templates/resourceclaimtemplate.yaml
 set:
   global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+  global.partialRemediationEntityTypes: {}
 tests:
   - it: must render nothing by default
     asserts:

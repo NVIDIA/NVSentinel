@@ -20,8 +20,8 @@
 // name, enabled, priority, and match. A component embeds RuleSet in its own
 // type and adds one outcome field, such as drain or remediation.
 //
-// Nothing here evaluates a rule set. Validate and CheckUndecoded only check
-// the configuration at startup.
+// Validate and CheckUndecoded check the configuration at startup. Compile and
+// Evaluate select the rule set that applies to one decision.
 package ruleset
 
 const (

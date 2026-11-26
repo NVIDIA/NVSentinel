@@ -79,3 +79,21 @@ func TestMaxConnections_Precedence_OptionThenEnvironmentThenZero(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadDatastoreConfig_CleanupEnv_PopulatesOptionsWithoutRejectingInvalidValues(t *testing.T) {
+	t.Setenv("DATASTORE_PROVIDER", "postgresql")
+	for _, raw := range []string{"", "0", "7d", "168h"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("DATASTORE_CHANGELOG_RETENTION", raw)
+			t.Setenv("DATASTORE_CHANGELOG_CLEANUP_INTERVAL", "2h")
+			t.Setenv("DATASTORE_CHANGELOG_CLEANUP_BATCH_SIZE", "50")
+			t.Setenv("DATASTORE_CHANGELOG_CLEANUP_MAX_BATCHES", "5")
+			config, err := LoadDatastoreConfig()
+			require.NoError(t, err)
+			require.Equal(t, raw, config.Options["changelogRetention"])
+			require.Equal(t, "2h", config.Options["changelogCleanupInterval"])
+			require.Equal(t, "50", config.Options["changelogCleanupBatchSize"])
+			require.Equal(t, "5", config.Options["changelogCleanupMaxBatches"])
+		})
+	}
+}

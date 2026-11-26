@@ -1,60 +1,34 @@
 # Tutorial: Monitoring GPU System Services with Node Problem Detector
 
-This tutorial extends an existing
-[node-problem-detector (NPD)](https://github.com/kubernetes/node-problem-detector)
-installation with `CustomPluginMonitor` checks for GPU-critical systemd
-services, and configures NVSentinel to consume the resulting Node
-Conditions.
+This tutorial extends an existing [node-problem-detector (NPD)](https://github.com/kubernetes/node-problem-detector) installation with `CustomPluginMonitor` checks for GPU-critical systemd services, and configures NVSentinel to consume the resulting Node Conditions.
 
 By the end you will have:
 
-- NPD actively probing `nvidia-fabricmanager` liveness, crash-loop (flap)
-  behavior, and — on fleets that require Fabric Manager — unit presence, plus
-  `nvidia-persistenced` liveness.
-- Kubernetes Object Monitor (KOM) watching the opt-in `FabricManagerDown`,
-  `FabricManagerFlapping`, `FabricManagerNotInstalled`, and
-  `NvidiaPersistencedDown` conditions.
+- NPD actively probing `nvidia-fabricmanager` liveness, crash-loop (flap) behavior, and — on fleets that require Fabric Manager — unit presence, plus `nvidia-persistenced` liveness.
+- Kubernetes Object Monitor (KOM) watching the opt-in `FabricManagerDown`, `FabricManagerFlapping`, `FabricManagerNotInstalled`, and `NvidiaPersistencedDown` conditions.
 - A safe procedure for validating detection and KOM publication end to end.
 
-> **Who is this for?** Cluster administrators who run NVSentinel on GPU nodes
-> (especially NVSwitch platforms such as HGX H100/H200) and want service-level
-> health for the NVIDIA host daemons that no DCGM or log-based check observes.
+> **Who is this for?** Cluster administrators who run NVSentinel on GPU nodes (especially NVSwitch platforms such as HGX H100/H200) and want service-level health for the NVIDIA host daemons that no DCGM or log-based check observes.
 
-> **Just want the AI to do it?** Jump to
-> [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
+> **Just want the AI to do it?** Jump to [Appendix: One-shot AI prompt](#appendix-one-shot-ai-prompt).
 
-> **Safety:** The Fabric Manager policies recommend `RESTART_BM`. Validate
-> them only in a non-production cluster or while downstream quarantine and
-> remediation components are disabled. Stopping `nvidia-fabricmanager` on an
-> NVSwitch node interrupts NVLink fabric coordination: validate only on a
-> drained, disposable node.
+> **Safety:** The Fabric Manager policies recommend `RESTART_BM`. Validate them only in a non-production cluster or while downstream quarantine and remediation components are disabled. Stopping `nvidia-fabricmanager` on an NVSwitch node interrupts NVLink fabric coordination: validate only on a drained, disposable node.
 
 ## Prerequisites
 
 - Kubernetes 1.25 or later, Helm 3, and `kubectl`.
-- An NPD installation on every GPU node to monitor (DaemonSet or host
-  service). This tutorial was validated against NPD v1.36.0; the
-  `CustomPluginMonitor` exit-status and permanent-condition contract it uses
-  predates that release line.
-- Root or SSH access to the GPU nodes (or the ability to modify the NPD
-  DaemonSet) to install plugin scripts and configuration.
+- An NPD installation on every GPU node to monitor (DaemonSet or host service). This tutorial was validated against NPD v1.36.0; the `CustomPluginMonitor` exit-status and permanent-condition contract it uses predates that release line.
+- Root or SSH access to the GPU nodes (or the ability to modify the NPD DaemonSet) to install plugin scripts and configuration.
 - Cluster-admin access for the NVSentinel Helm release.
-- Shell or SSH access to at least one drained, disposable GPU node for
-  end-to-end validation.
+- Shell or SSH access to at least one drained, disposable GPU node for end-to-end validation.
 
-If NPD is not installed yet, follow
-[Tutorial: Integrating Node Problem Detector](integrating-node-problem-detector.md)
-first — including its guidance to never deploy a second NPD instance next to a
-provider-managed one.
+If NPD is not installed yet, follow [Tutorial: Integrating Node Problem Detector](integrating-node-problem-detector.md) first — including its guidance to never deploy a second NPD instance next to a provider-managed one.
 
 ---
 
 ## 1. Understand the integration
 
-The plugin scripts probe systemd through `systemctl show`; NPD publishes the
-results as permanent Node Conditions; KOM turns matching conditions into
-NVSentinel HealthEvents on the same path as the default NPD condition
-integration.
+The plugin scripts probe systemd through `systemctl show`; NPD publishes the results as permanent Node Conditions; KOM turns matching conditions into NVSentinel HealthEvents on the same path as the default NPD condition integration.
 
 ```mermaid
 flowchart LR
@@ -77,41 +51,22 @@ This integration watches these condition and reason pairs:
 | `FabricManagerNotInstalled` | `FabricManagerUnitNotFound` | `NPDFabricManagerNotInstalled` | yes | `CONTACT_SUPPORT` |
 | `NvidiaPersistencedDown` | `NvidiaPersistencedNotActive` | `NPDNvidiaPersistencedDown` | no | `CONTACT_SUPPORT` |
 
-Unlike log-matched NPD conditions, these are active probes: a healthy
-observation sets the condition back to `False`, so recoveries clear without an
-NPD restart.
+Unlike log-matched NPD conditions, these are active probes: a healthy observation sets the condition back to `False`, so recoveries clear without an NPD restart.
 
-**Platform applicability.** Install the `FabricManagerNotInstalled` rule only
-on fleets where Fabric Manager is required (NVSwitch platforms) — it reports
-a missing unit as a problem. The liveness and flap checks skip a not-found
-unit, so they are safe to install fleet-wide, including PCIe-only nodes.
+**Platform applicability.** Install the `FabricManagerNotInstalled` rule only on fleets where Fabric Manager is required (NVSwitch platforms) — it reports a missing unit as a problem. The liveness and flap checks skip a not-found unit, so they are safe to install fleet-wide, including PCIe-only nodes.
 
 ---
 
 ## 2. Install the plugin scripts and monitor configuration
 
-The plugin scripts and monitor configuration ship in this repository under
-`docs/tutorials/assets/npd-gpu-services/`:
+The plugin scripts and monitor configuration ship in this repository under `docs/tutorials/assets/npd-gpu-services/`:
 
-- `check_fm_flapping.sh` — Fabric Manager crash-loop detection over a sliding
-  window (defaults: 3 restarts within 600 s), with `systemctl reset-failed`
-  disambiguation.
-- `check_fm_installed.sh` — Fabric Manager unit presence (optional; required
-  fleets only).
-- `check_gpu_service.sh` — parameterized service liveness with
-  consecutive-probe debounce and hold-state semantics; the reference rules
-  invoke it for `nvidia-fabricmanager` and `nvidia-persistenced` (one rule,
-  condition, and state file per unit, so the checks stay independent).
-- `custom-plugin-fm-liveness.json`, `custom-plugin-fm-flap.json`,
-  `custom-plugin-fm-presence.json`, `custom-plugin-persistenced.json` — one
-  single-condition `CustomPluginMonitor` configuration per check. The split
-  matters: NPD publishes each monitor's conditions only from that monitor's
-  own probe results, so an NPD restart can never briefly report a
-  not-yet-probed condition as healthy.
+- `check_fm_flapping.sh` — Fabric Manager crash-loop detection over a sliding window (defaults: 3 restarts within 600 s), with `systemctl reset-failed` disambiguation.
+- `check_fm_installed.sh` — Fabric Manager unit presence (optional; required fleets only).
+- `check_gpu_service.sh` — parameterized service liveness with consecutive-probe debounce and hold-state semantics; the reference rules invoke it for `nvidia-fabricmanager` and `nvidia-persistenced` (one rule, condition, and state file per unit, so the checks stay independent).
+- `custom-plugin-fm-liveness.json`, `custom-plugin-fm-flap.json`, `custom-plugin-fm-presence.json`, `custom-plugin-persistenced.json` — one single-condition `CustomPluginMonitor` configuration per check. The split matters: NPD publishes each monitor's conditions only from that monitor's own probe results, so an NPD restart can never briefly report a not-yet-probed condition as healthy.
 
-The scripts need the same host visibility NPD's own checks use: access to
-systemd via `systemctl`. How they reach the nodes depends on the NPD
-deployment shape.
+The scripts need the same host visibility NPD's own checks use: access to systemd via `systemctl`. How they reach the nodes depends on the NPD deployment shape.
 
 ### Host-service NPD
 
@@ -144,22 +99,11 @@ sudo systemctl restart node-problem-detector
 
 ### DaemonSet NPD
 
-Distribute the files with your configuration-management mechanism (a
-ConfigMap for the JSON and scripts, or node provisioning for the scripts),
-then update the DaemonSet:
+Distribute the files with your configuration-management mechanism (a ConfigMap for the JSON and scripts, or node provisioning for the scripts), then update the DaemonSet:
 
-1. Mount the scripts executable at `/etc/npd-plugins/` and the JSON files
-   where the NPD container reads configuration.
-2. Append the monitors to the container arguments as one comma-separated
-   `--config.custom-plugin-monitor=...` list (presence config on
-   required-FM fleets only).
-3. **Mount the host's `/var/run/nvsentinel/npd` for the per-check state.**
-   The checks keep their debounce counts, hold state, and the flap
-   restart-window baseline under `/var/run/nvsentinel/npd/` on the host's
-   tmpfs (the same tree the NVSentinel health-monitor DaemonSets already
-   mount for the platform-connector socket), so state is boot-scoped. A
-   pod-local path resets it on every pod replacement, silently weakening
-   flap detection and the debounce:
+1. Mount the scripts executable at `/etc/npd-plugins/` and the JSON files where the NPD container reads configuration.
+2. Append the monitors to the container arguments as one comma-separated `--config.custom-plugin-monitor=...` list (presence config on required-FM fleets only).
+3. **Mount the host's `/var/run/nvsentinel/npd` for the per-check state.** The checks keep their debounce counts, hold state, and the flap restart-window baseline under `/var/run/nvsentinel/npd/` on the host's tmpfs (the same tree the NVSentinel health-monitor DaemonSets already mount for the platform-connector socket), so state is boot-scoped. A pod-local path resets it on every pod replacement, silently weakening flap detection and the debounce:
 
 ```yaml
         volumeMounts:
@@ -172,12 +116,7 @@ then update the DaemonSet:
             type: DirectoryOrCreate
 ```
 
-4. The scripts run `systemctl`. Provider NPD images and DaemonSets that
-   already run service checks have this plumbing. The upstream NPD image
-   ships no `systemctl`: the robust pattern is a shim — mount the node's
-   root read-only at `/host` and place this first on the container `PATH`
-   (query verbs such as `systemctl show` work in a chroot through the
-   host's `/run/systemd/private` socket):
+4. The scripts run `systemctl`. Provider NPD images and DaemonSets that already run service checks have this plumbing. The upstream NPD image ships no `systemctl`: the robust pattern is a shim — mount the node's root read-only at `/host` and place this first on the container `PATH` (query verbs such as `systemctl show` work in a chroot through the host's `/run/systemd/private` socket):
 
 ```bash
 #!/bin/bash
@@ -195,9 +134,7 @@ kubectl rollout status daemonset "$NPD_DAEMONSET" \
 
 ### Confirm the healthy baseline
 
-Each configuration sets `skip_initial_status: true`, so NPD publishes each
-condition only after its own first probe completes (within
-`invoke_interval` + rule `timeout`, at most ~42 s after startup):
+Each configuration sets `skip_initial_status: true`, so NPD publishes each condition only after its own first probe completes (within `invoke_interval` + rule `timeout`, at most ~42 s after startup):
 
 ```bash
 NODE="<gpu-node-name>"
@@ -213,27 +150,15 @@ kubectl get node "$NODE" \
 # FabricManagerNotInstalled).
 ```
 
-On a PCIe-only node the Fabric Manager unit is absent: the liveness and flap
-checks stay `False` ("not applicable"), and the presence condition appears
-only if you installed its rule — which required fleets do and PCIe-only
-fleets do not.
+On a PCIe-only node the Fabric Manager unit is absent: the liveness and flap checks stay `False` ("not applicable"), and the presence condition appears only if you installed its rule — which required fleets do and PCIe-only fleets do not.
 
 ---
 
 ## 3. Configure NVSentinel and KOM policies
 
-The GPU-service policies are intentionally excluded from the default KOM
-values, for the same reason as the default NPD policies: NVSentinel does not install NPD or
-control how an operator handles its conditions. The opt-in overlay
-`distros/kubernetes/nvsentinel/values-npd-gpu-services.yaml` provides them
-(shipped with the companion chart change). Per fleet scenario: required-FM
-fleets enable all four policies; fleets with container-managed FM or no FM
-enable `NPDNvidiaPersistencedDown` only.
+The GPU-service policies are intentionally excluded from the default KOM values, for the same reason as the default NPD policies: NVSentinel does not install NPD or control how an operator handles its conditions. The opt-in overlay `distros/kubernetes/nvsentinel/values-npd-gpu-services.yaml` provides them (shipped with the companion chart change). Per fleet scenario: required-FM fleets enable all four policies; fleets with container-managed FM or no FM enable `NPDNvidiaPersistencedDown` only.
 
-Helm replaces lists rather than merging their entries, so the overlay repeats
-the default `ReplaceNotReadyNode` policy. If the cluster already uses
-`values-npd-remediation.yaml` (or custom KOM policies), merge all policy
-lists into one file before installing.
+Helm replaces lists rather than merging their entries, so the overlay repeats the default `ReplaceNotReadyNode` policy. If the cluster already uses `values-npd-remediation.yaml` (or custom KOM policies), merge all policy lists into one file before installing.
 
 ```bash
 NVSENTINEL_VERSION="<release-containing-the-gpu-service-policies>"
@@ -257,10 +182,7 @@ kubectl rollout status deployment/kubernetes-object-monitor \
 
 ## 4. Validate the integration
 
-Validate on a **drained, disposable GPU node**. Start with
-`nvidia-persistenced` — its policy is non-fatal, so it exercises the full
-NPD → KOM → HealthEvent path with the least blast radius — then, if the node
-is safe for it, validate the fatal Fabric Manager path.
+Validate on a **drained, disposable GPU node**. Start with `nvidia-persistenced` — its policy is non-fatal, so it exercises the full NPD → KOM → HealthEvent path with the least blast radius — then, if the node is safe for it, validate the fatal Fabric Manager path.
 
 ### 4a. Non-fatal path: nvidia-persistenced
 
@@ -270,9 +192,7 @@ SSH to `$NODE` and stop the service:
 sudo systemctl stop nvidia-persistenced
 ```
 
-The liveness checks debounce: a down report requires 3 consecutive
-non-running probes (≈ 90 s at the reference interval), so a planned restart
-never fires the condition. After ~2 minutes, confirm the source condition:
+The liveness checks debounce: a down report requires 3 consecutive non-running probes (≈ 90 s at the reference interval), so a planned restart never fires the condition. After ~2 minutes, confirm the source condition:
 
 ```bash
 kubectl get node "$NODE" \
@@ -292,9 +212,7 @@ kubectl get node "$NODE" \
 # NPDNvidiaPersistencedDown=True reason=NPDNvidiaPersistencedDownIsNotHealthy
 ```
 
-Restart the service and watch both conditions clear on the next probe —
-recovery confirms immediately (the debounce applies only to the unhealthy
-direction), without an NPD restart:
+Restart the service and watch both conditions clear on the next probe — recovery confirms immediately (the debounce applies only to the unhealthy direction), without an NPD restart:
 
 ```bash
 sudo systemctl start nvidia-persistenced
@@ -306,11 +224,7 @@ sudo systemctl start nvidia-persistenced
 sudo systemctl stop nvidia-fabricmanager
 ```
 
-Confirm `FabricManagerDown=True reason=FabricManagerNotActive` and
-`NPDFabricManagerDown=True` with the same commands, substituting the
-condition names. If downstream remediation is enabled, the node should be
-cordoned and a `RESTART_BM` remediation created — which is why the node must
-be drained and disposable.
+Confirm `FabricManagerDown=True reason=FabricManagerNotActive` and `NPDFabricManagerDown=True` with the same commands, substituting the condition names. If downstream remediation is enabled, the node should be cordoned and a `RESTART_BM` remediation created — which is why the node must be drained and disposable.
 
 Restart Fabric Manager and confirm both conditions return to `False`:
 
@@ -320,11 +234,7 @@ sudo systemctl start nvidia-fabricmanager
 
 ### 4c. Flap detection
 
-The flap window defaults to 3 restarts within 600 s of `Restart=` activity.
-Manual `systemctl restart` invocations do not increment systemd's `NRestarts`
-counter, so simulate crash-loop behavior by killing the main process and
-letting systemd's `Restart=` policy bring it back, three times, at least a
-few seconds apart:
+The flap window defaults to 3 restarts within 600 s of `Restart=` activity. Manual `systemctl restart` invocations do not increment systemd's `NRestarts` counter, so simulate crash-loop behavior by killing the main process and letting systemd's `Restart=` policy bring it back, three times, at least a few seconds apart:
 
 ```bash
 for i in 1 2 3; do
@@ -333,8 +243,7 @@ for i in 1 2 3; do
 done
 ```
 
-Confirm the flap condition (it reports independently of instantaneous
-liveness — the unit may already be `active` again):
+Confirm the flap condition (it reports independently of instantaneous liveness — the unit may already be `active` again):
 
 ```bash
 kubectl get node "$NODE" \
@@ -344,11 +253,7 @@ kubectl get node "$NODE" \
 # FabricManagerFlapping=True reason=FabricManagerFlapping
 ```
 
-The condition clears on its own once the sliding window drains (up to 600 s
-after the last observed restart). `systemctl reset-failed` flushes the
-`NRestarts` counter but does **not** clear the flap window — the script
-re-baselines and keeps its recorded observations, so a counter flush cannot
-hide an active crash loop.
+The condition clears on its own once the sliding window drains (up to 600 s after the last observed restart). `systemctl reset-failed` flushes the `NRestarts` counter but does **not** clear the flap window — the script re-baselines and keeps its recorded observations, so a counter flush cannot hide an active crash loop.
 
 ---
 
@@ -356,19 +261,8 @@ hide an active crash loop.
 
 Two caveats apply when interpreting these conditions during remediation:
 
-- **NPD restarts.** Each check runs as its own single-condition monitor
-  with `skip_initial_status: true`, so an NPD restart publishes nothing for
-  a condition until that condition's own probe completes — a condition that
-  was `True` before the restart stays `True` until confirmed otherwise.
-  Still: do not treat transitions observed around an NPD restart as proof of
-  recovery, and do not restart NPD mid-remediation.
-- **`Unknown` conditions.** The scripts hold their last confirmed state
-  through probe failures: a faulted condition keeps reporting `True` until a
-  probe confirms recovery, and a healthy one holds through four consecutive
-  failures before reporting `Unknown` (after which the stale confirmation is
-  discarded — following non-running observations report `Unknown` until the
-  debounce threshold confirms either state). Treat `Unknown` as "could not
-  observe", never as recovery.
+- **NPD restarts.** Each check runs as its own single-condition monitor with `skip_initial_status: true`, so an NPD restart publishes nothing for a condition until that condition's own probe completes — a condition that was `True` before the restart stays `True` until confirmed otherwise. Still: do not treat transitions observed around an NPD restart as proof of recovery, and do not restart NPD mid-remediation.
+- **`Unknown` conditions.** The scripts hold their last confirmed state through probe failures: a faulted condition keeps reporting `True` until a probe confirms recovery, and a healthy one holds through four consecutive failures before reporting `Unknown` (after which the stale confirmation is discarded — following non-running observations report `Unknown` until the debounce threshold confirms either state). Treat `Unknown` as "could not observe", never as recovery.
 
 ---
 
@@ -376,12 +270,9 @@ Two caveats apply when interpreting these conditions during remediation:
 
 ### The conditions never appear on the node
 
-- Confirm the NPD process loaded the monitors: its log should list each
-  `custom-plugin-*.json` configuration at startup.
-- Confirm the scripts are executable at the paths in the JSON `rules`
-  (`/etc/npd-plugins/...`) inside the NPD execution environment.
-- With `skip_initial_status: true`, conditions publish only after the first
-  probe batch — wait one `invoke_interval` plus the rule `timeout`.
+- Confirm the NPD process loaded the monitors: its log should list each `custom-plugin-*.json` configuration at startup.
+- Confirm the scripts are executable at the paths in the JSON `rules` (`/etc/npd-plugins/...`) inside the NPD execution environment.
+- With `skip_initial_status: true`, conditions publish only after the first probe batch — wait one `invoke_interval` plus the rule `timeout`.
 
 ```bash
 kubectl logs "daemonset/$NPD_DAEMONSET" --namespace "$NPD_NAMESPACE" | head -50
@@ -391,29 +282,22 @@ kubectl logs "daemonset/$NPD_DAEMONSET" --namespace "$NPD_NAMESPACE" | head -50
 
 ### A condition is stuck at Unknown
 
-The scripts exit unknown when they cannot observe systemd. Check that
-`systemctl` works inside the NPD execution environment (host D-Bus reachable
-from the container for DaemonSet installs).
+The scripts exit unknown when they cannot observe systemd. Check that `systemctl` works inside the NPD execution environment (host D-Bus reachable from the container for DaemonSet installs).
 
 ### Flap detection never fires
 
-- On DaemonSet NPD, confirm the host's `/var/run/nvsentinel/npd` hostPath mount:
-  without it the baseline resets with every pod replacement.
-- Confirm the crash loop is systemd-driven: manual restarts do not increment
-  `NRestarts` and are deliberately not counted.
+- On DaemonSet NPD, confirm the host's `/var/run/nvsentinel/npd` hostPath mount: without it the baseline resets with every pod replacement.
+- Confirm the crash loop is systemd-driven: manual restarts do not increment `NRestarts` and are deliberately not counted.
 
 ### A condition flapped False briefly after an NPD restart
 
-Expected: the first post-restart batch publishes each condition as its probe
-completes (see Recovery semantics). The steady-state value within one probe
-interval is the truth.
+Expected: the first post-restart batch publishes each condition as its probe completes (see Recovery semantics). The steady-state value within one probe interval is the truth.
 
 ---
 
 ## Appendix: One-shot AI prompt
 
-Paste this prompt into an AI coding agent with access to your NVSentinel
-checkout. Replace the bracketed values before running it.
+Paste this prompt into an AI coding agent with access to your NVSentinel checkout. Replace the bracketed values before running it.
 
 ```text
 Help me add the NVSentinel GPU system-service NPD checks to this cluster and

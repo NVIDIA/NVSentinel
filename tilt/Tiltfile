@@ -293,7 +293,7 @@ k8s_yaml(yaml)
 
 # Check if using Percona operator (only relevant when using MongoDB)
 use_percona = effective_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
-# Job name is create-mongodb-database-<ttl>-<scriptHash>; read it from the render.
+# Job name is create-mongodb-database-<ttl>-<hash>; read it from the render.
 mongodb_init_job = None
 for obj in decode_yaml_stream(yaml):
     if not obj:

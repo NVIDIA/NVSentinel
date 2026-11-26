@@ -69,6 +69,9 @@ const (
 	// maxJobNameBaseLength calculates the maximum allowed length for the base name (derived from the GPUReset name)
 	// to ensure the final name for Pods created by the Job does not exceed the 63-character limit.
 	maxJobNameBaseLength = validation.DNS1123LabelMaxLength - len(jobNameSuffix) - 1 - 8 - podNameSuffixLength
+	// manualModeRecheckInterval is how often a GPUReset held in manual mode is reconciled. Manual mode changes
+	// only with a janitor restart, which reconciles every GPUReset, so this only replaces the 2 second requeue.
+	manualModeRecheckInterval = time.Minute
 )
 
 // checkPodsTerminatedFn is a function signature used for checking if managed service pods have terminated.
@@ -221,10 +224,11 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &gpuReset, gpuReset.Spec.NodeName)
 	if retryUnlock {
+		// A later reconcile records the outcome.
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.recordOutcome(ctx, &gpuReset)
 }
 
 // startResetSessionIfNeeded creates or retrieves the long-lived "janitor.gpureset.reset_session" span
@@ -270,6 +274,10 @@ func (r *GPUResetReconciler) reconcileHelper(ctx context.Context, gr *v1alpha1.G
 		return r.isReady(ctx, gr)
 	}
 
+	if result, waiting, err := r.handleManualMode(ctx, gr); waiting || err != nil {
+		return result, err
+	}
+
 	if recorded, err := r.ensureManagedServicesRecord(ctx, gr); err != nil {
 		return ctrl.Result{}, err
 	} else if recorded {
@@ -305,7 +313,7 @@ func (r *GPUResetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return nil
 	}
 
-	gpuServiceManager, err := gpuservices.NewManager(r.Config.ServiceManager.Name, r.Config.ServiceManager.Spec)
+	gpuServiceManager, err := gpuservices.ResolveManager(r.Config.ServiceManager)
 	if err != nil {
 		return fmt.Errorf("failed to construct GPU service manager: %w", err)
 	}
@@ -546,6 +554,50 @@ func (r *GPUResetReconciler) isReady(ctx context.Context, gr *v1alpha1.GPUReset)
 	return ctrl.Result{}, nil
 }
 
+// handleManualMode holds a GPUReset in manual mode before it stops any service, so that janitor changes no node label
+// and creates no reset Job. It returns true while the GPUReset waits or when its status was just updated. A GPUReset
+// that has already started the teardown is not held: stopping halfway would leave the services stopped. When manual
+// mode is off again, the GPUReset continues with a new start time, so that the time it waited does not count against
+// the timeout.
+func (r *GPUResetReconciler) handleManualMode(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, bool, error) {
+	if meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesTornDown)) != nil {
+		return ctrl.Result{}, false, nil
+	}
+
+	waiting := meta.IsStatusConditionTrue(gr.Status.Conditions, string(v1alpha1.ManualMode))
+
+	if r.Config.ManualMode != nil && *r.Config.ManualMode {
+		if !waiting {
+			if err := r.updateCondition(ctx, gr, v1alpha1.ManualMode, metav1.ConditionTrue,
+				v1alpha1.ReasonOutsideActorRequired,
+				"Janitor is in manual mode, outside actor required to reset the GPU"); err != nil {
+				return ctrl.Result{}, true, err
+			}
+
+			slog.InfoContext(ctx, "Manual mode enabled, janitor will not reset the GPU", "node", gr.Spec.NodeName,
+				"gpureset", gr.Name)
+		}
+
+		return ctrl.Result{RequeueAfter: manualModeRecheckInterval}, true, nil
+	}
+
+	if !waiting {
+		return ctrl.Result{}, false, nil
+	}
+
+	updatedGR := gr.DeepCopy()
+	now := metav1.Now()
+	updatedGR.Status.StartTime = &now
+	meta.SetStatusCondition(&updatedGR.Status.Conditions, NewCondition(v1alpha1.ManualMode, metav1.ConditionFalse,
+		v1alpha1.ReasonManualModeDisabled, "Manual mode is off, continuing the GPU reset"))
+
+	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
+		return ctrl.Result{}, true, fmt.Errorf("failed to resume GPUReset %s after manual mode: %w", gr.Name, err)
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second}, true, nil
+}
+
 // tearDownServices disables the managed services. It disables them by setting node labels
 // to their disabled state and waits for the associated pods to terminate before proceeding.
 func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, error) {
@@ -555,6 +607,10 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	defer span.End()
 
 	managerName := r.serviceManager.Name
+
+	if res, refused, err := r.refuseInServiceNode(ctx, gr); refused {
+		return res, err
+	}
 
 	if len(r.serviceManager.Spec.Apps) == 0 {
 		log.V(1).Info("GPU services manager has no apps specified, skipping service teardown", "manager", managerName,
@@ -699,6 +755,38 @@ func (r *GPUResetReconciler) tearDownServices(ctx context.Context, gr *v1alpha1.
 	return ctrl.Result{}, nil
 }
 
+// refuseInServiceNode fails the GPUReset with NodeInService before the teardown starts when the node is neither
+// cordoned nor quarantined. It runs with every service manager and also without one, so no reset Job is created on
+// such a node. A missing node is left to the teardown, which fails the GPUReset with NodeNotFound.
+func (r *GPUResetReconciler) refuseInServiceNode(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+) (ctrl.Result, bool, error) {
+	if r.Config.RequireNodeOutOfService == nil || !*r.Config.RequireNodeOutOfService ||
+		meta.FindStatusCondition(gr.Status.Conditions, string(v1alpha1.ServicesTornDown)) != nil {
+		return ctrl.Result{}, false, nil
+	}
+
+	node, err := r.getNode(ctx, gr.Spec.NodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, false, nil
+		}
+
+		return ctrl.Result{}, true, fmt.Errorf("failed to get node %s for the service state check: %w",
+			gr.Spec.NodeName, err)
+	}
+
+	if !refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+		return ctrl.Result{}, false, nil
+	}
+
+	res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonNodeInService,
+		"Node is neither cordoned nor quarantined, refusing to reset its GPUs")
+
+	return res, true, err
+}
+
 // startTearDown finds the managed services that have a pod on the node and records them in the status, in the
 // same status update that starts the teardown. Only these services are stopped and later restored. The node labels
 // of other services do not change. When no managed service pod runs on the node, the teardown is skipped.
@@ -729,6 +817,13 @@ func (r *GPUResetReconciler) startTearDown(ctx context.Context, gr *v1alpha1.GPU
 		if res, wait, err := r.waitForHeldLabels(ctx, gr, node.Labels, "the teardown",
 			v1alpha1.ReasonServiceTeardownTimeoutExceeded); wait {
 			return res, err
+		}
+
+		// A driver upgrade holds the labels and removes the operand pods, so the labels are checked first.
+		if len(withoutGPUClients(running)) == 0 {
+			if res, wait, err := r.waitForServiceManager(ctx, gr); wait {
+				return res, err
+			}
 		}
 
 		nodeLabels := make([]string, 0, len(running))
@@ -1301,9 +1396,10 @@ func (r *GPUResetReconciler) reconcileCompletion(ctx context.Context, gr *v1alph
 	updatedGR.Status.CompletionTime = &now
 	updatedGR.Status.Phase = v1alpha1.ResetSucceeded
 
-	succeededCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded,
+	completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, v1alpha1.ReasonGPUResetSucceeded,
 		jobFinishedCond.Message)
-	meta.SetStatusCondition(&updatedGR.Status.Conditions, succeededCond)
+	meta.SetStatusCondition(&updatedGR.Status.Conditions, completeCond)
+	setOutcome(&updatedGR.Status)
 
 	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to set final status for GPUReset %s: %w", gr.Name, err)
@@ -1707,6 +1803,68 @@ func (r *GPUResetReconciler) runningApps(
 	return running, nil
 }
 
+// waitForServiceManager waits while no pod of the service manager exists in its namespace. A GPU Operator upgrade or
+// reinstall can remove every operand pod for a while. A wrong namespace stays empty, so the GPUReset fails with
+// ServiceManagerNotFound after the GPUReset timeout.
+func (r *GPUResetReconciler) waitForServiceManager(
+	ctx context.Context,
+	gr *v1alpha1.GPUReset,
+) (ctrl.Result, bool, error) {
+	found, err := r.serviceManagerFound(ctx)
+	if err != nil {
+		return ctrl.Result{}, true, err
+	}
+
+	if found {
+		return ctrl.Result{}, false, nil
+	}
+
+	if gr.Status.StartTime != nil && time.Since(gr.Status.StartTime.Time) > r.Config.Timeout {
+		res, err := r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonServiceManagerNotFound,
+			fmt.Sprintf("No %s managed service pod exists in namespace %s on any node for the GPUReset timeout; "+
+				"check the service manager namespace", r.serviceManager.Name, r.serviceManager.Spec.Namespace))
+
+		return res, true, err
+	}
+
+	log.FromContext(ctx).Info("Waiting for a managed service pod in the service manager namespace",
+		"node", gr.Spec.NodeName, "manager", r.serviceManager.Name, "namespace", r.serviceManager.Spec.Namespace,
+		"recheck_after", 10*time.Second)
+
+	return ctrl.Result{RequeueAfter: 10 * time.Second}, true, nil
+}
+
+// serviceManagerFound reports whether a pod of any managed service exists in the service manager namespace, on any
+// node, in any phase. A manager without managed services is always found. A wrong namespace finds no pods, and the
+// teardown would otherwise skip and reset the GPU while the services still hold it.
+func (r *GPUResetReconciler) serviceManagerFound(ctx context.Context) (bool, error) {
+	apps := withoutGPUClients(r.serviceManager.Spec.Apps)
+	if len(apps) == 0 {
+		return true, nil
+	}
+
+	for _, app := range apps {
+		selector := make(map[string]string)
+		maps.Copy(selector, r.serviceManager.Spec.ManagerSelector)
+		maps.Copy(selector, app.AppSelector)
+
+		pods := &corev1.PodList{}
+		if err := r.List(ctx, pods,
+			client.InNamespace(r.serviceManager.Spec.Namespace),
+			client.MatchingLabels(selector),
+		); err != nil {
+			return false, fmt.Errorf("failed to list %s managed service pods in namespace %s: %w",
+				r.serviceManager.Name, r.serviceManager.Spec.Namespace, err)
+		}
+
+		if len(pods.Items) > 0 {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // listAppPods lists the pods of one managed service on the target node. It also returns the label selector it used.
 func (r *GPUResetReconciler) listAppPods(
 	ctx context.Context,
@@ -1874,6 +2032,7 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 
 		completeCond := NewCondition(v1alpha1.Complete, metav1.ConditionTrue, reason, message)
 		meta.SetStatusCondition(&updatedGR.Status.Conditions, completeCond)
+		setOutcome(&updatedGR.Status)
 
 		if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to set terminal failure status for GPUReset %s: %w",
@@ -1901,6 +2060,59 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 	return ctrl.Result{}, nil
 }
 
+// setOutcome sets the Succeeded condition from the Complete condition: True when the Complete condition has the
+// reason GPUResetSucceeded, False with the failure reason in all other cases. The two conditions have the same
+// reason, message and transition time. It reports whether it changed the status. A status without a true Complete
+// condition, or with a Succeeded condition, does not change.
+//
+// The phase is not used: the restoration that follows a failed reset changes the phase of a completed GPUReset.
+func setOutcome(status *v1alpha1.GPUResetStatus) bool {
+	complete := meta.FindStatusCondition(status.Conditions, string(v1alpha1.Complete))
+	if complete == nil || complete.Status != metav1.ConditionTrue {
+		return false
+	}
+
+	if meta.FindStatusCondition(status.Conditions, string(v1alpha1.Succeeded)) != nil {
+		return false
+	}
+
+	outcome := metav1.ConditionFalse
+	if complete.Reason == string(v1alpha1.ReasonGPUResetSucceeded) {
+		outcome = metav1.ConditionTrue
+	}
+
+	return meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		Type:               string(v1alpha1.Succeeded),
+		Status:             outcome,
+		Reason:             complete.Reason,
+		Message:            complete.Message,
+		LastTransitionTime: complete.LastTransitionTime,
+	})
+}
+
+// recordOutcome sets the Succeeded condition of a GPUReset that completed before the condition existed.
+// fault-remediation reads a missing outcome condition as a reset in progress, so a completed GPUReset without one
+// would hold back further resets of its GPUs.
+//
+// It runs last, when the reconcile has nothing else to do for the GPUReset: the GPUReset has completed, is not being
+// deleted and has no restoration pending. No other status write follows it. A write from a read that does not have
+// the condition yet gives the same condition again, because the transition time comes from the Complete condition.
+func (r *GPUResetReconciler) recordOutcome(ctx context.Context, gr *v1alpha1.GPUReset) error {
+	updatedGR := gr.DeepCopy()
+	if !setOutcome(&updatedGR.Status) {
+		return nil
+	}
+
+	if err := r.updateStatus(ctx, gr, updatedGR.Status); err != nil {
+		return fmt.Errorf("failed to record the outcome of GPUReset %s: %w", gr.Name, err)
+	}
+
+	log.FromContext(ctx).Info("Recorded the outcome of a GPUReset that completed without a Succeeded condition",
+		"gpureset", gr.Name, "node", gr.Spec.NodeName)
+
+	return nil
+}
+
 // reconcilePhase maps a detailed GPUResetReason to its high-level GPUResetPhase.
 func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	switch reason {
@@ -1910,6 +2122,10 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonReadyForReset:
 		return v1alpha1.ResetPending
 	case v1alpha1.ReasonResourceContention:
+		return v1alpha1.ResetPending
+	case v1alpha1.ReasonOutsideActorRequired:
+		return v1alpha1.ResetPending
+	case v1alpha1.ReasonManualModeDisabled:
 		return v1alpha1.ResetPending
 
 	// InProgress
@@ -1960,6 +2176,10 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 	case v1alpha1.ReasonInternalError:
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonNodeInService:
+		return v1alpha1.ResetFailed
+	case v1alpha1.ReasonServiceManagerNotFound:
 		return v1alpha1.ResetFailed
 	default:
 		return v1alpha1.ResetUnknown

@@ -2,39 +2,47 @@
 
 ## Overview
 
-NVSentinel's log collection feature automatically gathers diagnostic logs from GPU nodes when faults are detected. These logs help with troubleshooting and root cause analysis of GPU hardware and software issues.
+The log collection feature of NVSentinel automatically gathers diagnostic logs from GPU nodes when NVSentinel detects faults. These logs help with troubleshooting and root cause analysis of GPU hardware and software faults.
 
-When a node is drained due to a fault, NVSentinel can optionally create a log collection job that gathers comprehensive diagnostics and stores them in an in-cluster file server for easy access.
+If you enable log collection, NVSentinel can create a log collection job after it drains a node because of a fault. The job gathers comprehensive diagnostics and stores them in an in-cluster file server for easy access.
 
 ### Why Do You Need This?
 
 When GPU nodes fail, you need diagnostic information to understand what went wrong:
 
-- **Root cause analysis**: Determine if the issue is hardware, driver, or configuration related
+- **Root cause analysis**: Determine if the fault is related to hardware, the driver, or the configuration
 - **Support requests**: Provide comprehensive logs to NVIDIA support or your infrastructure team
 - **Trend analysis**: Build historical data on failure patterns
-- **Faster resolution**: All relevant logs collected automatically instead of manual gathering
+- **Faster resolution**: NVSentinel collects all relevant logs automatically, so you do not gather them manually
 
-Without log collection, you'd need to manually SSH to failed nodes, locate the right log files, and extract them before the node is rebooted or replaced - a time-consuming and error-prone process.
+Without log collection, you must do these steps manually before the node is rebooted or replaced:
+
+1. SSH to the failed node.
+2. Find the right log files.
+3. Extract the log files.
+
+This manual process is slow and error-prone.
 
 ## How It Works
 
-When log collection is enabled, NVSentinel automatically collects diagnostics when a fault with a **supported remediation action** is detected:
+When log collection is enabled, NVSentinel automatically collects diagnostics if it detects a fault with a **supported remediation action**:
 
-1. Fault Remediation module receives a health event with a supported action
-2. Creates a Kubernetes Job on the target node to collect diagnostics
-3. Job runs with privileged access to gather logs (in parallel with node drain/remediation)
-4. Logs are uploaded to the in-cluster file server
-5. Job completes and is automatically cleaned up after 1 hour
+1. The Fault Remediation module receives a health event with a supported action
+2. Fault Remediation creates a Kubernetes Job on the target node to collect diagnostics
+3. The Job runs with privileged access to gather logs (after the node drain and before the remediation)
+4. The Job uploads the logs to the in-cluster file server
+5. The Job completes, and Kubernetes automatically deletes it after 1 hour
 
-> **Note**: Log collection is **skipped** for unsupported remediation actions since no automated remediation is performed and the node remains accessible for manual log collection.
+> **Note**: NVSentinel **skips** log collection for unsupported remediation actions. For these actions, NVSentinel does no automated remediation, and the node stays accessible for manual log collection.
 
-The file server stores logs organized by node name and timestamp, accessible via web browser through port-forwarding.
+The file server organizes the logs by node name and timestamp. You can access the logs with a web browser through port-forwarding.
 
 ## What Logs Are Collected
 
 ### NVIDIA Bug Report
+
 Comprehensive NVIDIA driver and GPU diagnostic report:
+
 - GPU configuration and status
 - Driver version and details
 - GPU error logs
@@ -43,19 +51,21 @@ Comprehensive NVIDIA driver and GPU diagnostic report:
 
 ### GPU Operator Must-Gather (Optional)
 
-> **Warning**: Must-gather is **disabled by default** because it collects logs from **ALL nodes** in the cluster, which can be very time-consuming for large clusters (e.g., GB200 clusters with 100+ nodes).
+> **Warning**: Must-gather is **disabled by default**. It collects logs from **ALL nodes** in the cluster. On large clusters, this can take a long time, for example on GB200 clusters with 100+ nodes.
 
-When enabled, collects Kubernetes resources and logs for GPU operator components:
+When must-gather is enabled, it collects Kubernetes resources and logs for GPU operator components:
+
 - GPU operator pod logs
 - DCGM exporter logs
 - Device plugin logs
 - GPU feature discovery logs
 - Operator configuration
 
-**To enable must-gather**, set `enableGpuOperatorMustGather: true` and **increase the timeout** accordingly (see [Timeout Configuration](#timeout-configuration) below).
+**To enable must-gather**, set `enableGpuOperatorMustGather: true`. Then **increase the timeout** to match (see [Timeout Configuration](#timeout-configuration) below).
 
 ### Cloud Provider SOS Reports (Optional)
-System logs and configuration from GCP or AWS instances when enabled.
+
+System logs and configuration from GCP or AWS instances, when this option is enabled.
 
 ## Configuration
 
@@ -79,11 +89,11 @@ fault-remediation:
 
 ### Timeout Configuration
 
-The default timeout of `10m` is sufficient when collecting only the nvidia-bug-report (must-gather disabled).
+The default timeout of `10m` is sufficient if the job collects only the nvidia-bug-report (must-gather disabled).
 
-> **Important**: If you enable `enableGpuOperatorMustGather`, you **MUST** increase the timeout!
+> **Important**: If you enable `enableGpuOperatorMustGather`, you **MUST** increase the timeout.
 >
-> Must-gather collects logs from **all nodes** in the cluster, taking approximately **2-3 minutes per node**.
+> Must-gather collects logs from **all nodes** in the cluster. It takes approximately **2-3 minutes per node**.
 >
 > **Recommended timeout formula**: `(number of nodes) × 2-3 minutes`
 >
@@ -106,7 +116,7 @@ fault-remediation:
 
 ### File Server Configuration
 
-The in-cluster file server stores collected logs:
+The in-cluster file server stores the collected logs:
 
 ```yaml
 incluster-file-server:
@@ -125,52 +135,64 @@ incluster-file-server:
 
 ### Configuration Options
 
-- **Enable/Disable**: Turn log collection on or off per deployment
-- **Storage Size**: Configure persistent volume size based on expected log volume
-- **Log Retention**: Automatically clean up old logs after configurable retention period
-- **Timeout**: Set maximum time for log collection job (increase when enabling must-gather)
-- **Enable Must-Gather**: Enable GPU Operator must-gather collection (disabled by default due to performance impact on large clusters)
+- **Enable/Disable**: Enable or disable log collection for each deployment
+- **Storage Size**: Configure the size of the persistent volume to match the expected log volume
+- **Log Retention**: Automatically remove old logs after a configurable retention period
+- **Timeout**: Set the maximum time for the log collection job (increase it if you enable must-gather)
+- **Enable Must-Gather**: Enable GPU Operator must-gather collection (disabled by default because of the performance impact on large clusters)
 - **Cloud-Specific SOS**: Enable additional cloud provider diagnostics
 
 ## Key Features
 
 ### Automatic Collection
-Logs are gathered automatically when a supported remediation action is triggered - no manual intervention required.
+
+NVSentinel gathers logs automatically when a supported remediation action is triggered. No manual intervention is necessary.
 
 ### Privileged Access
-Collection job runs with necessary privileges to access all diagnostic sources on the node.
+
+The collection job runs with the necessary privileges to access all diagnostic sources on the node.
 
 ### Organized Storage
-Logs are organized by node name and timestamp in a browsable directory structure:
-```
+
+The file server organizes logs by node name and timestamp, in a browsable directory structure:
+
+```text
 /node-name/timestamp/
   ├── nvidia-bug-report.log.gz
   └── gpu-operator-must-gather.tar.gz
 ```
 
 ### Web Access
-Simple port-forward to browse and download logs via web browser:
+
+Use a port-forward to browse and download logs with a web browser:
+
 ```bash
 kubectl port-forward -n nvsentinel svc/nvsentinel-incluster-file-server 8080:80
 ```
-Then access `http://localhost:8080` in your browser.
+
+Then open `http://localhost:8080` in your browser.
 
 ### Automatic Cleanup
-Built-in log rotation removes old logs based on retention policy to manage disk space.
+
+Built-in log rotation removes old logs according to the retention policy, to manage disk space.
 
 ### Job Lifecycle Management
-Collection jobs are automatically cleaned up after completion with configurable TTL (default: 1 hour).
+
+Kubernetes automatically deletes collection jobs 1 hour after completion.
 
 ## Storage and Retention
 
 ### Storage Architecture
-Logs are stored in a persistent volume attached to an NGINX-based file server running in the cluster. The file server is accessible only within the cluster or via port-forward.
+
+An NGINX-based file server that runs in the cluster stores the logs in an attached persistent volume. The file server is accessible only from within the cluster or through a port-forward.
 
 ### Log Retention
-Automatic cleanup service runs periodically (default: daily) to remove logs older than the configured retention period (default: 7 days). This prevents disk space issues from accumulating logs.
+
+An automatic cleanup service runs periodically (default: daily). It removes logs that are older than the configured retention period (default: 7 days). This prevents disk space problems from accumulated logs.
 
 ### Directory Structure
-```
+
+```text
 /usr/share/nginx/html/
 └── {node-name}/
     └── {timestamp}/
