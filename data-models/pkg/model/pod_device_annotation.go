@@ -23,20 +23,6 @@ const (
 	GPUDRADriverName = "gpu.nvidia.com"
 )
 
-var (
-	// EntityTypeToResourceNames is the fixed GPU_UUID map that the pod device mapper and the
-	// fault-remediation impactedEntityScope check read. node-drainer reads the configured
-	// PartialRemediationEntityTypes instead.
-	EntityTypeToResourceNames = map[string][]string{
-		"GPU_UUID": {
-			"nvidia.com/gpu",
-			"nvidia.com/pgpu",
-			// DRA driver name used for GPUs allocated through ResourceClaims (GPU Operator GPUCluster mode).
-			GPUDRADriverName,
-		},
-	}
-)
-
 type DeviceAnnotation struct {
 	Devices map[string][]string `json:"devices"`
 }

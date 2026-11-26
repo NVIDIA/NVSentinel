@@ -31,6 +31,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/config"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
@@ -62,6 +63,8 @@ var (
 	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
 		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
 
+	configPath = flag.String("config", "", "TOML configuration file. Required when the pod device mapper is enabled.")
+
 	podMapperEnabled = flag.Bool("pod-mapper-enabled", true,
 		"Run the pod device mapper after writing the metadata file. Partial drains need the device annotations "+
 			"it writes; disable it only where the mapper cannot work.")
@@ -82,6 +85,14 @@ func main() {
 	slog.Info("Starting metadata-collector", "version", version, "commit", commit, "date", date)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	// The configuration is read before the collection, so a wrong file fails at once instead of after NVML.
+	entityTypes, err := loadMapperConfig(*podMapperEnabled, *configPath, os.Getenv("NODE_NAME"))
+	if err != nil {
+		slog.Error("Invalid pod device mapper configuration", "error", err)
+		cancel()
+		os.Exit(1)
+	}
 
 	collectionCompleted := newCollectionCompletedGauge(prometheus.DefaultRegisterer)
 
@@ -109,7 +120,7 @@ func main() {
 		})
 	}
 
-	metadata, err := runCollector(ctx)
+	_, err = runCollector(ctx)
 	if err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
@@ -122,7 +133,7 @@ func main() {
 
 	group.Go(func() error {
 		return runPodMapperIfEnabled(groupCtx, *podMapperEnabled, func(ctx context.Context) error {
-			return runMapper(ctx, newPodMapperMetrics(prometheus.DefaultRegisterer), metadata.GPUs)
+			return runMapper(ctx, newPodMapperMetrics(prometheus.DefaultRegisterer), entityTypes)
 		})
 	})
 
@@ -150,10 +161,29 @@ func runPodMapperIfEnabled(ctx context.Context, enabled bool, run func(context.C
 	return run(ctx)
 }
 
-func runMapper(ctx context.Context, metrics *podMapperMetrics, gpus []model.GPUInfo) error {
-	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx,
+// loadMapperConfig reads the devices that the mapper records, and checks that the node name is set when the
+// mapper needs it. A disabled mapper needs no configuration.
+func loadMapperConfig(enabled bool, path, nodeName string) (model.PartialRemediationEntityTypes, error) {
+	if !enabled {
+		return nil, nil
+	}
+
+	entityTypes, err := config.LoadPartialRemediationEntityTypes(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load the pod device mapper configuration: %w", err)
+	}
+
+	if err := mapper.CheckNodeName(entityTypes, nodeName); err != nil {
+		return nil, err
+	}
+
+	return entityTypes, nil
+}
+
+func runMapper(ctx context.Context, metrics *podMapperMetrics, entityTypes model.PartialRemediationEntityTypes) error {
+	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx, entityTypes,
 		mapper.WithKubeconfigs(*kubeconfigPath, *kubeletKubeconfigPath),
-		mapper.WithGPUs(gpus))
+		mapper.WithNodeName(os.Getenv("NODE_NAME")))
 	if err != nil {
 		return fmt.Errorf("could not create mapper: %w", err)
 	}
