@@ -276,7 +276,7 @@ Deleting the resume token can move the start position past undelivered health ev
 1. Set `event-exporter.exporter.backfill.enabled` to `true` in the NVSentinel Helm values.
 2. Set `event-exporter.exporter.backfill.maxAge` to cover the oldest undelivered health event at restart. Use its `created_at` time in `health_events` to determine its age. If its age is unknown, use a window that covers all retained health events.
 3. Set `event-exporter.exporter.backfill.maxEvents` high enough to include all health events in that time range.
-4. Apply the Helm values.
+4. If a GitOps controller manages NVSentinel, stop its reconciliation or update the GitOps source with these values. Then apply the Helm values.
 5. Follow [Watcher Position Recovery](../postgresql-provider.md#watcher-position-recovery) for event-exporter. After all exporter pods stop, run this SQL statement in the NVSentinel PostgreSQL database at the token reset step.
 
    ```sql
