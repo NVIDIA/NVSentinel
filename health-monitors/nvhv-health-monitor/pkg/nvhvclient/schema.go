@@ -30,6 +30,7 @@ type schema struct {
 	method            string
 	request, response protoreflect.MessageDescriptor
 
+	xidFrom, xidTo   protoreflect.FieldDescriptor // the request's Xid window
 	version, results protoreflect.FieldDescriptor
 	check            checkFields
 	action           actionFields
@@ -97,6 +98,8 @@ func (s *schema) bind() error {
 		return fd
 	}
 
+	s.xidFrom = f(s.request, "xid_from", protoreflect.Int64Kind, false)
+	s.xidTo = f(s.request, "xid_to", protoreflect.Int64Kind, false)
 	s.version = f(s.response, "schema_version", protoreflect.StringKind, false)
 	s.results = f(s.response, "check_results", protoreflect.MessageKind, true)
 

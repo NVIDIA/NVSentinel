@@ -41,6 +41,7 @@ func FileDescriptorProto() *descriptorpb.FileDescriptorProto {
 	const (
 		str  = descriptorpb.FieldDescriptorProto_TYPE_STRING
 		bl   = descriptorpb.FieldDescriptorProto_TYPE_BOOL
+		i64  = descriptorpb.FieldDescriptorProto_TYPE_INT64
 		msg  = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
 		enum = descriptorpb.FieldDescriptorProto_TYPE_ENUM
 
@@ -55,6 +56,14 @@ func FileDescriptorProto() *descriptorpb.FileDescriptorProto {
 		if typeName != "" {
 			f.TypeName = proto.String("." + Package + "." + typeName)
 		}
+
+		return f
+	}
+
+	// optional makes a proto3 optional field, which tracks presence through a
+	// synthetic oneof, as NVHV's optional request fields do.
+	optional := func(f *descriptorpb.FieldDescriptorProto, oneof int32) *descriptorpb.FieldDescriptorProto {
+		f.Proto3Optional, f.OneofIndex = proto.Bool(true), proto.Int32(oneof)
 
 		return f
 	}
@@ -84,7 +93,17 @@ func FileDescriptorProto() *descriptorpb.FileDescriptorProto {
 			enumOf("OperationalState", "OPERATIONAL_STATE_UNSPECIFIED", "ready", "monitor", "drain"),
 		},
 		MessageType: []*descriptorpb.DescriptorProto{
-			{Name: proto.String("EvaluateRequest")},
+			{
+				Name: proto.String("EvaluateRequest"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					optional(field("xid_from", 4, i64, one, ""), 0),
+					optional(field("xid_to", 5, i64, one, ""), 1),
+				},
+				OneofDecl: []*descriptorpb.OneofDescriptorProto{
+					{Name: proto.String("_xid_from")},
+					{Name: proto.String("_xid_to")},
+				},
+			},
 			{
 				Name: proto.String("NodeVerdict"),
 				Field: []*descriptorpb.FieldDescriptorProto{

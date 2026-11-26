@@ -26,7 +26,7 @@ import (
 // Evaluator returns one verdict for the node; nvhvclient.Client is the
 // production implementation.
 type Evaluator interface {
-	Evaluate(ctx context.Context) (*verdict.Verdict, error)
+	Evaluate(ctx context.Context, r verdict.Request) (*verdict.Verdict, error)
 }
 
 // Handler receives the result of one poll: exactly one of v and err is
@@ -37,7 +37,10 @@ type Handler func(ctx context.Context, v *verdict.Verdict, err error)
 type Poller struct {
 	Evaluator Evaluator
 	Handle    Handler
-	Interval  time.Duration
+	// Request returns what to ask of NVHV in each poll; nil asks for the
+	// defaults.
+	Request  func() verdict.Request
+	Interval time.Duration
 	// Timeout bounds one Evaluate call. It should not exceed Interval, so a
 	// call never outlives the next poll.
 	Timeout time.Duration
@@ -63,7 +66,12 @@ func (p *Poller) pollOnce(ctx context.Context) {
 	callCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 
-	v, err := p.Evaluator.Evaluate(callCtx)
+	var r verdict.Request
+	if p.Request != nil {
+		r = p.Request()
+	}
+
+	v, err := p.Evaluator.Evaluate(callCtx, r)
 	if ctx.Err() != nil {
 		return // shutting down; not an NVHV failure
 	}

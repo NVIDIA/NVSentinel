@@ -40,9 +40,10 @@ import (
 type Server struct {
 	response protoreflect.MessageDescriptor
 
-	mu  sync.Mutex
-	v   *verdict.Verdict
-	err error
+	mu      sync.Mutex
+	v       *verdict.Verdict
+	err     error
+	lastReq verdict.Request
 
 	reflectionCalls atomic.Int32
 }
@@ -97,11 +98,12 @@ func Start(t testing.TB, opts Options) (*Server, string) {
 		Methods: []grpc.MethodDesc{{
 			MethodName: string(method.Name()),
 			Handler: func(_ any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-				if err := dec(dynamicpb.NewMessage(method.Input())); err != nil {
+				req := dynamicpb.NewMessage(method.Input())
+				if err := dec(req); err != nil {
 					return nil, err
 				}
 
-				return s.evaluate(ctx)
+				return s.evaluate(ctx, readRequest(req))
 			},
 		}},
 	}, s)
@@ -132,15 +134,43 @@ func (s *Server) Set(v *verdict.Verdict, err error) {
 // ReflectionCalls is how many reflection streams clients have opened.
 func (s *Server) ReflectionCalls() int { return int(s.reflectionCalls.Load()) }
 
-func (s *Server) evaluate(context.Context) (any, error) {
+// LastRequest is what the latest Evaluate call asked for.
+func (s *Server) LastRequest() verdict.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	return s.lastReq
+}
+
+func (s *Server) evaluate(_ context.Context, r verdict.Request) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.lastReq = r
 
 	if s.err != nil {
 		return nil, s.err
 	}
 
 	return encode(s.response, s.v), nil
+}
+
+// readRequest reads the Xid window of an Evaluate request.
+func readRequest(m *dynamicpb.Message) verdict.Request {
+	var r verdict.Request
+
+	fields := m.Descriptor().Fields()
+	if fd := fields.ByName("xid_from"); fd != nil && m.Has(fd) {
+		v := m.Get(fd).Int()
+		r.XidFrom = &v
+	}
+
+	if fd := fields.ByName("xid_to"); fd != nil && m.Has(fd) {
+		v := m.Get(fd).Int()
+		r.XidTo = &v
+	}
+
+	return r
 }
 
 // encode writes a verdict into a dynamic message of the served schema.

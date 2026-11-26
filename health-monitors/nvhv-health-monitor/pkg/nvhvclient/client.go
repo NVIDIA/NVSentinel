@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
@@ -50,14 +51,22 @@ func New(conn grpc.ClientConnInterface) *Client {
 	return &Client{conn: conn}
 }
 
-// Evaluate asks NVHV for the node's verdict with its default request.
-func (c *Client) Evaluate(ctx context.Context) (*verdict.Verdict, error) {
+// Evaluate asks NVHV for the node's verdict.
+func (c *Client) Evaluate(ctx context.Context, r verdict.Request) (*verdict.Verdict, error) {
 	s, err := c.loadSchema(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	req, resp := dynamicpb.NewMessage(s.request), dynamicpb.NewMessage(s.response)
+
+	if r.XidFrom != nil {
+		req.Set(s.xidFrom, protoreflect.ValueOfInt64(*r.XidFrom))
+	}
+
+	if r.XidTo != nil {
+		req.Set(s.xidTo, protoreflect.ValueOfInt64(*r.XidTo))
+	}
 
 	if err := c.conn.Invoke(ctx, s.method, req, resp); err != nil {
 		// NVHV may have been replaced by a version with another schema.

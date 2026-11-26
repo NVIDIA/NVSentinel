@@ -77,7 +77,7 @@ func TestEvaluateReadsTheVerdictThroughReflection(t *testing.T) {
 	srv, addr := fakenvhv.Start(t, fakenvhv.Options{})
 	srv.Set(sampleVerdict(), nil)
 
-	got, err := New(dial(t, addr)).Evaluate(ctx(t))
+	got, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
 	require.NoError(t, err)
 
 	assert.Equal(t, sampleVerdict(), got)
@@ -89,7 +89,7 @@ func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
 	c := New(dial(t, addr))
 
 	for range 3 {
-		_, err := c.Evaluate(ctx(t))
+		_, err := c.Evaluate(ctx(t), verdict.Request{})
 		require.NoError(t, err)
 	}
 
@@ -97,13 +97,13 @@ func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
 
 	srv.Set(nil, status.Error(codes.Internal, "boom"))
 
-	_, err := c.Evaluate(ctx(t))
+	_, err := c.Evaluate(ctx(t), verdict.Request{})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err), "the gRPC status survives the wrapping")
 
 	srv.Set(sampleVerdict(), nil)
 
-	_, err = c.Evaluate(ctx(t))
+	_, err = c.Evaluate(ctx(t), verdict.Request{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, srv.ReflectionCalls(), "a failed call makes the next one read the schema again")
 }
@@ -111,7 +111,7 @@ func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
 func TestServerWithoutReflectionIsAnError(t *testing.T) {
 	_, addr := fakenvhv.Start(t, fakenvhv.Options{NoReflection: true})
 
-	_, err := New(dial(t, addr)).Evaluate(ctx(t))
+	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "reflection")
 	assert.Equal(t, codes.Unimplemented, status.Code(errors.Unwrap(err)))
@@ -234,7 +234,42 @@ func TestClientReportsAServerWhoseSchemaChanged(t *testing.T) {
 
 	_, addr := fakenvhv.Start(t, fakenvhv.Options{Schema: schema})
 
-	_, err := New(dial(t, addr)).Evaluate(ctx(t))
+	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
 	require.ErrorIs(t, err, ErrIncompatibleSchema)
 	assert.ErrorContains(t, err, "check_id")
+}
+
+func TestEvaluateSendsTheXidWindow(t *testing.T) {
+	srv, addr := fakenvhv.Start(t, fakenvhv.Options{})
+	c := New(dial(t, addr))
+
+	from, to := int64(1000), int64(1015)
+
+	_, err := c.Evaluate(ctx(t), verdict.Request{XidFrom: &from, XidTo: &to})
+	require.NoError(t, err)
+
+	got := srv.LastRequest()
+	require.NotNil(t, got.XidFrom)
+	require.NotNil(t, got.XidTo)
+	assert.Equal(t, from, *got.XidFrom)
+	assert.Equal(t, to, *got.XidTo)
+
+	// No window asked for: the fields stay unset, so NVHV reads unbounded.
+	_, err = c.Evaluate(ctx(t), verdict.Request{})
+	require.NoError(t, err)
+
+	got = srv.LastRequest()
+	assert.Nil(t, got.XidFrom)
+	assert.Nil(t, got.XidTo)
+}
+
+func TestNewSchemaNeedsTheXidWindowFields(t *testing.T) {
+	_, err := newSchema(filesWith(t, func(f *descriptorpb.FileDescriptorProto) {
+		m := message(f, "EvaluateRequest")
+		m.Field = m.Field[1:] // drop xid_from
+		m.OneofDecl = m.OneofDecl[1:]
+		m.Field[0].OneofIndex = proto.Int32(0)
+	}))
+	require.ErrorIs(t, err, ErrIncompatibleSchema)
+	assert.ErrorContains(t, err, "EvaluateRequest.xid_from")
 }

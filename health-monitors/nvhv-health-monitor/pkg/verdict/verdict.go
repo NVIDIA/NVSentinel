@@ -30,6 +30,13 @@ const (
 	Critical Severity = "CRITICAL"
 )
 
+// Request is what the monitor asks of NVHV for one poll.
+type Request struct {
+	// XidFrom and XidTo bound the Xid journal read to the interval (XidFrom,
+	// XidTo], in Unix seconds. A nil bound is unbounded.
+	XidFrom, XidTo *int64
+}
+
 // Verdict is one node verdict.
 type Verdict struct {
 	SchemaVersion string

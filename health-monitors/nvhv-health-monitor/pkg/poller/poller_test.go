@@ -28,17 +28,19 @@ import (
 )
 
 type fakeEvaluator struct {
-	mu      sync.Mutex
-	calls   int
-	results []error // error to return per call; nil means success
+	mu       sync.Mutex
+	calls    int
+	results  []error // error to return per call; nil means success
+	requests []verdict.Request
 }
 
-func (f *fakeEvaluator) Evaluate(ctx context.Context) (*verdict.Verdict, error) {
+func (f *fakeEvaluator) Evaluate(_ context.Context, r verdict.Request) (*verdict.Verdict, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	i := f.calls
 	f.calls++
+	f.requests = append(f.requests, r)
 
 	if i < len(f.results) && f.results[i] != nil {
 		return nil, f.results[i]
@@ -97,4 +99,38 @@ func TestPollerStopsWithoutReportingOnShutdown(t *testing.T) {
 	p.Run(ctx)
 
 	assert.False(t, called)
+}
+
+func TestPollerAsksForARequestEveryPoll(t *testing.T) {
+	ev := &fakeEvaluator{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	asked, handled := int64(0), 0
+	p := &Poller{
+		Evaluator: ev,
+		Interval:  time.Millisecond,
+		Timeout:   time.Second,
+		Request: func() verdict.Request {
+			asked++
+			from := asked
+
+			return verdict.Request{XidFrom: &from}
+		},
+		Handle: func(context.Context, *verdict.Verdict, error) {
+			handled++
+			if handled == 3 {
+				cancel()
+			}
+		},
+	}
+
+	p.Run(ctx)
+
+	require.Len(t, ev.requests, 3)
+
+	for i, r := range ev.requests {
+		require.NotNil(t, r.XidFrom)
+		assert.Equal(t, int64(i+1), *r.XidFrom, "each poll gets a fresh request")
+	}
 }
