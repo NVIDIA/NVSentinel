@@ -109,21 +109,21 @@ process_node() {
   done
 }
 
-active_jobs=0
+worker_pids=()
 max_parallel=5
 processed=0
 failed=0
 
 for node in $nodes; do
   process_node "$node" &
-  active_jobs=$((active_jobs + 1))
+  worker_pids+=("$!")
   processed=$((processed + 1))
   
-  if [ $active_jobs -ge $max_parallel ]; then
-    if ! wait -n; then
+  if [ "${#worker_pids[@]}" -ge "$max_parallel" ]; then
+    if ! wait "${worker_pids[0]}"; then
       failed=$((failed + 1))
     fi
-    active_jobs=$((active_jobs - 1))
+    worker_pids=("${worker_pids[@]:1}")
   fi
   
   if [ $((processed % 10)) -eq 0 ]; then
@@ -131,12 +131,11 @@ for node in $nodes; do
   fi
 done
 
-# Collect the exit status of every remaining background job; a bare `wait` would discard them.
-while [ $active_jobs -gt 0 ]; do
-  if ! wait -n; then
+# Waiting by PID retrieves the status even if the worker has already exited.
+for pid in "${worker_pids[@]}"; do
+  if ! wait "$pid"; then
     failed=$((failed + 1))
   fi
-  active_jobs=$((active_jobs - 1))
 done
 
 if [ $failed -gt 0 ]; then

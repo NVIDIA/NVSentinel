@@ -153,4 +153,24 @@ if [ "$status" -eq 0 ] || ! grep -q "1 of 1 nodes failed" <<< "$output"; then
   exit 1
 fi
 
+# Delay the first wait so workers can finish before their statuses are collected.
+status=0
+output=$(
+  wait() {
+    if [ -z "${WAIT_DELAYED:-}" ]; then
+      WAIT_DELAYED=1
+      sleep 1
+      jobs >/dev/null
+    fi
+    builtin wait "$@"
+  }
+  export -f wait
+  run_cleanup ""
+) || status=$?
+if [ "$status" -ne 0 ] || ! grep -q "Cleanup completed for 3 nodes" <<< "$output"; then
+  echo "FAIL: expected all three successful workers to be collected (status $status)"
+  echo "$output"
+  exit 1
+fi
+
 echo "PASS"
