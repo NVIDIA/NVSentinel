@@ -52,13 +52,13 @@ go_tools:
   # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest depType=go_tools
   setup_envtest: 'v0.25.3'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
-  goimports: 'v0.52.0'
+  goimports: 'v0.53.0'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
-  deadcode: 'v0.52.0'
+  deadcode: 'v0.53.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
   # renovate: datasource=go depName=golang.org/x/vuln depType=go_tools
-  govulncheck: 'v1.9.0'
+  govulncheck: 'v1.10.0'
   # renovate: datasource=github-releases depName=google/go-licenses depType=go_tools
   go_licenses: 'v2.0.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
