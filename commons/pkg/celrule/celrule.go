@@ -113,7 +113,7 @@ func NewNodeRule(expression string) (*NodeRule, error) {
 
 // Evaluate evaluates the CEL expression against the metadata and spec of node.
 func (nm *NodeRule) Evaluate(node *corev1.Node) (bool, error) {
-	slog.Info("Evaluating NodeRuleEvaluator for node", "node", node.Name)
+	slog.Debug("Evaluating NodeRuleEvaluator for node", "node", node.Name)
 
 	nodeInfo, err := NodeToUnstructured(node)
 	if err != nil {

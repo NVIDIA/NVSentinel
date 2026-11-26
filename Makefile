@@ -631,6 +631,12 @@ helm-test:
 			echo ""; \
 		fi; \
 	done
+	@# Shell tests for scripts shipped in the umbrella chart (need bash and jq).
+	@for t in distros/kubernetes/nvsentinel/tests/*_test.sh; do \
+		[ -e "$$t" ] || continue; \
+		echo "Running shell test: $$t"; \
+		bash "$$t" || exit 1; \
+	done
 	@echo "✅ All Helm chart unit tests passed"
 
 # Log collector lint (shell script)
