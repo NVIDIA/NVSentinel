@@ -80,8 +80,8 @@ Each one writes and removes only its own labels. The label names and values, and
 
 | Key | Owner | Removed when |
 |---|---|---|
-| `dcgm.version` | `nvidia-labeler` | No DCGM pod gives a version, unless `--assume-dcgm-available` keeps an existing value; and on opt-out |
-| `driver.installed` | `nvidia-labeler` | No driver pod is ready, unless `--assume-driver-installed` applies; and on opt-out |
+| `dcgm.version` | `nvidia-labeler` | No DCGM pod gives a version, unless `--assume-dcgm-available` keeps an existing value; and on opt-out, also when an operator set it |
+| `driver.installed` | `nvidia-labeler` | No driver pod is ready, unless `--assume-driver-installed` applies; and on opt-out, also when an operator set it |
 | `dcgm-bootstrap-completed` annotation | `nvidia-labeler` | Never, as today |
 | `kata.enabled` | `labeler` | On opt-out |
 | Device-count labels | `labeler` | Never, as today |
@@ -95,7 +95,7 @@ Until ADR-070 creates the NVIDIA plugin chart, the labeler chart renders both De
 - `dcgmAppLabel`, `driverAppLabel`, `gkeInstallerAppLabel`, `assumeDriverInstalled` and `requireDCGMReadyForBootstrap` apply to `nvidia-labeler`. So does `global.dcgm.mode`, which turns on `--assume-dcgm-available` in the `external-hostengine` and `embedded-mode` modes ([ADR-044](044-dcgm-source-modes.md)).
 - `kataLabelOverride` and `expectedDeviceCounts` apply to labeler.
 - `replicaCount`, `logLevel`, `podAnnotations`, `podLabels`, `resources`, `qps`, `burst` and the scheduling values apply to both.
-- `nvidiaLabeler.enabled` (default `true`) and `nvidiaLabeler.image` are new. With `nvidiaLabeler.enabled: false`, nothing writes `dcgm.version` or `driver.installed`, so the NVIDIA monitors run only on nodes where the operator sets those labels by hand. That fits a cluster without NVIDIA GPUs.
+- `nvidiaLabeler.enabled` (default `true`) and `nvidiaLabeler.image` are new. The umbrella chart refuses `nvidiaLabeler.enabled: false` while a component that selects nodes on `dcgm.version` or `driver.installed` is enabled: the GPU, syslog or NIC health monitor, or metadata-collector. Otherwise nothing would remove those labels from an opted-out node, and those components would stay on it. So the NVIDIA detection is turned off together with the components that read its labels, as ADR-070 removes a plugin.
 - `global.labeler.enabled: false` turns off both Deployments, as it turns off the labeler today.
 
 The `gpu` and `nic` classes of `expectedDeviceCounts` stay in the labeler chart's defaults. They are configuration: the device-count engine has no vendor names in its code.
