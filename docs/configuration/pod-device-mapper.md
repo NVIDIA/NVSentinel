@@ -52,7 +52,7 @@ metadata-collector:
         fieldPath: status.hostIP
 ```
 
-The default gets the primary IP of the node through the downward API. This works if the kubelet binds to `0.0.0.0` or to the node IP. A static address also works:
+The default gets the primary IP of each node through the downward API. This works if the kubelet binds to `0.0.0.0` or to the node IP. A static address is the same for every mapper pod, so use one only on a single-node cluster. On more nodes, every mapper would read the pods of that one node: the pods on the other nodes would get no annotations, and the mappers of the other nodes would remove the annotations of the pods on that node:
 
 ```yaml
 metadata-collector:
