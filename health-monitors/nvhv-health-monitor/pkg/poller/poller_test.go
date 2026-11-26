@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	healthv1 "github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdictpb/health/v1"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
 type fakeEvaluator struct {
@@ -33,7 +33,7 @@ type fakeEvaluator struct {
 	results []error // error to return per call; nil means success
 }
 
-func (f *fakeEvaluator) Evaluate(ctx context.Context) (*healthv1.NodeVerdict, error) {
+func (f *fakeEvaluator) Evaluate(ctx context.Context) (*verdict.Verdict, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -44,7 +44,7 @@ func (f *fakeEvaluator) Evaluate(ctx context.Context) (*healthv1.NodeVerdict, er
 		return nil, f.results[i]
 	}
 
-	return &healthv1.NodeVerdict{}, nil
+	return &verdict.Verdict{}, nil
 }
 
 func TestPollerReportsEachResult(t *testing.T) {
@@ -60,7 +60,7 @@ func TestPollerReportsEachResult(t *testing.T) {
 		Evaluator: ev,
 		Interval:  time.Millisecond,
 		Timeout:   time.Second,
-		Handle: func(_ context.Context, v *healthv1.NodeVerdict, err error) {
+		Handle: func(_ context.Context, v *verdict.Verdict, err error) {
 			if err == nil {
 				assert.NotNil(t, v)
 			} else {
@@ -91,7 +91,7 @@ func TestPollerStopsWithoutReportingOnShutdown(t *testing.T) {
 		Evaluator: &fakeEvaluator{results: []error{context.Canceled}},
 		Interval:  time.Hour,
 		Timeout:   time.Second,
-		Handle:    func(context.Context, *healthv1.NodeVerdict, error) { called = true },
+		Handle:    func(context.Context, *verdict.Verdict, error) { called = true },
 	}
 
 	p.Run(ctx)

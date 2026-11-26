@@ -31,8 +31,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/nvhvclient"
 	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/poller"
-	healthv1 "github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdictpb/health/v1"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
 const defaultAgentName = "nvhv-health-monitor"
@@ -80,7 +81,7 @@ func run() error {
 	defer conn.Close()
 
 	p := &poller.Poller{
-		Evaluator: &poller.GRPCEvaluator{Client: healthv1.NewVerdictServiceClient(conn)},
+		Evaluator: nvhvclient.New(conn),
 		Handle:    logVerdict,
 		Interval:  *pollInterval,
 		Timeout:   timeout,
@@ -115,12 +116,10 @@ func validateFlags() (time.Duration, error) {
 }
 
 // logVerdict is a placeholder until verdicts are turned into health events.
-func logVerdict(_ context.Context, verdict *healthv1.NodeVerdict, err error) {
+func logVerdict(_ context.Context, v *verdict.Verdict, err error) {
 	if err != nil {
 		return
 	}
 
-	slog.Info("NVHV verdict",
-		"overallSeverity", verdict.GetOverallSeverity().String(),
-		"checks", len(verdict.GetCheckResults()))
+	slog.Info("NVHV verdict", "schemaVersion", v.SchemaVersion, "checks", len(v.Results))
 }

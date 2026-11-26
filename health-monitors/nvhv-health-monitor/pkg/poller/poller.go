@@ -20,18 +20,18 @@ import (
 	"log/slog"
 	"time"
 
-	healthv1 "github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdictpb/health/v1"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
-// Evaluator returns one verdict for the node. GRPCEvaluator is the production
-// implementation.
+// Evaluator returns one verdict for the node; nvhvclient.Client is the
+// production implementation.
 type Evaluator interface {
-	Evaluate(ctx context.Context) (*healthv1.NodeVerdict, error)
+	Evaluate(ctx context.Context) (*verdict.Verdict, error)
 }
 
-// Handler receives the result of one poll: exactly one of verdict and err is
+// Handler receives the result of one poll: exactly one of v and err is
 // set.
-type Handler func(ctx context.Context, verdict *healthv1.NodeVerdict, err error)
+type Handler func(ctx context.Context, v *verdict.Verdict, err error)
 
 // Poller calls Evaluate every Interval and hands the result to Handle.
 type Poller struct {
@@ -63,7 +63,7 @@ func (p *Poller) pollOnce(ctx context.Context) {
 	callCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 
-	verdict, err := p.Evaluator.Evaluate(callCtx)
+	v, err := p.Evaluator.Evaluate(callCtx)
 	if ctx.Err() != nil {
 		return // shutting down; not an NVHV failure
 	}
@@ -72,5 +72,5 @@ func (p *Poller) pollOnce(ctx context.Context) {
 		slog.Warn("NVHV Evaluate failed", "error", err)
 	}
 
-	p.Handle(ctx, verdict, err)
+	p.Handle(ctx, v, err)
 }
