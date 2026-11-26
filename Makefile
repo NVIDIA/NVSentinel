@@ -56,6 +56,7 @@ GO_MODULES := \
 	janitor \
 	lifecycle-manager \
 	metadata-collector \
+	pod-device-mapper \
 	event-exporter \
 	store-client \
 	commons
@@ -530,6 +531,11 @@ lint-test-metadata-collector:
 	@echo "Linting and testing metadata-collector..."
 	$(MAKE) -C metadata-collector lint-test
 
+.PHONY: lint-test-pod-device-mapper
+lint-test-pod-device-mapper:
+	@echo "Linting and testing pod-device-mapper..."
+	$(MAKE) -C pod-device-mapper lint-test
+
 .PHONY: lint-test-event-exporter
 lint-test-event-exporter:
 	@echo "Linting and testing event-exporter..."
@@ -624,6 +630,12 @@ helm-test:
 			helm unittest "$$chart_dir" || exit 1; \
 			echo ""; \
 		fi; \
+	done
+	@# Shell tests for scripts shipped in the umbrella chart (need bash and jq).
+	@for t in distros/kubernetes/nvsentinel/tests/*_test.sh; do \
+		[ -e "$$t" ] || continue; \
+		echo "Running shell test: $$t"; \
+		bash "$$t" || exit 1; \
 	done
 	@echo "✅ All Helm chart unit tests passed"
 

@@ -76,6 +76,7 @@ jobs:
           - nvsentinel-node-drainer-module
           - nvsentinel-labeler-module
           - nvsentinel/metadata-collector
+          - nvsentinel/pod-device-mapper
           - nvsentinel/log-collector
           - nvsentinel/file-server-cleanup
           - nvsentinel/janitor

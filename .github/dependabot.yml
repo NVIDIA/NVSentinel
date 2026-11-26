@@ -51,6 +51,7 @@ updates:
       - "/labeler"
       - "/metadata-collector"
       - "/node-drainer"
+      - "/pod-device-mapper"
       - "/platform-connectors"
       - "/plugins/mock-slurm-operator"
       - "/plugins/slinky-drainer"
