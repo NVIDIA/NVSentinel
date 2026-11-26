@@ -25,7 +25,9 @@
 #     and sleep, as UID 65534 with a read-only root filesystem and no
 #     capabilities
 # alpine/kubectl sets no user, so the mongodb-store helpers set runAsUser 1001
-# themselves, the user the Bitnami kubectl image used to run them as.
+# themselves, the user the Bitnami kubectl image used to run them as. On
+# OpenShift they leave it unset, so the platform assigns one from the
+# namespace's range.
 #
 # Lives in the umbrella suite because the Job calls umbrella helpers, so it
 # cannot render with the subchart alone.
@@ -74,10 +76,14 @@ tests:
       mongodb-store.usePerconaOperator: false
     asserts:
       - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1001
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 1001
+      - equal:
           path: spec.template.spec.initContainers[0].securityContext
           value: &bitnamiInitSecurityContext
-            runAsUser: 1001
-            runAsGroup: 1001
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -88,6 +94,108 @@ tests:
       - equal:
           path: spec.template.spec.initContainers[1].securityContext
           value: *bitnamiInitSecurityContext
+
+  # OpenShift's restricted-v2 SCC rejects a pod whose user is outside the
+  # namespace's range, and assigns one from it when the pod sets none.
+  - it: leaves the Bitnami pod user and group to OpenShift when forced
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: force
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts: &bitnamiNoUserAsserts
+      - notExists:
+          path: spec.template.spec.securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.securityContext.runAsGroup
+      - notExists:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.initContainers[1].securityContext.runAsUser
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsNonRoot
+          value: true
+
+  - it: leaves the Bitnami pod user and group to OpenShift on an OpenShift cluster
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts: *bitnamiNoUserAsserts
+
+  - it: leaves the create-mongodb-database Job user and group to OpenShift when forced
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: force
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.validateDeployedCrVersion: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts: &jobOpenShiftAsserts
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: &jobOpenShiftSecurityContext
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *jobOpenShiftSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[2].securityContext
+          value: *jobOpenShiftSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[3].securityContext
+          value: *jobOpenShiftSecurityContext
+
+  - it: leaves the create-mongodb-database Job user and group to OpenShift on an OpenShift cluster
+    template: charts/mongodb-store/templates/jobs.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.validateDeployedCrVersion: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts: *jobOpenShiftAsserts
+
+  - it: keeps user and group 1001 on OpenShift when the adaptation is disabled
+    template: charts/mongodb-store/templates/jobs.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: disabled
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 1001
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsGroup
+          value: 1001
 
   - it: uses the maintained default image for the Bitnami create-mongodb-database Job
     template: charts/mongodb-store/templates/jobs.yaml

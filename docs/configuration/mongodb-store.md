@@ -735,7 +735,7 @@ If you mirror images into a private registry, change this value. A replacement i
 - `kubectl` and a POSIX `sh` with `head`, `base64`, `tr`, `cut`, `sed`, `grep` and `sleep` (busybox applets are enough).
 - Images for every node architecture you run.
 
-These containers run as UID and GID 1001 with all capabilities dropped. The kubectl init containers of the `create-mongodb-database` Job also run with a read-only root filesystem. The Job's `mongo-client` container is unchanged. The Bitnami init containers write temporary files to `/tmp`.
+These containers run as UID and GID 1001 with all capabilities dropped. On OpenShift (`global.compatibility.openshift.adaptSecurityContext` set to `force`, or `auto` on a cluster with the OpenShift security API) the chart leaves the UID and GID unset, so OpenShift assigns them from the namespace's range. The kubectl init containers of the `create-mongodb-database` Job also run with a read-only root filesystem. The Job's `mongo-client` container is unchanged. The Bitnami init containers write temporary files to `/tmp`.
 
 ##### mongosh
 Image for MongoDB shell operations and database initialization.

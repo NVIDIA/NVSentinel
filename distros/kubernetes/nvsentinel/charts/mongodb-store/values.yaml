@@ -204,13 +204,23 @@ mongodb:
     minAvailable: ""
     maxUnavailable: ""
 
+  # The two init containers below use the kubectl helper image, which sets no
+  # user. They inherit runAsUser and runAsGroup 1001 from the pod, the user the
+  # earlier Bitnami kubectl image ran them as. The subchart renders this block
+  # through common.compatibility.renderSecurityContext, so on OpenShift
+  # (global.compatibility.openshift.adaptSecurityContext) both are removed and
+  # the platform assigns them from the namespace's range. The other fields are
+  # the subchart defaults; every other container of the pod sets its own user.
+  podSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsGroup: 1001
+
   initContainers:
     - name: create-mongodb-credentials
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
         runAsNonRoot: true
         allowPrivilegeEscalation: false
         capabilities:
@@ -258,8 +268,6 @@ mongodb:
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
         runAsNonRoot: true
         allowPrivilegeEscalation: false
         capabilities:
