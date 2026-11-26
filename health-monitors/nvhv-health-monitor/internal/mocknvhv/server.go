@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package fakenvhv is a stand-in NVHV server for tests. It serves a configurable
+// Package mocknvhv is a mock NVHV server for tests. It serves a configurable
 // verdict over gRPC and, like NVHV, its schema through gRPC reflection, so the
 // monitor's client can be tested without a real NVHV. The schema is a small one
 // written in this package, and a test can serve a changed one with StartWith.
-package fakenvhv
+package mocknvhv
 
 import (
 	"context"
@@ -48,7 +48,7 @@ type Server struct {
 	reflectionCalls atomic.Int32
 }
 
-// Options change what the fake serves.
+// Options change what the mock serves.
 type Options struct {
 	// NoReflection turns reflection off, as in an NVHV that does not have it.
 	NoReflection bool

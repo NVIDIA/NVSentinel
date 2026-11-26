@@ -27,14 +27,14 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
-type fakeEvaluator struct {
+type mockEvaluator struct {
 	mu       sync.Mutex
 	calls    int
 	results  []error // error to return per call; nil means success
 	requests []verdict.Request
 }
 
-func (f *fakeEvaluator) Evaluate(_ context.Context, r verdict.Request) (*verdict.Verdict, error) {
+func (f *mockEvaluator) Evaluate(_ context.Context, r verdict.Request) (*verdict.Verdict, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -51,7 +51,7 @@ func (f *fakeEvaluator) Evaluate(_ context.Context, r verdict.Request) (*verdict
 
 func TestPollerReportsEachResult(t *testing.T) {
 	boom := errors.New("boom")
-	ev := &fakeEvaluator{results: []error{nil, boom, nil}}
+	ev := &mockEvaluator{results: []error{nil, boom, nil}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -90,7 +90,7 @@ func TestPollerStopsWithoutReportingOnShutdown(t *testing.T) {
 
 	called := false
 	p := &Poller{
-		Evaluator: &fakeEvaluator{results: []error{context.Canceled}},
+		Evaluator: &mockEvaluator{results: []error{context.Canceled}},
 		Interval:  time.Hour,
 		Timeout:   time.Second,
 		Handle:    func(context.Context, *verdict.Verdict, error) { called = true },
@@ -102,7 +102,7 @@ func TestPollerStopsWithoutReportingOnShutdown(t *testing.T) {
 }
 
 func TestPollerAsksForARequestEveryPoll(t *testing.T) {
-	ev := &fakeEvaluator{}
+	ev := &mockEvaluator{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -9,8 +9,8 @@
 IS_GO_MODULE := 1
 IS_KO_MODULE := 1
 
-# The fake NVHV server is test support
-TEST_EXCLUDE_PACKAGES := internal/fakenvhv
+# The mock NVHV server is test support
+TEST_EXCLUDE_PACKAGES := internal/mocknvhv
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS

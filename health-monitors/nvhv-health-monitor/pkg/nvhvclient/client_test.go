@@ -30,7 +30,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/internal/fakenvhv"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/internal/mocknvhv"
 	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
@@ -74,7 +74,7 @@ func sampleVerdict() *verdict.Verdict {
 }
 
 func TestEvaluateReadsTheVerdictThroughReflection(t *testing.T) {
-	srv, addr := fakenvhv.Start(t, fakenvhv.Options{})
+	srv, addr := mocknvhv.Start(t, mocknvhv.Options{})
 	srv.Set(sampleVerdict(), nil)
 
 	got, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
@@ -84,7 +84,7 @@ func TestEvaluateReadsTheVerdictThroughReflection(t *testing.T) {
 }
 
 func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
-	srv, addr := fakenvhv.Start(t, fakenvhv.Options{})
+	srv, addr := mocknvhv.Start(t, mocknvhv.Options{})
 	srv.Set(sampleVerdict(), nil)
 	c := New(dial(t, addr))
 
@@ -109,7 +109,7 @@ func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
 }
 
 func TestServerWithoutReflectionIsAnError(t *testing.T) {
-	_, addr := fakenvhv.Start(t, fakenvhv.Options{NoReflection: true})
+	_, addr := mocknvhv.Start(t, mocknvhv.Options{NoReflection: true})
 
 	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
 	require.Error(t, err)
@@ -117,11 +117,11 @@ func TestServerWithoutReflectionIsAnError(t *testing.T) {
 	assert.Equal(t, codes.Unimplemented, status.Code(errors.Unwrap(err)))
 }
 
-// filesWith returns the fake's schema with edit applied to its file proto.
+// filesWith returns the mock's schema with edit applied to its file proto.
 func filesWith(t *testing.T, edit func(*descriptorpb.FileDescriptorProto)) *protoregistry.Files {
 	t.Helper()
 
-	fdp := fakenvhv.FileDescriptorProto()
+	fdp := mocknvhv.FileDescriptorProto()
 	edit(fdp)
 
 	files, err := buildFiles(map[string]*descriptorpb.FileDescriptorProto{fdp.GetName(): fdp})
@@ -224,7 +224,7 @@ func TestNewFieldsInNVHVAreIgnored(t *testing.T) {
 }
 
 func TestClientReportsAServerWhoseSchemaChanged(t *testing.T) {
-	schema := fakenvhv.FileDescriptorProto()
+	schema := mocknvhv.FileDescriptorProto()
 
 	for _, fd := range message(schema, "CheckVerdict").Field {
 		if fd.GetName() == "check_id" {
@@ -232,7 +232,7 @@ func TestClientReportsAServerWhoseSchemaChanged(t *testing.T) {
 		}
 	}
 
-	_, addr := fakenvhv.Start(t, fakenvhv.Options{Schema: schema})
+	_, addr := mocknvhv.Start(t, mocknvhv.Options{Schema: schema})
 
 	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
 	require.ErrorIs(t, err, ErrIncompatibleSchema)
@@ -240,7 +240,7 @@ func TestClientReportsAServerWhoseSchemaChanged(t *testing.T) {
 }
 
 func TestEvaluateSendsTheXidWindow(t *testing.T) {
-	srv, addr := fakenvhv.Start(t, fakenvhv.Options{})
+	srv, addr := mocknvhv.Start(t, mocknvhv.Options{})
 	c := New(dial(t, addr))
 
 	from, to := int64(1000), int64(1015)

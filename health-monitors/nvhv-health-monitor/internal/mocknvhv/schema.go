@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package fakenvhv
+package mocknvhv
 
 import (
 	"google.golang.org/protobuf/proto"
@@ -22,7 +22,7 @@ import (
 	_ "google.golang.org/protobuf/types/known/structpb" // registers google/protobuf/struct.proto, which the schema imports
 )
 
-// Package and service names of the schema the fake serves.
+// Package and service names of the schema the mock serves.
 const (
 	Package     = "health.verdict.v1"
 	ServiceName = Package + ".VerdictService"
@@ -33,7 +33,7 @@ type (
 	label     = descriptorpb.FieldDescriptorProto_Label
 )
 
-// FileDescriptorProto is the verdict schema the fake serves: the messages, enums
+// FileDescriptorProto is the verdict schema the mock serves: the messages, enums
 // and service the monitor reads, with the field numbers NVHV uses. It returns a
 // new copy each time, so a test can change it to play an NVHV whose schema
 // changed. This is a small stand-in written here, not a copy of NVHV's proto.
