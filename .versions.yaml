@@ -123,7 +123,7 @@ cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
   prometheus_operator: '92.22.0'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
-  gpu_operator: 'v26.7.2'
+  gpu_operator: 'v26.7.3'
   # renovate: datasource=helm depName=cert-manager depType=cluster
   cert_manager: '1.21.3'
   # renovate: datasource=helm depName=policy-controller depType=cluster
