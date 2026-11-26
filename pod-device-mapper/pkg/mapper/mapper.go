@@ -202,7 +202,7 @@ annotation added, updated, or removed. Note that this endpoint is bound to local
 
 - /api/v1/pods?fieldSelector=spec.nodeName=<node-name>
 
-Using the local Kubelet endpoint will significantly reduce load on the control plane from all metadata-collector
+Using the local Kubelet endpoint will significantly reduce load on the control plane from all pod-device-mapper
 daemonset pods with the tradeoff that the endpoint has to be periodically scraped rather than watched. Since we have to
 periodically scrape the PodResourcesLister endpoint in the next step, we will be consistent in how we're discovering
 both the pod list for this node and the device to pod allocation by listing from a local endpoint on the node.
@@ -213,8 +213,7 @@ deleted, and together their specs can be larger than the container's memory limi
 2. Discover the pod to device mapping using the Kubelet's gRPC PodResourcesLister endpoint. This local gRPC service is
 exposed on a local Unix socket. This endpoint exposes devices allocated to pods through either resource requests through
 device plugins or resource claims through DRA. Starting in v1.35, we can rely on the ResourceHealthStatus feature to
-expose this same device mapping through container statuses and at that point we'll be able to remove this component
-from the metadata-collector.
+expose this same device mapping through container statuses and at that point we'll be able to remove this component.
 
 It is possible for the PodResourcesLister to include device allocations to pods with a terminal status. As a result,
 completed or failed pods may continue to expose devices as allocated which are actually freed until 1.34:

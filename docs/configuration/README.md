@@ -316,7 +316,7 @@ global:
 
 ### Kubelet Root Directory
 
-This value is the kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path that the metadata collector reads. See [Kubelet Root Directory](./metadata-collector.md#kubelet-root-directory).
+This value is the kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path that the pod device mapper reads. See [Kubelet Root Directory](./pod-device-mapper.md#kubelet-root-directory).
 
 ```yaml
 global:

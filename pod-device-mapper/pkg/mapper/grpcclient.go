@@ -83,7 +83,7 @@ func NewKubeletGRPClient(ctx context.Context, filter deviceFilter, resolver *res
 }
 
 /*
-ListPodResources calls the PodResourcesLister gRPC service listening on a local Unix socket. The metadata-collector
+ListPodResources calls the PodResourcesLister gRPC service listening on a local Unix socket. The pod-device-mapper
 daemonset mounts the host's <kubelet root dir>/pod-resources at /var/lib/kubelet/pod-resources to expose the socket.
 
 Devices allocated by device plugins arrive in each container's devices list keyed by resource name. The client records

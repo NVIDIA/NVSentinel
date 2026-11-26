@@ -17,11 +17,19 @@ package main
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/generic"
 )
 
 // TestTranslateCSPError_VariousErrors_ReturnsExpectedStatus verifies that CSP
@@ -69,4 +77,40 @@ func TestTranslateCSPError_VariousErrors_ReturnsExpectedStatus(t *testing.T) {
 // not create an error when the provider returns nil.
 func TestTranslateCSPError_NilError_ReturnsNil(t *testing.T) {
 	require.NoError(t, translateCSPError(nil, "perform CSP operation"))
+}
+
+// TestSendRebootSignal_ForwardsDeadlineToGenericProvider verifies that an
+// expired RPC request cannot create a Job through the real provider.
+func TestSendRebootSignal_ForwardsDeadlineToGenericProvider(t *testing.T) {
+	const namespace = "test-ns"
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
+		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{BootID: "fixture-boot-id"}},
+	}
+	client := fake.NewSimpleClientset(node)
+	provider := &janitorProviderServer{
+		k8sClient: client,
+		cspClient: generic.NewClientWithK8s(client, generic.Config{RebootJobNamespace: namespace}),
+	}
+	_, err := provider.SendRebootSignal(t.Context(), &cspv1alpha1.SendRebootSignalRequest{
+		NodeName:          node.Name,
+		ExecutionDeadline: timestamppb.New(time.Now().Add(-time.Minute)),
+	})
+	require.ErrorContains(t, err, "reboot deadline has expired")
+	jobs, err := client.BatchV1().Jobs(namespace).List(t.Context(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items)
+}
+
+func TestSendRebootSignal_RejectsMalformedDeadline(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &janitorProviderServer{k8sClient: client}
+
+	_, err := provider.SendRebootSignal(t.Context(), &cspv1alpha1.SendRebootSignalRequest{
+		NodeName:          "worker-1",
+		ExecutionDeadline: &timestamppb.Timestamp{Nanos: -1},
+	})
+
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Empty(t, client.Actions())
 }
