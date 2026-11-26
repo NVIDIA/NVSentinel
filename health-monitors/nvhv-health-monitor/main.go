@@ -68,7 +68,7 @@ func run() error {
 
 	timeout, err := validateFlags()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to validate the command-line flags: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -76,7 +76,7 @@ func run() error {
 
 	conn, err := grpc.NewClient(*nvhvAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return fmt.Errorf("create NVHV client: %w", err)
+		return fmt.Errorf("failed to create the gRPC client for NVHV at %s: %w", *nvhvAddress, err)
 	}
 	defer conn.Close()
 

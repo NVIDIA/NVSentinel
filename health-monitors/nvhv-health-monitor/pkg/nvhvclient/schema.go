@@ -73,7 +73,7 @@ func newSchema(files *protoregistry.Files) (*schema, error) {
 	}
 
 	if err := s.bind(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to bind the verdict fields the monitor reads: %w", err)
 	}
 
 	return s, nil
@@ -83,7 +83,7 @@ func newSchema(files *protoregistry.Files) (*schema, error) {
 func (s *schema) bind() error {
 	var err error
 
-	f := func(md protoreflect.MessageDescriptor, name string, kind protoreflect.Kind, list bool) protoreflect.FieldDescriptor {
+	requireField := func(md protoreflect.MessageDescriptor, name string, kind protoreflect.Kind, list bool) protoreflect.FieldDescriptor {
 		if err != nil {
 			return nil
 		}
@@ -98,24 +98,33 @@ func (s *schema) bind() error {
 		return fd
 	}
 
-	s.xidFrom = f(s.request, "xid_from", protoreflect.Int64Kind, false)
-	s.xidTo = f(s.request, "xid_to", protoreflect.Int64Kind, false)
-	s.version = f(s.response, "schema_version", protoreflect.StringKind, false)
-	s.results = f(s.response, "check_results", protoreflect.MessageKind, true)
+	s.xidFrom = requireField(s.request, "xid_from", protoreflect.Int64Kind, false)
+	s.xidTo = requireField(s.request, "xid_to", protoreflect.Int64Kind, false)
+	s.version = requireField(s.response, "schema_version", protoreflect.StringKind, false)
+	s.results = requireField(s.response, "check_results", protoreflect.MessageKind, true)
 
 	if err != nil {
 		return err
 	}
 
+	// The two bounds are set independently. In a real oneof, setting one would
+	// clear the other, and the window would silently lose its lower bound. The
+	// synthetic oneof of a proto3 optional field is fine.
+	for _, fd := range []protoreflect.FieldDescriptor{s.xidFrom, s.xidTo} {
+		if o := fd.ContainingOneof(); o != nil && !o.IsSynthetic() {
+			return fmt.Errorf("%w: %s must not be in a oneof", ErrIncompatibleSchema, fd.FullName())
+		}
+	}
+
 	cm := s.results.Message()
 	s.check = checkFields{
-		id:       f(cm, "check_id", protoreflect.StringKind, false),
-		severity: f(cm, "severity", protoreflect.EnumKind, false),
-		category: f(cm, "category", protoreflect.EnumKind, false),
-		skipped:  f(cm, "skipped", protoreflect.BoolKind, false),
-		messages: f(cm, "messages", protoreflect.StringKind, true),
-		action:   f(cm, "recommended_action", protoreflect.MessageKind, false),
-		entities: f(cm, "affected_entities", protoreflect.StringKind, true),
+		id:       requireField(cm, "check_id", protoreflect.StringKind, false),
+		severity: requireField(cm, "severity", protoreflect.EnumKind, false),
+		category: requireField(cm, "category", protoreflect.EnumKind, false),
+		skipped:  requireField(cm, "skipped", protoreflect.BoolKind, false),
+		messages: requireField(cm, "messages", protoreflect.StringKind, true),
+		action:   requireField(cm, "recommended_action", protoreflect.MessageKind, false),
+		entities: requireField(cm, "affected_entities", protoreflect.StringKind, true),
 	}
 
 	if err != nil {
@@ -129,8 +138,8 @@ func (s *schema) bind() error {
 
 	am := s.check.action.Message()
 	s.action = actionFields{
-		state: f(am, "operational_state", protoreflect.EnumKind, false),
-		steps: f(am, "remediation_actions", protoreflect.StringKind, true),
+		state: requireField(am, "operational_state", protoreflect.EnumKind, false),
+		steps: requireField(am, "remediation_actions", protoreflect.StringKind, true),
 	}
 
 	if err != nil {
@@ -143,8 +152,13 @@ func (s *schema) bind() error {
 		}
 	}
 
-	// A value without string_value just has no observed strings.
+	// A value without string_value just has no observed strings. If it has one,
+	// it must be a plain string: reading another type as a string would turn
+	// a number into text without any error.
 	s.valueString = s.check.observed.MapValue().Message().Fields().ByName("string_value")
+	if v := s.valueString; v != nil && (v.Kind() != protoreflect.StringKind || v.IsList() || v.IsMap()) {
+		return fmt.Errorf("%w: %s must be a string", ErrIncompatibleSchema, v.FullName())
+	}
 
 	return nil
 }

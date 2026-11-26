@@ -20,6 +20,7 @@ package mocknvhv
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -100,7 +101,7 @@ func Start(t testing.TB, opts Options) (*Server, string) {
 			Handler: func(_ any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 				req := dynamicpb.NewMessage(method.Input())
 				if err := dec(req); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to decode the Evaluate request: %w", err)
 				}
 
 				return s.evaluate(ctx, readRequest(req))

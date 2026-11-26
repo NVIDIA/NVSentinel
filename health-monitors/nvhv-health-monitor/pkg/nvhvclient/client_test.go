@@ -16,7 +16,6 @@ package nvhvclient
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -108,15 +107,6 @@ func TestSchemaIsReadOnceAndAgainAfterAFailedCall(t *testing.T) {
 	assert.Equal(t, 2, srv.ReflectionCalls(), "a failed call makes the next one read the schema again")
 }
 
-func TestServerWithoutReflectionIsAnError(t *testing.T) {
-	_, addr := mocknvhv.Start(t, mocknvhv.Options{NoReflection: true})
-
-	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "reflection")
-	assert.Equal(t, codes.Unimplemented, status.Code(errors.Unwrap(err)))
-}
-
 // filesWith returns the mock's schema with edit applied to its file proto.
 func filesWith(t *testing.T, edit func(*descriptorpb.FileDescriptorProto)) *protoregistry.Files {
 	t.Helper()
@@ -140,11 +130,6 @@ func message(fdp *descriptorpb.FileDescriptorProto, name string) *descriptorpb.D
 	return nil
 }
 
-func TestNewSchemaAcceptsTheServedSchema(t *testing.T) {
-	_, err := newSchema(filesWith(t, func(*descriptorpb.FileDescriptorProto) {}))
-	require.NoError(t, err)
-}
-
 func TestNewSchemaRejectsAChangeThatBreaksTheMonitor(t *testing.T) {
 	for name, tc := range map[string]struct {
 		edit func(*descriptorpb.FileDescriptorProto)
@@ -159,6 +144,16 @@ func TestNewSchemaRejectsAChangeThatBreaksTheMonitor(t *testing.T) {
 				}
 			},
 			"CheckVerdict.check_id",
+		},
+		"a renamed window field": {
+			func(f *descriptorpb.FileDescriptorProto) {
+				for _, fd := range message(f, "EvaluateRequest").Field {
+					if fd.GetName() == "xid_from" {
+						fd.Name = proto.String("xid_start")
+					}
+				}
+			},
+			"EvaluateRequest.xid_from",
 		},
 		"a field of another type": {
 			func(f *descriptorpb.FileDescriptorProto) {
@@ -223,22 +218,6 @@ func TestNewFieldsInNVHVAreIgnored(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClientReportsAServerWhoseSchemaChanged(t *testing.T) {
-	schema := mocknvhv.FileDescriptorProto()
-
-	for _, fd := range message(schema, "CheckVerdict").Field {
-		if fd.GetName() == "check_id" {
-			fd.Name = proto.String("check_identifier")
-		}
-	}
-
-	_, addr := mocknvhv.Start(t, mocknvhv.Options{Schema: schema})
-
-	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
-	require.ErrorIs(t, err, ErrIncompatibleSchema)
-	assert.ErrorContains(t, err, "check_id")
-}
-
 func TestEvaluateSendsTheXidWindow(t *testing.T) {
 	srv, addr := mocknvhv.Start(t, mocknvhv.Options{})
 	c := New(dial(t, addr))
@@ -263,13 +242,71 @@ func TestEvaluateSendsTheXidWindow(t *testing.T) {
 	assert.Nil(t, got.XidTo)
 }
 
-func TestNewSchemaNeedsTheXidWindowFields(t *testing.T) {
+func TestNewSchemaRejectsXidBoundsInARealOneof(t *testing.T) {
+	// In a real oneof, setting xid_to would clear xid_from.
 	_, err := newSchema(filesWith(t, func(f *descriptorpb.FileDescriptorProto) {
 		m := message(f, "EvaluateRequest")
-		m.Field = m.Field[1:] // drop xid_from
-		m.OneofDecl = m.OneofDecl[1:]
-		m.Field[0].OneofIndex = proto.Int32(0)
+		m.OneofDecl = []*descriptorpb.OneofDescriptorProto{{Name: proto.String("bounds")}}
+
+		for _, fd := range m.Field {
+			fd.Proto3Optional = nil
+			fd.OneofIndex = proto.Int32(0)
+		}
 	}))
 	require.ErrorIs(t, err, ErrIncompatibleSchema)
-	assert.ErrorContains(t, err, "EvaluateRequest.xid_from")
+	assert.ErrorContains(t, err, "must not be in a oneof")
+}
+
+// withValueMessage points observed_values at a message of its own whose
+// string_value, if given, has the type t.
+func withValueMessage(f *descriptorpb.FileDescriptorProto, t *descriptorpb.FieldDescriptorProto_Type) {
+	value := &descriptorpb.DescriptorProto{Name: proto.String("MyValue")}
+	if t != nil {
+		value.Field = []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("string_value"), Number: proto.Int32(1), Type: t.Enum(),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+		}}
+	}
+
+	f.MessageType = append(f.MessageType, value)
+
+	for _, fd := range message(f, "CheckVerdict").NestedType[0].Field {
+		if fd.GetName() == "value" {
+			fd.TypeName = proto.String(".health.verdict.v1.MyValue")
+		}
+	}
+}
+
+func TestNewSchemaChecksTheTypeOfStringValue(t *testing.T) {
+	str := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	num := descriptorpb.FieldDescriptorProto_TYPE_INT64
+
+	_, err := newSchema(filesWith(t, func(f *descriptorpb.FileDescriptorProto) { withValueMessage(f, &str) }))
+	require.NoError(t, err, "a string string_value is fine")
+
+	_, err = newSchema(filesWith(t, func(f *descriptorpb.FileDescriptorProto) { withValueMessage(f, nil) }))
+	require.NoError(t, err, "no string_value just means no observed strings")
+
+	// An int64 string_value would otherwise be read as text, as "123".
+	_, err = newSchema(filesWith(t, func(f *descriptorpb.FileDescriptorProto) { withValueMessage(f, &num) }))
+	require.ErrorIs(t, err, ErrIncompatibleSchema)
+	assert.ErrorContains(t, err, "string_value must be a string")
+}
+
+func TestErrorsCarryContextAndKeepTheirCause(t *testing.T) {
+	_, addr := mocknvhv.Start(t, mocknvhv.Options{NoReflection: true})
+
+	_, err := New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to load the NVHV verdict schema: failed to fetch the verdict schema from NVHV through gRPC reflection:")
+	assert.Equal(t, codes.Unimplemented, status.Code(err), "the gRPC status survives the wrapping")
+
+	schema := mocknvhv.FileDescriptorProto()
+	message(schema, "CheckVerdict").Field[0].Name = proto.String("check_identifier")
+
+	_, addr = mocknvhv.Start(t, mocknvhv.Options{Schema: schema})
+
+	_, err = New(dial(t, addr)).Evaluate(ctx(t), verdict.Request{})
+	require.ErrorIs(t, err, ErrIncompatibleSchema, "the sentinel is still found through the wrapping")
+	assert.ErrorContains(t, err, "failed to read the verdict schema that NVHV serves: failed to bind the verdict fields the monitor reads:")
 }

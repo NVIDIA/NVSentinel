@@ -55,7 +55,7 @@ func New(conn grpc.ClientConnInterface) *Client {
 func (c *Client) Evaluate(ctx context.Context, r verdict.Request) (*verdict.Verdict, error) {
 	s, err := c.loadSchema(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load the NVHV verdict schema: %w", err)
 	}
 
 	req, resp := dynamicpb.NewMessage(s.request), dynamicpb.NewMessage(s.response)
@@ -72,7 +72,7 @@ func (c *Client) Evaluate(ctx context.Context, r verdict.Request) (*verdict.Verd
 		// NVHV may have been replaced by a version with another schema.
 		c.forgetSchema()
 
-		return nil, fmt.Errorf("evaluate: %w", err)
+		return nil, fmt.Errorf("failed to call NVHV %s: %w", s.method, err)
 	}
 
 	return s.decode(resp.ProtoReflect()), nil
@@ -88,12 +88,12 @@ func (c *Client) loadSchema(ctx context.Context) (*schema, error) {
 
 	files, err := fetchFiles(ctx, c.conn, serviceName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch the verdict schema from NVHV through gRPC reflection: %w", err)
 	}
 
 	s, err := newSchema(files)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read the verdict schema that NVHV serves: %w", err)
 	}
 
 	c.schema = s
