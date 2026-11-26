@@ -21,8 +21,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
@@ -31,52 +31,47 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/config"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
 const (
-	defaultAgentName              = "metadata-collector"
-	defaultOutputPath             = "/var/lib/nvsentinel/gpu_metadata.json"
-	defaultPodDeviceMonitorPeriod = time.Second * 30
-
-	// At the 30s poll period this is 5 minutes of a collector that cannot do its job: long
-	// enough to ride out a credential rotation or a kubelet restart, short enough to still be
-	// a loud failure.
-	defaultMaxConsecutivePodMapperFailures = 10
+	defaultAgentName  = "metadata-collector"
+	defaultOutputPath = "/var/lib/nvsentinel/gpu_metadata.json"
 
 	// Matches every other NVSentinel component, and the chart's PodMonitor scrapes a container
 	// port named "metrics" rather than a number.
 	defaultMetricsPort = 2112
 )
 
+// movedFlags belonged to the pod device mapper, which runs in pod-device-mapper since ADR-072. metadata-collector
+// still accepts them, so that an older pod spec or host setup keeps starting, and ignores them.
+var movedFlags = []string{
+	"kubeconfig", "kubelet-kubeconfig", "config", "pod-mapper-max-consecutive-failures",
+}
+
+// movedBoolFlag is registered as a boolean, so that a bare --pod-mapper-enabled still parses.
+const movedBoolFlag = "pod-mapper-enabled"
+
 var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 
-	outputPath     = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
-	kubeconfigPath = flag.String("kubeconfig", "",
-		"Kubeconfig for Kubernetes API access; empty uses in-cluster auth")
-	kubeletKubeconfigPath = flag.String("kubelet-kubeconfig", "",
-		"Kubeconfig for the kubelet HTTPS endpoint; empty uses KUBELET_HOST and the pod ServiceAccount token")
-
-	configPath = flag.String("config", "", "TOML configuration file. Required when the pod device mapper is enabled.")
-
-	podMapperEnabled = flag.Bool("pod-mapper-enabled", true,
-		"Run the pod device mapper after writing the metadata file. Partial drains need the device annotations "+
-			"it writes; disable it only where the mapper cannot work.")
-
-	maxConsecutivePodMapperFailures = flag.Int("pod-mapper-max-consecutive-failures",
-		defaultMaxConsecutivePodMapperFailures,
-		"Consecutive pod device mapper poll failures tolerated before exiting non-zero. Minimum 1.")
+	outputPath = flag.String("output-path", defaultOutputPath, "Path to write the GPU metadata JSON file")
 
 	metricsPort = flag.Int("metrics-port", defaultMetricsPort,
 		"Port for the Prometheus metrics endpoint. 0 disables it, which matters here because this "+
 			"runs with hostNetwork and so binds on the node.")
 )
+
+func init() {
+	for _, name := range movedFlags {
+		flag.String(name, "", "Ignored. The pod device mapper runs in pod-device-mapper.")
+	}
+
+	flag.Bool(movedBoolFlag, true, "Ignored. The pod device mapper runs in pod-device-mapper.")
+}
 
 func main() {
 	flag.Parse()
@@ -84,22 +79,17 @@ func main() {
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
 	slog.Info("Starting metadata-collector", "version", version, "commit", commit, "date", date)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-
-	// The configuration is read before the collection, so a wrong file fails at once instead of after NVML.
-	entityTypes, err := loadMapperConfig(*podMapperEnabled, *configPath, os.Getenv("NODE_NAME"))
-	if err != nil {
-		slog.Error("Invalid pod device mapper configuration", "error", err)
-		cancel()
-		os.Exit(1)
+	if set := setMovedFlags(flag.CommandLine); len(set) > 0 {
+		slog.Warn("Ignoring the flags of the pod device mapper, which runs in pod-device-mapper", "flags", set)
 	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	collectionCompleted := newCollectionCompletedGauge(prometheus.DefaultRegisterer)
 
 	// The metrics endpoint starts before collection, not after it. Collection calls into the GPU
 	// driver, which can block indefinitely when the driver is wedged, and a pod stuck there should
-	// still be scraped and show the stall through collectionCompleted rather than go dark. Either
-	// goroutine returning cancels the other, which keeps the mapper threshold's non-zero exit intact.
+	// still be scraped and show the stall through collectionCompleted rather than go dark.
 	group, groupCtx := errgroup.WithContext(ctx)
 
 	if *metricsPort > 0 {
@@ -110,8 +100,7 @@ func main() {
 			).Serve(groupCtx)
 			// Deliberately not returned. The port is on the host network here, so a collision
 			// with a node service (kube-vip also uses 2112) would otherwise crash-loop this
-			// DaemonSet fleet-wide — the failure this component's whole issue is about. Losing
-			// metrics is worth strictly less than losing the collector.
+			// DaemonSet fleet-wide. Losing metrics is worth strictly less than losing the collector.
 			if err != nil {
 				slog.Error("Metrics endpoint stopped; continuing without it", "error", err)
 			}
@@ -120,8 +109,7 @@ func main() {
 		})
 	}
 
-	_, err = runCollector(ctx)
-	if err != nil {
+	if _, err := runCollector(ctx); err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
 		os.Exit(1)
@@ -131,115 +119,27 @@ func main() {
 
 	slog.Info("Metadata collector completed successfully")
 
-	group.Go(func() error {
-		return runPodMapperIfEnabled(groupCtx, *podMapperEnabled, func(ctx context.Context) error {
-			return runMapper(ctx, newPodMapperMetrics(prometheus.DefaultRegisterer), entityTypes)
-		})
-	})
+	// The process stays up after the collection: it runs as a DaemonSet, so returning would restart it in a loop.
+	<-ctx.Done()
 
 	if err := group.Wait(); err != nil {
-		slog.Error("Pod device mapper failed", "error", err)
-		cancel()
-		os.Exit(1)
+		slog.Error("Metrics endpoint failed", "error", err)
 	}
 
-	slog.Info("Pod device mapper completed successfully")
+	cancel()
 }
 
-// runPodMapperIfEnabled runs the pod device mapper, or waits for ctx to end when it is disabled. The process has to
-// stay up either way: it runs as a DaemonSet, so returning would restart it in a loop.
-func runPodMapperIfEnabled(ctx context.Context, enabled bool, run func(context.Context) error) error {
-	if !enabled {
-		slog.Info("Pod device mapper is disabled; pods get no device annotations, so partial drains fail")
-		<-ctx.Done()
+// setMovedFlags returns the moved flags that the command line sets.
+func setMovedFlags(flags *flag.FlagSet) []string {
+	var set []string
 
-		return nil
-	}
-
-	slog.Info("Starting pod device mapper")
-
-	return run(ctx)
-}
-
-// loadMapperConfig reads the devices that the mapper records, and checks that the node name is set when the
-// mapper needs it. A disabled mapper needs no configuration.
-func loadMapperConfig(enabled bool, path, nodeName string) (model.PartialRemediationEntityTypes, error) {
-	if !enabled {
-		return nil, nil
-	}
-
-	entityTypes, err := config.LoadPartialRemediationEntityTypes(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load the pod device mapper configuration: %w", err)
-	}
-
-	if err := mapper.CheckNodeName(entityTypes, nodeName); err != nil {
-		return nil, err
-	}
-
-	return entityTypes, nil
-}
-
-func runMapper(ctx context.Context, metrics *podMapperMetrics, entityTypes model.PartialRemediationEntityTypes) error {
-	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx, entityTypes,
-		mapper.WithKubeconfigs(*kubeconfigPath, *kubeletKubeconfigPath),
-		mapper.WithNodeName(os.Getenv("NODE_NAME")))
-	if err != nil {
-		return fmt.Errorf("could not create mapper: %w", err)
-	}
-
-	ticker := time.NewTicker(defaultPodDeviceMonitorPeriod)
-	defer ticker.Stop()
-
-	return pollPodDevices(ctx, podDeviceMapper, ticker.C, *maxConsecutivePodMapperFailures, metrics)
-}
-
-// pollPodDevices updates pod device annotations on every tick, returning only when ctx is done
-// or maxConsecutiveFailures polls have failed in a row.
-//
-// The threshold is the point: a single failed poll used to return, which main turns into
-// os.Exit(1), so one rotated credential restarted every pod in the fleet at once. Failing
-// loudly is still wanted, just once the failures look permanent rather than transient.
-func pollPodDevices(ctx context.Context, podDeviceMapper mapper.PodDeviceMapper,
-	ticks <-chan time.Time, maxConsecutiveFailures int, metrics *podMapperMetrics) error {
-	if maxConsecutiveFailures < 1 {
-		return fmt.Errorf("pod-mapper-max-consecutive-failures must be at least 1, got %d", maxConsecutiveFailures)
-	}
-
-	consecutiveFailures := 0
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticks:
-			numUpdates, err := podDeviceMapper.UpdatePodDevicesAnnotations()
-			if err != nil {
-				consecutiveFailures++
-				// Recorded before the threshold check, so the final streak is visible on the
-				// scrape that precedes the exit rather than being lost with the process.
-				metrics.recordFailure(consecutiveFailures)
-
-				if consecutiveFailures >= maxConsecutiveFailures {
-					return fmt.Errorf("could not update mapper pod devices annotations, %d consecutive failures: %w",
-						consecutiveFailures, err)
-				}
-
-				slog.Error("Could not update mapper pod devices annotations, retrying on the next tick",
-					"consecutiveFailures", consecutiveFailures,
-					"threshold", maxConsecutiveFailures,
-					"error", err)
-
-				continue
-			}
-
-			consecutiveFailures = 0
-
-			metrics.recordSuccess()
-
-			slog.Info("Device mapper pod annotation updates", "podCount", numUpdates)
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == movedBoolFlag || slices.Contains(movedFlags, f.Name) {
+			set = append(set, f.Name)
 		}
-	}
+	})
+
+	return set
 }
 
 func runCollector(ctx context.Context) (*model.GPUMetadata, error) {

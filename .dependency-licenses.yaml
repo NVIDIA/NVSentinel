@@ -33,6 +33,7 @@ modules:
   - metadata-collector
   - node-drainer
   - platform-connectors
+  - pod-device-mapper
   - preflight
   - store-client
 

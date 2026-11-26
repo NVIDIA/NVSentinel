@@ -54,6 +54,18 @@ linters:
     - whitespace
     - wsl_v5
     - gosec
+    - depguard
+  settings:
+    depguard:
+      # Each rule checks only the files that it lists.
+      rules:
+        # ADR-070 and ADR-072: the pod device mapper is core code, and metadata-collector holds the NVIDIA discovery.
+        pod-device-mapper:
+          files:
+            - "**/pod-device-mapper/**"
+          deny:
+            - pkg: github.com/nvidia/nvsentinel/metadata-collector
+              desc: core code must not import the NVIDIA discovery (ADR-070, ADR-072)
   exclusions:
     generated: lax
     presets:

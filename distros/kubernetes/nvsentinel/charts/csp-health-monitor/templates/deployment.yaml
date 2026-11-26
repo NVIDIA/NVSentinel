@@ -45,6 +45,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with ((.Values.global).seLinuxOptions) }}
+      securityContext:
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       serviceAccountName: {{ include "csp-health-monitor.fullname" . }}
       {{- if $pgClientCert }}
       initContainers:

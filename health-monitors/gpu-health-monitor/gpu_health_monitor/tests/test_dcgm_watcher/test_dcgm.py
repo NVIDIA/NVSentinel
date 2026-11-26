@@ -179,7 +179,7 @@ class TestDCGMHealthChecks:
         dcgm_group = MagicMock()
         dcgm_group.GetGpuIds.return_value = [0]
         watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(dcgm_group, []))
-        watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+        watcher._get_gpu_identifiers = MagicMock(return_value=({}, {}))
 
         watcher._initialize_dcgm_monitoring(MagicMock())
 
@@ -1948,7 +1948,7 @@ class TestGroupsAfterStaleConnection:
             callbacks=[],
             metadata_reader=MagicMock(),
         )
-        watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+        watcher._get_gpu_identifiers = MagicMock(return_value=({}, {}))
         return watcher
 
     @staticmethod
