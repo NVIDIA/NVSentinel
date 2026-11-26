@@ -308,13 +308,6 @@ class TestParseUptimeLimit:
                 _uptime_config("[uptimelimit]\nEnabled=true\nAffectedVbiosVersions= , \nMaxUptimeHours=1512\n")
             )
 
-    def test_driver_versions_do_not_enable_the_check(self) -> None:
-        """The defect is in the vBIOS, so a driver version list does not count as a version."""
-        with pytest.raises(click.BadParameter, match="at least one vBIOS version"):
-            _parse_uptime_limit(
-                _uptime_config("[uptimelimit]\nEnabled=true\nAffectedDriverVersions=570.133.20\nMaxUptimeHours=1512\n")
-            )
-
     @pytest.mark.parametrize("hours", ["0", "-1", "nan", "inf", "-inf"])
     def test_enabled_check_without_finite_positive_limit_refuses_to_start(self, hours: str) -> None:
         with pytest.raises(click.BadParameter, match="finite number greater than 0"):

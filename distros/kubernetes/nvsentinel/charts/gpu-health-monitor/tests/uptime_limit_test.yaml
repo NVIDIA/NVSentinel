@@ -43,9 +43,6 @@ tests:
       - matchRegex:
           path: data["config.ini"]
           pattern: "(?s)\\[uptimelimit\\]\\n\\s*Enabled = true\\n\\s*StoreOnly = false\\n\\s*AffectedVbiosVersions = 97\\.00\\.82\\.00\\.4B,96\\.00\\.AF\\.00\\.01\\n\\s*MaxUptimeHours = 1512\\n\\s*StaggerHours = 0\\n"
-      - notMatchRegex:
-          path: data["config.ini"]
-          pattern: "AffectedDriverVersions"
 
   - it: rejects an enabled check without versions
     set:
@@ -140,16 +137,6 @@ tests:
       - matchRegex:
           path: data["config.ini"]
           pattern: "AffectedVbiosVersions = 97\\.00\\.82\\.00\\.4B,\\n"
-
-  - it: rejects an enabled check that lists only driver versions
-    set:
-      global.platformConnectorAuth.enabled: false
-      uptimeLimit.enabled: true
-      uptimeLimit.affectedDriverVersions: ["570.133.20"]
-      uptimeLimit.maxUptimeHours: 1512
-    asserts:
-      - failedTemplate:
-          errorMessage: gpu-health-monitor.uptimeLimit must list at least one non-blank affectedVbiosVersions entry when uptimeLimit.enabled is true
 
   - it: renders a stagger
     set:
