@@ -2901,12 +2901,21 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 		labelAtCompletion statemanager.NVSentinelStateLabelValue
 		// laterEvent processes a later event of the node, which has no CR of its own, after the CR completes.
 		laterEvent bool
+		// laterEventWaits processes a later event of the node before the CR completes. It waits on the CR and stays
+		// tracked as in progress while the completion of the CR is processed.
+		laterEventWaits bool
 		// wantLabel is the state label after the completion is processed. An empty value means no label.
 		wantLabel statemanager.NVSentinelStateLabelValue
 	}{
 		{
 			name:              "own CR moves draining to drain-succeeded",
 			labelAtCompletion: statemanager.DrainingLabelValue,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "own CR moves draining to drain-succeeded while a later event waits on it",
+			labelAtCompletion: statemanager.DrainingLabelValue,
+			laterEventWaits:   true,
 			wantLabel:         statemanager.DrainSucceededLabelValue,
 		},
 		{
@@ -2953,6 +2962,16 @@ func TestReconciler_CustomDrainCRCompleted_MovesDrainingLabelToDrainSucceeded(t 
 			requireCustomDrainCR(t, setup, nodeName)
 			require.Equal(t, statemanager.DrainingLabelValue, nodeStateLabel(t, setup, nodeName),
 				"creating the CR marks the node draining")
+
+			if tt.laterEventWaits {
+				waiting := createHealthEvent(healthEventOptions{
+					nodeName: nodeName, eventID: nodeName + "-waiting", nodeQuarantined: model.Quarantined,
+					createdAt: time.Now().Add(time.Minute),
+				})
+				err = setup.reconciler.ProcessEventGeneric(setup.ctx, waiting, setup.mockCollection,
+					setup.healthEventStore, nodeName)
+				require.ErrorContains(t, err, "waiting for retry delay", "the later event waits on the CR of the node")
+			}
 
 			if tt.labelAtCompletion != statemanager.DrainingLabelValue {
 				setNodeStateLabel(t, setup, nodeName, tt.labelAtCompletion)

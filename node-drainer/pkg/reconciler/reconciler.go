@@ -955,6 +955,11 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 // markDrainSucceeded moves the node state label to drain-succeeded when it reads one of the given values.
 // A label another module has moved on, or removed, stays as it is. A deleted node has no label to move and
 // nothing left to drain, so its event is still marked AlreadyDrained.
+//
+// Unlike the cancellation path, this does not check newerDrainInProgress. That check counts every processed
+// event, including a later event that only waits on the completed CR, and such an event is marked covered once
+// this one is drained, so it would never move the label. On the custom path a later event creates no CR of its
+// own while this one exists.
 func (r *Reconciler) markDrainSucceeded(ctx context.Context, nodeName string,
 	from []statemanager.NVSentinelStateLabelValue) error {
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName,
