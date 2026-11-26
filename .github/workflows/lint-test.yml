@@ -207,6 +207,7 @@ jobs:
           - fault-quarantine
           - labeler
           - metadata-collector
+          - pod-device-mapper
           - node-drainer
           - fault-remediation
           - janitor
