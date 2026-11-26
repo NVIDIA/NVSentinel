@@ -80,7 +80,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     token_path = str(tmp_path / "token") if custom_settings else ""
     state_file.write_text("test-boot-id")
     mapping_file.write_text("DCGM_FR_NVLINK_DOWN,CONTACT_SUPPORT\n")
-    dcgm_options = "ProbeDeadlineSeconds=23\nProbeStoreOnly=false\n" if custom_settings else ""
+    dcgm_options = "ProbeDeadlineSeconds=23\nProbeStoreOnly=false\nNvswitchStoreOnly=false\n" if custom_settings else ""
     config_text = (
         "[logging]\n[dcgm]\nPollIntervalSeconds=17\n"
         f"{dcgm_options}"
@@ -173,6 +173,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert processor._store_only_checks == frozenset(
         {"GpuThermalMarginWatch"} if custom_settings else {"GpuDcgmUnresponsive"}
     )
+    assert processor._nvswitch_store_only is (not custom_settings)
     assert processor._connectivity_failure_escalation_threshold == (9 if custom_settings else 0)
     assert processor._connectivity_failure_threshold == (4 if custom_settings else 1)
     assert processor._connectivity_success_threshold == (2 if custom_settings else 1)

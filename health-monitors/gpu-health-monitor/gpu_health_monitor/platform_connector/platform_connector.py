@@ -174,6 +174,9 @@ class PlatformConnectorConfig:
     # How long DCGM must stay unreachable before a remote probe hang is
     # published, measured across liveness restarts. 0 publishes at once.
     connectivity_failure_window_seconds: float = 0.0
+    # NVSwitch events are STORE_ONLY unless a fleet opts in. When false they
+    # follow the same per-check strategy as GPU events.
+    nvswitch_store_only: bool = True
 
 
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
@@ -207,6 +210,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._metadata_reader = MetadataReader(config.metadata_path)
         self._processing_strategy = config.processing_strategy
         self._store_only_checks = config.store_only_checks
+        self._nvswitch_store_only = config.nvswitch_store_only
         self._connectivity_failure_escalation_threshold = config.connectivity_failure_escalation_threshold
         self._connectivity_failure_threshold = config.connectivity_failure_threshold
         self._connectivity_success_threshold = config.connectivity_success_threshold
@@ -642,6 +646,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             return platformconnector_pb2.STORE_ONLY
         return self._processing_strategy
 
+    def _nvswitch_strategy(self, check_name: str) -> platformconnector_pb2.ProcessingStrategy:
+        """Keep NVSwitch events STORE_ONLY unless the fleet opted in."""
+        if self._nvswitch_store_only:
+            return platformconnector_pb2.STORE_ONLY
+        return self._effective_strategy(check_name)
+
     @_serialized_event_state
     def clear_dcgm_unresponsive(self, timestamp: Timestamp) -> None:
         """Clear a GpuDcgmUnresponsive event once a probe returns again."""
@@ -968,6 +978,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if isinstance(entity_key, tuple) and entity_key[0] == dcgm_fields.DCGM_FE_SWITCH
                 }
                 switch_cache_prefix = f"{check_name}|NVSWITCH|"
+                switch_strategy = self._nvswitch_strategy(check_name)
                 active_switches = {
                     int(key.removeprefix(switch_cache_prefix))
                     for key, entry in self.entity_cache.items()
@@ -1000,8 +1011,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     message=failure_details.message,
                                     recommendedAction=recommended_action,
                                     nodeName=self._node_name,
-                                    # NVSwitch remediation is deferred until downstream handling is safe.
-                                    processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                    processingStrategy=switch_strategy,
                                 )
                             )
                             pending_switch_metric_updates.append((check_name, switch_id, failure_details.code, 1))
@@ -1028,7 +1038,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                                 f"{recovered_code}"
                                             ),
                                             nodeName=self._node_name,
-                                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                                            processingStrategy=switch_strategy,
                                         )
                                     )
                                     pending_switch_metric_updates.append((check_name, switch_id, recovered_code, 0))
@@ -1061,7 +1071,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             entitiesImpacted=[entity],
                             message=f"NVSWITCH {self._get_dcgm_watch(watch_name)} watch reported no errors",
                             nodeName=self._node_name,
-                            processingStrategy=platformconnector_pb2.STORE_ONLY,
+                            processingStrategy=switch_strategy,
                         )
                     )
             # Consumers process events individually. Publish replacement faults before

@@ -53,6 +53,8 @@ type MockK8sClient struct {
 	runLogCollectorJobFn      func(ctx context.Context, nodeName string) (ctrl.Result, error)
 	annotationManagerOverride annotation.NodeAnnotationManagerInterface
 	mockStatusChecker         *mockStatusChecker
+	// configOverride replaces the default configuration that GetConfig returns.
+	configOverride *config.TomlConfig
 }
 
 type MockNodeReader struct {
@@ -146,6 +148,10 @@ func (statusChecker *mockStatusChecker) crState(crName string) crstatus.CRState 
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
+	if m.configOverride != nil {
+		return m.configOverride
+	}
+
 	return &config.TomlConfig{
 		RemediationActions: map[string]config.MaintenanceResource{
 			protos.RecommendedAction_RESTART_BM.String(): {

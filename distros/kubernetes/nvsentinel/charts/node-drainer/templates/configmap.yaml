@@ -67,3 +67,10 @@ data:
       statusConditionType = {{ .Values.customDrain.statusConditionType | quote }}
       statusConditionStatus = {{ .Values.customDrain.statusConditionStatus | quote }}
     {{- end }}
+
+    {{- /* Tables must follow every top-level key, so this block stays last. node-drainer fails to
+    start without the key, so the chart fails first. */}}
+    {{- if not (hasKey $global "partialRemediationEntityTypes") }}
+    {{- fail "global.partialRemediationEntityTypes is missing. The chart default holds the GPU_UUID entry. An upgrade with --reuse-values keeps the values of the previous chart, which has no such key, so upgrade with --reset-then-reuse-values." }}
+    {{- end }}
+    {{- dict "partialRemediationEntityTypes" ($global.partialRemediationEntityTypes | default dict) | toToml | nindent 4 }}

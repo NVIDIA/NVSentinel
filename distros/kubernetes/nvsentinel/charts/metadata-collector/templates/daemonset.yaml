@@ -15,6 +15,10 @@
 {{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
 {{- $nriPlugin := include "metadata-collector.nriPluginEnabled" . }}
 {{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
+{{- if .Values.podMapper.enabled }}
+{{- /* The mapper reads its configuration once, at start. */}}
+{{- $_ := set $podAnnotations "checksum/config" (((.Values.global | default dict).partialRemediationEntityTypes) | toJson | sha256sum) }}
+{{- end }}
 {{- if $nriPlugin }}
 {{- /* The NRI plugin matches the suffix against the container name below. */}}
 {{- $_ := set $podAnnotations "nvidia.cdi.k8s.io/container.metadata-collector" .Values.nriPlugin.cdiDevice }}
@@ -68,6 +72,9 @@ spec:
             - --output-path={{ .Values.global.metadataPath }}
             - --pod-mapper-enabled={{ .Values.podMapper.enabled }}
             - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
+            {{- if .Values.podMapper.enabled }}
+            - --config=/etc/config/config.toml
+            {{- end }}
             {{- if include "metadata-collector.metricsEnabled" . }}
             - --metrics-port={{ .Values.metrics.port }}
             {{- else }}
@@ -111,6 +118,11 @@ spec:
             - mountPath: /var/lib/kubelet/pod-resources
               name: pod-gpu-resources
               readOnly: true
+            {{- if .Values.podMapper.enabled }}
+            - name: config
+              mountPath: /etc/config
+              readOnly: true
+            {{- end }}
             {{- with .Values.additionalVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -127,6 +139,11 @@ spec:
           hostPath:
             path: {{ printf "%s/pod-resources" (include "metadata-collector.kubeletRootDir" .) | quote }}
             type: Directory
+        {{- if .Values.podMapper.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "metadata-collector.fullname" . }}
+        {{- end }}
         {{- with .Values.additionalHostVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
