@@ -119,7 +119,7 @@ The chart then does not render the `pod-device-mapper` DaemonSet. The NVIDIA dis
 
 Before ADR-072, one `metadata-collector` DaemonSet ran both the NVIDIA discovery and the mapper. The upgrade creates the `nvidia-metadata-collector` and `pod-device-mapper` DaemonSets and deletes the `metadata-collector` DaemonSet. Its pods stop on all nodes together, without a rolling update. Until the new mapper pod of a node is ready, the node has no mapper, and a partial drain there waits for the missing annotations. The GPU health monitors keep reading the existing `gpu_metadata.json` until the new discovery pod writes it again.
 
-The `metadata-collector` ServiceAccount and ClusterRole stay with the mapper. The NVIDIA discovery uses the new `nvidia-metadata-collector` ServiceAccount, which has no role. A query that filters metrics by the `metadata-collector` pod name no longer matches, and the mapper metrics move from `metrics.port` on the node to `global.metricsPort` on the pod.
+The `metadata-collector` ServiceAccount and ClusterRole stay with the mapper. The NVIDIA discovery uses the namespace's default ServiceAccount, without a token. A query that filters metrics by the `metadata-collector` pod name no longer matches, and the mapper metrics move from `metrics.port` on the node to `global.metricsPort` on the pod.
 
 ## Host-native authentication
 

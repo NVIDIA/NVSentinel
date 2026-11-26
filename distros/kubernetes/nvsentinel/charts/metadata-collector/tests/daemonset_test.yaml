@@ -43,11 +43,10 @@ tests:
       - notExists:
           path: spec.template.metadata.annotations["checksum/config"]
 
-  - it: must use a ServiceAccount without a role or a token
+  - it: must run without the mapper's ServiceAccount and without a token
     asserts:
-      - equal:
+      - notExists:
           path: spec.template.spec.serviceAccountName
-          value: nvidia-metadata-collector
       - equal:
           path: spec.template.spec.automountServiceAccountToken
           value: false

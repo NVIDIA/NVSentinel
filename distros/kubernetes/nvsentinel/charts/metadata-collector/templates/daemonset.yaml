@@ -45,8 +45,7 @@ spec:
       labels:
         {{- include "metadata-collector.discoverySelectorLabels" . | nindent 8 }}
     spec:
-      # The discovery does not call the Kubernetes API, so its ServiceAccount has no role and no token.
-      serviceAccountName: {{ include "metadata-collector.discoveryName" . }}
+      # The discovery does not call the Kubernetes API.
       automountServiceAccountToken: false
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
