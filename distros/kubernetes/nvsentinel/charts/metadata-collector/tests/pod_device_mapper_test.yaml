@@ -1,0 +1,406 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ADR-072: the pod device mapper runs in its own DaemonSet, without the vendor settings of the NVIDIA discovery.
+suite: pod device mapper
+templates:
+  - templates/pod-device-mapper-daemonset.yaml
+set:
+  global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+  global.metricsPort: 2112
+  global.partialRemediationEntityTypes: {}
+tests:
+  - it: must run the mapper as pod-device-mapper with the existing ServiceAccount
+    asserts:
+      - equal:
+          path: metadata.name
+          value: pod-device-mapper
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: pod-device-mapper
+            app.kubernetes.io/instance: RELEASE-NAME
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: metadata-collector
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/nvidia/nvsentinel/pod-device-mapper:1.0.0
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --config=/etc/config/config.toml
+            - --pod-mapper-max-consecutive-failures=10
+            - --metrics-port=2112
+
+  - it: must run without privileges, host namespaces or vendor settings
+    set:
+      global.gpuDraEnabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      - notExists:
+          path: spec.template.spec.hostNetwork
+      - notExists:
+          path: spec.template.spec.hostPID
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+      - notExists:
+          path: spec.template.spec.resourceClaims
+      - notExists:
+          path: spec.template.spec.containers[0].resources.claims
+
+  - it: must not take the NRI CDI annotation of the discovery
+    set:
+      nriPlugin.enabled: true
+      podAnnotations:
+        example.com/team: gpu
+    asserts:
+      # checksum/config is the sha256 of the suite's global.partialRemediationEntityTypes, {}.
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            example.com/team: gpu
+            checksum/config: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+
+  - it: must mount only the PodResources socket and the configuration
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: pod-resources
+              hostPath:
+                path: /var/lib/kubelet/pod-resources
+                type: Directory
+            - name: config
+              configMap:
+                name: pod-device-mapper
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: pod-resources
+              mountPath: /var/lib/kubelet/pod-resources
+              readOnly: true
+            - name: config
+              mountPath: /etc/config
+              readOnly: true
+
+  - it: must select GPU nodes without waiting for the driver
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            nvidia.com/gpu.present: "true"
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: must combine podMapper.nodeSelector with global.nodeSelector
+    set:
+      podMapper.nodeSelector:
+        example.com/accelerator: "true"
+      global.nodeSelector:
+        pool: gpu
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            nvidia.com/gpu.present: "true"
+            example.com/accelerator: "true"
+            pool: gpu
+
+  - it: must render a key set in both node selectors once, with the value of podMapper.nodeSelector
+    set:
+      podMapper.nodeSelector:
+        pool: mapper
+      global.nodeSelector:
+        nvidia.com/gpu.present: "true"
+        pool: cluster
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            nvidia.com/gpu.present: "true"
+            pool: mapper
+
+  - it: must drop the default node label that the operator sets to null
+    set:
+      podMapper.nodeSelector:
+        nvidia.com/gpu.present: null
+        example.com/accelerator: "true"
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            example.com/accelerator: "true"
+
+  - it: must use an affinity that the operator sets
+    set:
+      global.affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: pool, operator: In, values: [gpu]}
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: pool
+
+  - it: must reach the kubelet at the node IP by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBELET_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+
+  - it: must use the node IP for an empty kubeletHost
+    set:
+      kubeletHost: {}
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBELET_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+
+  - it: must use the node IP for a loopback kubeletHost
+    set:
+      kubeletHost:
+        value: 127.0.0.1
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBELET_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+
+  - it: must use the node IP for kubeletHost localhost
+    set:
+      kubeletHost:
+        value: localhost
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBELET_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+
+  - it: must keep a static kubeletHost, without the default valueFrom
+    set:
+      kubeletHost:
+        value: 10.0.0.1
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBELET_HOST
+            value: 10.0.0.1
+
+  - it: must serve metrics on global.metricsPort
+    set:
+      global.metricsPort: 9100
+      metrics.port: 2113
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-port=9100
+      - equal:
+          path: spec.template.spec.containers[0].ports
+          value:
+            - name: metrics
+              containerPort: 9100
+
+  - it: must turn metrics off with metrics.enabled
+    set:
+      metrics.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-port=0
+      - notExists:
+          path: spec.template.spec.containers[0].ports
+
+  - it: must use podMapper.resources when it is set
+    set:
+      podMapper.resources:
+        requests: {cpu: 10m, memory: 32Mi}
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests: {cpu: 10m, memory: 32Mi}
+
+  - it: must use resources when podMapper.resources is empty
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests
+          value: {cpu: 100m, memory: 128Mi}
+
+  - it: must use podMapper.image and global.image.tag
+    set:
+      podMapper.image.repository: example.com/pod-device-mapper
+      global.image.tag: v1.2.3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example.com/pod-device-mapper:v1.2.3
+
+  - it: must render nothing when podMapper.enabled is false
+    set:
+      podMapper.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: must render nothing when podMapper.enabled is a quoted "false"
+    set:
+      podMapper.enabled: "false"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: must mount pod-resources from the default kubelet root dir
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must mount pod-resources from a relocated kubelet root dir
+    set:
+      global.kubeletRootDir: /custom/kubelet
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: pod-resources
+            mountPath: /var/lib/kubelet/pod-resources
+            readOnly: true
+
+  - it: must strip a trailing slash from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: /custom/kubelet/
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must strip surrounding whitespace from global.kubeletRootDir
+    set:
+      global.kubeletRootDir: " /custom/kubelet\n"
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /custom/kubelet/pod-resources
+              type: Directory
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is null
+    set:
+      global.kubeletRootDir: null
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on an invalid global.kubeletRootDir
+    set:
+      global.kubeletRootDir: custom/kubelet
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is only a slash
+    set:
+      global.kubeletRootDir: /
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must use the default kubelet root dir when global.kubeletRootDir is empty
+    set:
+      global.kubeletRootDir: ""
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pod-resources
+            hostPath:
+              path: /var/lib/kubelet/pod-resources
+              type: Directory
+
+  - it: must fail on a boolean global.kubeletRootDir
+    set:
+      global.kubeletRootDir: false
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a numeric global.kubeletRootDir
+    set:
+      global.kubeletRootDir: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+
+  - it: must fail on a global.kubeletRootDir that is the pod-resources directory
+    set:
+      global.kubeletRootDir: /custom/kubelet/pod-resources/
+    asserts:
+      - failedTemplate:
+          errorPattern: global.kubeletRootDir must be kubelet's --root-dir
+

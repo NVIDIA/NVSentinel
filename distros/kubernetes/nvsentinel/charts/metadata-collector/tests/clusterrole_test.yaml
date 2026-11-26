@@ -86,3 +86,20 @@ tests:
           content:
             apiGroups:
               - resource.k8s.io
+  - it: must not list ResourceSlices when podMapper.enabled is a quoted "false"
+    set:
+      podMapper.enabled: "false"
+      global.partialRemediationEntityTypes:
+        GPU_UUID:
+          devices:
+            - driver: gpu.nvidia.com
+              deviceClasses: ["gpu.nvidia.com"]
+              entityValueAttribute: uuid
+          scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups:
+              - resource.k8s.io
