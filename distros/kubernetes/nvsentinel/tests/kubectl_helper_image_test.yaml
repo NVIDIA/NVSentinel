@@ -76,14 +76,10 @@ tests:
       mongodb-store.usePerconaOperator: false
     asserts:
       - equal:
-          path: spec.template.spec.securityContext.runAsUser
-          value: 1001
-      - equal:
-          path: spec.template.spec.securityContext.runAsGroup
-          value: 1001
-      - equal:
           path: spec.template.spec.initContainers[0].securityContext
           value: &bitnamiInitSecurityContext
+            runAsUser: 1001
+            runAsGroup: 1001
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -106,13 +102,13 @@ tests:
       mongodb-store.usePerconaOperator: false
     asserts: &bitnamiNoUserAsserts
       - notExists:
-          path: spec.template.spec.securityContext.runAsUser
-      - notExists:
-          path: spec.template.spec.securityContext.runAsGroup
-      - notExists:
           path: spec.template.spec.initContainers[0].securityContext.runAsUser
       - notExists:
+          path: spec.template.spec.initContainers[0].securityContext.runAsGroup
+      - notExists:
           path: spec.template.spec.initContainers[1].securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.initContainers[1].securityContext.runAsGroup
       - equal:
           path: spec.template.spec.initContainers[0].securityContext.runAsNonRoot
           value: true
@@ -126,6 +122,37 @@ tests:
       global.mongodbStore.enabled: true
       mongodb-store.useBitnami: true
       mongodb-store.usePerconaOperator: false
+    asserts: *bitnamiNoUserAsserts
+
+  # The init containers set their own user, so they start when the subchart
+  # drops the pod securityContext.
+  - it: keeps the Bitnami init container user without the pod securityContext
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.podSecurityContext.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: *bitnamiInitSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *bitnamiInitSecurityContext
+
+  - it: leaves the Bitnami init container user to OpenShift without the pod securityContext
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.podSecurityContext.enabled: false
     asserts: *bitnamiNoUserAsserts
 
   - it: leaves the create-mongodb-database Job user and group to OpenShift when forced
