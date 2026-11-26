@@ -105,13 +105,12 @@ spec:
         - name: config
           configMap:
             name: {{ include "metadata-collector.mapperName" . }}
+      {{- /* Merged as maps, so a key set in both appears once, with the value of podMapper.nodeSelector. */}}
+      {{- $nodeSelector := merge (deepCopy (.Values.podMapper.nodeSelector | default dict)) ((.Values.global.nodeSelector | default .Values.nodeSelector) | default dict) }}
+      {{- with $nodeSelector }}
       nodeSelector:
-        {{- with .Values.podMapper.nodeSelector }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
-        {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+      {{- end }}
       {{- /* The default affinity of the discovery follows GPU driver upgrades, which the mapper does not need. */}}
       {{- with (.Values.global.affinity | default .Values.affinity) }}
       affinity:

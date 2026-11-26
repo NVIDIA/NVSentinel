@@ -10,7 +10,7 @@ These values of the chart apply to both DaemonSets: `logLevel`, `podAnnotations`
 
 ## Where it runs
 
-By default, the mapper runs on the nodes with the `nvidia.com/gpu.present: "true"` label, together with `global.nodeSelector` or `nodeSelector`. Unlike the NVIDIA discovery, it does not wait for the `nvsentinel.dgxc.nvidia.com/driver.installed` label: until the driver is ready, no pod on the node has a GPU, so the mapper writes no annotations.
+By default, the mapper runs on the nodes with the `nvidia.com/gpu.present: "true"` label, together with `global.nodeSelector` or `nodeSelector`. When both set the same label, the value in `podMapper.nodeSelector` applies. Unlike the NVIDIA discovery, it does not wait for the `nvsentinel.dgxc.nvidia.com/driver.installed` label: until the driver is ready, no pod on the node has a GPU, so the mapper writes no annotations.
 
 To record devices on other nodes, select those nodes. Helm adds your labels to the default, so remove the default with `null`:
 

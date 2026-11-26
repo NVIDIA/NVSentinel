@@ -127,6 +127,20 @@ tests:
             example.com/accelerator: "true"
             pool: gpu
 
+  - it: must render a key set in both node selectors once, with the value of podMapper.nodeSelector
+    set:
+      podMapper.nodeSelector:
+        pool: mapper
+      global.nodeSelector:
+        nvidia.com/gpu.present: "true"
+        pool: cluster
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            nvidia.com/gpu.present: "true"
+            pool: mapper
+
   - it: must drop the default node label that the operator sets to null
     set:
       podMapper.nodeSelector:
