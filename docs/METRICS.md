@@ -371,7 +371,7 @@ These metrics track the performance of the internal ring buffer workqueue:
 
 ### Pod Mapper Metrics
 
-The `pod-device-mapper` pods serve these metrics on `global.metricsPort`, and the `nvidia-metadata-collector` pods serve the collection metric above on `metadata-collector.metrics.port`. The names keep the `metadata_collector_` prefix that they had when one DaemonSet ran both.
+The `pod-device-mapper` pods serve these metrics on `global.metricsPort`, and the `nvidia-metadata-collector` pods serve the collection metric above on `metadata-collector.metrics.port`.
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|

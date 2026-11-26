@@ -38,7 +38,7 @@ metadata-collector:
 
 ## Metrics
 
-The mapper serves its metrics on `global.metricsPort`, the port that the namespace NetworkPolicy allows and the PodMonitor scrapes, like the other NVSentinel pods on the pod network. `metadata-collector.metrics.enabled: false` turns the endpoint off. The metric names start with `metadata_collector_pod_mapper_`, as before ADR-072. See [Metrics](../METRICS.md).
+The mapper serves its metrics on `global.metricsPort`, the port that the namespace NetworkPolicy allows and the PodMonitor scrapes, like the other NVSentinel pods on the pod network. `metadata-collector.metrics.enabled: false` turns the endpoint off. The metric names start with `metadata_collector_pod_mapper_`. See [Metrics](../METRICS.md).
 
 ## Kubelet Host
 
@@ -115,12 +115,6 @@ metadata-collector:
 
 The chart then does not render the `pod-device-mapper` DaemonSet. The NVIDIA discovery still writes the GPU metadata file. Pods get no device annotations. Thus, keep `node-drainer.partialDrainEnabled` set to `false`, because a partial drain fails for a GPU pod without the annotation. Full drains still detect GPU pods from their container limits and DRA claims. The value is compared as a string, so a quoted `"false"` also turns the mapper off.
 
-## Upgrade from a single metadata-collector DaemonSet
-
-Before ADR-072, one `metadata-collector` DaemonSet ran both the NVIDIA discovery and the mapper. The upgrade creates the `nvidia-metadata-collector` and `pod-device-mapper` DaemonSets and deletes the `metadata-collector` DaemonSet. Its pods stop on all nodes together, without a rolling update. Until the new mapper pod of a node is ready, the node has no mapper, and a partial drain there waits for the missing annotations. The GPU health monitors keep reading the existing `gpu_metadata.json` until the new discovery pod writes it again.
-
-The `metadata-collector` ServiceAccount and ClusterRole stay with the mapper. The NVIDIA discovery uses the namespace's default ServiceAccount, without a token. A query that filters metrics by the `metadata-collector` pod name no longer matches, and the mapper metrics move from `metrics.port` on the node to `global.metricsPort` on the pod.
-
 ## Host-native authentication
 
 If the mapper runs outside a pod, run the `pod-device-mapper` binary with two explicit kubeconfigs:
@@ -131,8 +125,6 @@ NODE_NAME=gpu-node-1 pod-device-mapper \
   --kubelet-kubeconfig=/etc/nvsentinel/pod-device-mapper/kubelet.kubeconfig \
   --config=/etc/nvsentinel/pod-device-mapper/config.toml
 ```
-
-Until ADR-072, the mapper ran inside the `metadata-collector` binary, with the same flags. `metadata-collector` still accepts these flags and ignores them, so an existing host setup keeps collecting GPU metadata, but it needs the `pod-device-mapper` binary for the annotations.
 
 `--config` is required. It names a TOML file with the [recorded devices](#recorded-devices), in the form that the chart renders into the `config.toml` key of the `pod-device-mapper` ConfigMap:
 

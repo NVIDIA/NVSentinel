@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This chart runs two DaemonSets (ADR-072): nvidia-metadata-collector, the NVIDIA discovery that writes
+# This chart runs two DaemonSets: nvidia-metadata-collector, the NVIDIA discovery that writes
 # gpu_metadata.json, and pod-device-mapper, which writes the dgxc.nvidia.com/devices annotation that partial
 # drains read. Unless a comment says otherwise, a value applies to both.
 
