@@ -23,6 +23,7 @@ package cspv1alpha1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -36,11 +37,13 @@ const (
 )
 
 type SendRebootSignalRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
-	CrName        string                 `protobuf:"bytes,2,opt,name=cr_name,json=crName,proto3" json:"cr_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	NodeName string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	CrName   string                 `protobuf:"bytes,2,opt,name=cr_name,json=crName,proto3" json:"cr_name,omitempty"`
+	// Latest time the generic provider may start the reboot. Omit to use the provider default.
+	ExecutionDeadline *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=execution_deadline,json=executionDeadline,proto3" json:"execution_deadline,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SendRebootSignalRequest) Reset() {
@@ -85,6 +88,13 @@ func (x *SendRebootSignalRequest) GetCrName() string {
 		return x.CrName
 	}
 	return ""
+}
+
+func (x *SendRebootSignalRequest) GetExecutionDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExecutionDeadline
+	}
+	return nil
 }
 
 type SendRebootSignalResponse struct {
@@ -319,10 +329,11 @@ var File_csp_v1alpha1_provider_proto protoreflect.FileDescriptor
 
 const file_csp_v1alpha1_provider_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\"O\n" +
+	"\x1bcsp/v1alpha1/provider.proto\x12\"nvidia.nvsentinel.janitor.v1alpha1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9a\x01\n" +
 	"\x17SendRebootSignalRequest\x12\x1b\n" +
 	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x17\n" +
-	"\acr_name\x18\x02 \x01(\tR\x06crName\"9\n" +
+	"\acr_name\x18\x02 \x01(\tR\x06crName\x12I\n" +
+	"\x12execution_deadline\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x11executionDeadline\"9\n" +
 	"\x18SendRebootSignalResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"P\n" +
@@ -362,19 +373,21 @@ var file_csp_v1alpha1_provider_proto_goTypes = []any{
 	(*IsNodeReadyResponse)(nil),         // 3: nvidia.nvsentinel.janitor.v1alpha1.IsNodeReadyResponse
 	(*SendTerminateSignalRequest)(nil),  // 4: nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalRequest
 	(*SendTerminateSignalResponse)(nil), // 5: nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalResponse
+	(*timestamppb.Timestamp)(nil),       // 6: google.protobuf.Timestamp
 }
 var file_csp_v1alpha1_provider_proto_depIdxs = []int32{
-	0, // 0: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendRebootSignal:input_type -> nvidia.nvsentinel.janitor.v1alpha1.SendRebootSignalRequest
-	2, // 1: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.IsNodeReady:input_type -> nvidia.nvsentinel.janitor.v1alpha1.IsNodeReadyRequest
-	4, // 2: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendTerminateSignal:input_type -> nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalRequest
-	1, // 3: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendRebootSignal:output_type -> nvidia.nvsentinel.janitor.v1alpha1.SendRebootSignalResponse
-	3, // 4: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.IsNodeReady:output_type -> nvidia.nvsentinel.janitor.v1alpha1.IsNodeReadyResponse
-	5, // 5: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendTerminateSignal:output_type -> nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	6, // 0: nvidia.nvsentinel.janitor.v1alpha1.SendRebootSignalRequest.execution_deadline:type_name -> google.protobuf.Timestamp
+	0, // 1: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendRebootSignal:input_type -> nvidia.nvsentinel.janitor.v1alpha1.SendRebootSignalRequest
+	2, // 2: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.IsNodeReady:input_type -> nvidia.nvsentinel.janitor.v1alpha1.IsNodeReadyRequest
+	4, // 3: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendTerminateSignal:input_type -> nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalRequest
+	1, // 4: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendRebootSignal:output_type -> nvidia.nvsentinel.janitor.v1alpha1.SendRebootSignalResponse
+	3, // 5: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.IsNodeReady:output_type -> nvidia.nvsentinel.janitor.v1alpha1.IsNodeReadyResponse
+	5, // 6: nvidia.nvsentinel.janitor.v1alpha1.CSPProviderService.SendTerminateSignal:output_type -> nvidia.nvsentinel.janitor.v1alpha1.SendTerminateSignalResponse
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_csp_v1alpha1_provider_proto_init() }

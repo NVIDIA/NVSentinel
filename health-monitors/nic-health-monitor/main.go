@@ -317,7 +317,7 @@ func loadConfig(path string) (*config.Config, error) {
 }
 
 // loadClassifier wraps topology.LoadFromMetadata with an actionable
-// error that points operators at the metadata-collector DaemonSet.
+// error that points operators at the nvidia-metadata-collector DaemonSet.
 //
 // When the explicit NIC inclusion override is active, missing/invalid
 // metadata degrades to an empty classifier instead of a fatal error:
@@ -339,7 +339,7 @@ func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifi
 	}
 
 	return nil, fmt.Errorf("NIC monitor cannot start without GPU metadata at %s: %w "+
-		"(hint: ensure the metadata-collector DaemonSet is running and has "+
+		"(hint: ensure the nvidia-metadata-collector DaemonSet is running and has "+
 		"written nic_topology)", *metadataPath, err)
 }
 

@@ -69,6 +69,7 @@ KO_IMAGES=(
     "nvsentinel/janitor"
     "nvsentinel/janitor-provider"
     "nvsentinel/platform-connectors"
+    "nvsentinel/pod-device-mapper"
 )
 
 DOCKER_IMAGES=(
