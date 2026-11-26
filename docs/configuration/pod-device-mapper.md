@@ -6,7 +6,7 @@ The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on each po
 
 The mapper runs in the `pod-device-mapper` DaemonSet. The metadata-collector chart renders it next to the `nvidia-metadata-collector` DaemonSet of the NVIDIA discovery, so its values are under `metadata-collector`. `global.metadataCollector.enabled: false` turns off both. The mapper needs no GPU driver and no vendor settings. It runs on the pod network, without privileges and with all capabilities dropped. It runs as root only because the kubelet's PodResources socket belongs to root.
 
-These values of the chart apply to both DaemonSets: `logLevel`, `podAnnotations`, `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `updateStrategy` and `metrics.enabled`, with their `global` overrides. `runtimeClassName`, `nriPlugin`, `extraEnv`, `additionalVolumeMounts`, `additionalHostVolumes` and `metrics.port` apply only to the NVIDIA discovery.
+These values of the chart apply to both DaemonSets: `nodeSelector`, `tolerations`, `affinity` and `priorityClassName`, with their `global` overrides, and `logLevel`, `podAnnotations`, `updateStrategy` and `metrics.enabled`. `runtimeClassName`, `nriPlugin`, `extraEnv`, `additionalVolumeMounts`, `additionalHostVolumes` and `metrics.port` apply only to the NVIDIA discovery.
 
 ## Where it runs
 
@@ -90,7 +90,7 @@ The poll period is 30 seconds. Thus, the default tolerates five minutes of failu
 
 ## Recorded devices
 
-The pod device mapper records the devices that [`global.partialRemediationEntityTypes`](node-drainer.md#partial-drain) lists, the same value that the node-drainer reads. The chart renders it into the `pod-device-mapper` ConfigMap, which the mapper reads at start. A change to the value restarts the mapper pods.
+The pod device mapper records the devices that [`global.partialRemediationEntityTypes`](node-drainer.md#partial-drain) lists, the same value that the node-drainer reads. The chart renders it into the `pod-device-mapper` ConfigMap, which the mapper reads at start. With the default `RollingUpdate` strategy, a change to the value restarts the mapper pods. With `OnDelete`, each mapper pod keeps the old value until you delete it.
 
 - For a device-plugin entry, the mapper records the device IDs that the kubelet reports under each of the `resourceNames`.
 - For a DRA entry, the kubelet reports each allocated device with its driver, pool and device name. The mapper finds that device in the ResourceSlices of its node, and records the value of the `entityValueAttribute` attribute under the `driver` name. A driver can name its own attributes without its domain, so `uuid` and `gpu.nvidia.com/uuid` are the same attribute of the `gpu.nvidia.com` driver. The attribute must have a string value. Only ResourceSlices that set `spec.nodeName` to the node are read.
@@ -113,7 +113,7 @@ metadata-collector:
     enabled: false
 ```
 
-The chart then does not render the `pod-device-mapper` DaemonSet. The NVIDIA discovery still writes the GPU metadata file. Pods get no device annotations. Thus, keep `node-drainer.partialDrainEnabled` set to `false`, because a partial drain fails for a GPU pod without the annotation. Full drains still detect GPU pods from their container limits and DRA claims. The value is compared as a string, so a quoted `"false"` also turns the mapper off.
+The chart then does not render the `pod-device-mapper` DaemonSet. The NVIDIA discovery still writes the GPU metadata file. Pods get no device annotations. Thus, keep partial drains off, because a partial drain fails for a GPU pod without the annotation: set `node-drainer.partialDrainEnabled` to `false`, and also `global.partialDrainEnabled` if you set it, because it overrides the subchart value. Full drains still detect GPU pods from their container limits and DRA claims. The value is compared as a string, so a quoted `"false"` also turns the mapper off.
 
 ## Host-native authentication
 
