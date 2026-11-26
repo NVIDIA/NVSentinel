@@ -15,6 +15,7 @@
 suite: DCGM startup gate
 templates:
   - templates/daemonset-dcgm-4.x.yaml
+  - templates/daemonset-dcgm-48.x.yaml
   - templates/daemonset-dcgm-3.x.yaml
   - templates/configmap.yaml
 tests:
@@ -54,6 +55,20 @@ tests:
           path: spec.template.spec.initContainers[0].image
           value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-4.x
 
+  - it: waits for operator-service DCGM with the 48.x image
+    template: templates/daemonset-dcgm-48.x.yaml
+    set:
+      global.platformConnectorAuth.enabled: false
+      dcgmConnectivity.startupGate.enabled: true
+      image.tag: test
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-dcgm
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/nvidia/nvsentinel/gpu-health-monitor:test-dcgm-48.x
+
   - it: uses the external hostengine endpoint with the 3.x image
     template: templates/daemonset-dcgm-3.x.yaml
     set:
@@ -75,7 +90,7 @@ tests:
           path: spec.template.spec.initContainers[0].args[5]
           value: "10"
   - it: rejects the startup gate in embedded mode
-    template: templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-48.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgm.mode: embedded-mode
@@ -85,7 +100,7 @@ tests:
           errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.enabled cannot be true in embedded-mode because the main container starts DCGM
 
   - it: rejects a non-positive retry interval
-    template: templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-48.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgmConnectivity.startupGate.enabled: true
@@ -95,7 +110,7 @@ tests:
           errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.retryIntervalSeconds must be greater than zero
 
   - it: rejects a non-positive connection timeout
-    template: templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-48.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgmConnectivity.startupGate.enabled: true
@@ -105,7 +120,7 @@ tests:
           errorMessage: gpu-health-monitor.dcgmConnectivity.startupGate.connectTimeoutSeconds must be greater than zero
 
   - it: rejects a quoted enabled value
-    template: templates/daemonset-dcgm-4.x.yaml
+    template: templates/daemonset-dcgm-48.x.yaml
     set:
       global.platformConnectorAuth.enabled: false
       dcgmConnectivity.startupGate.enabled: "true"

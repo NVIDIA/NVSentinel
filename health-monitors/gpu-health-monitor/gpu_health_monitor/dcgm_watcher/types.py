@@ -121,6 +121,24 @@ class CallbackInterface(abc.ABC):
         pass
 
 
+def is_dcgm_version_mismatch(error: BaseException) -> bool:
+    """True when the hostengine rejects the DCGM API version of this client.
+
+    This happens when the client is newer than the hostengine. The labeler
+    moves the node to the matching image lane, so this is a lane mismatch, not
+    a connectivity failure.
+    """
+    return isinstance(error, dcgm_structs.DCGMError) and error.value == dcgm_structs.DCGM_ST_VER_MISMATCH
+
+
+class DCGMVersionMismatchError(Exception):
+    """The hostengine rejects this image's DCGM API version; the monitor must exit.
+
+    The pod restarts until the labeler moves the node to the matching image lane
+    and the DaemonSet of the old lane removes it.
+    """
+
+
 def split_dcgm_addrs(addr: str) -> list[str]:
     """Split a comma-separated list of DCGM host:port addresses, dropping blanks."""
     return [a.strip() for a in addr.split(",") if a.strip()]

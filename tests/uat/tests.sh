@@ -802,6 +802,7 @@ test_gpu_monitoring_dcgm() {
     # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
     # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).
     # DCGM 4.4.x+ reclassified it as a "devastating" XID under DCGM_HEALTH_WATCH_ALL (GpuAllWatch).
+    # DCGM 4.8.0 reports it under DCGM_HEALTH_WATCH_MEM (GpuMemWatch) again.
     kubectl exec -n "$GPU_HM_NS" "$GPU_HM_POD" -- dcgmi test --host "$DCGM_HOST" --inject --gpuid 0 -f 230 -v 95
 
     wait_for_any_node_condition "$gpu_node" "GpuAllWatch" "GpuMemWatch"

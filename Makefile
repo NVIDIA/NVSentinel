@@ -735,6 +735,10 @@ docker-gpu-health-monitor-dcgm3:
 docker-gpu-health-monitor-dcgm4:
 	$(MAKE) -C docker build-gpu-health-monitor-dcgm4
 
+.PHONY: docker-gpu-health-monitor-dcgm48
+docker-gpu-health-monitor-dcgm48:
+	$(MAKE) -C docker build-gpu-health-monitor-dcgm48
+
 .PHONY: docker-gpu-health-monitor
 docker-gpu-health-monitor:
 	$(MAKE) -C docker build-gpu-health-monitor
