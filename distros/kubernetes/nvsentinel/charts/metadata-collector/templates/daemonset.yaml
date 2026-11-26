@@ -15,20 +15,17 @@
 {{- $gpuCluster := include "metadata-collector.gpuDraEnabled" . }}
 {{- $nriPlugin := include "metadata-collector.nriPluginEnabled" . }}
 {{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
-{{- if .Values.podMapper.enabled }}
-{{- /* The mapper reads its configuration once, at start. */}}
-{{- $_ := set $podAnnotations "checksum/config" (((.Values.global | default dict).partialRemediationEntityTypes) | toJson | sha256sum) }}
-{{- end }}
 {{- if $nriPlugin }}
 {{- /* The NRI plugin matches the suffix against the container name below. */}}
 {{- $_ := set $podAnnotations "nvidia.cdi.k8s.io/container.metadata-collector" .Values.nriPlugin.cdiDevice }}
 {{- end }}
+{{- /* The NVIDIA discovery (ADR-072). The pod device mapper runs in pod-device-mapper-daemonset.yaml. */}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "metadata-collector.fullname" . }}
+  name: {{ include "metadata-collector.discoveryName" . }}
   labels:
-    {{- include "metadata-collector.labels" . | nindent 4 }}
+    {{- include "metadata-collector.discoveryLabels" . | nindent 4 }}
 spec:
   updateStrategy:
     type: {{ .Values.updateStrategy.type }}
@@ -38,7 +35,7 @@ spec:
     {{- end }}
   selector:
     matchLabels:
-      {{- include "metadata-collector.selectorLabels" . | nindent 6 }}
+      {{- include "metadata-collector.discoverySelectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with $podAnnotations }}
@@ -46,9 +43,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "metadata-collector.selectorLabels" . | nindent 8 }}
+        {{- include "metadata-collector.discoverySelectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "metadata-collector.fullname" . }}
+      # The discovery does not call the Kubernetes API.
+      automountServiceAccountToken: false
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -70,11 +68,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --output-path={{ .Values.global.metadataPath }}
-            - --pod-mapper-enabled={{ .Values.podMapper.enabled }}
-            - --pod-mapper-max-consecutive-failures={{ .Values.podMapper.maxConsecutiveFailures }}
-            {{- if .Values.podMapper.enabled }}
-            - --config=/etc/config/config.toml
-            {{- end }}
             {{- if include "metadata-collector.metricsEnabled" . }}
             - --metrics-port={{ .Values.metrics.port }}
             {{- else }}
@@ -96,10 +89,6 @@ spec:
                   fieldPath: spec.nodeName
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
-            {{- if .Values.kubeletHost }}
-            - name: KUBELET_HOST
-              {{- toYaml .Values.kubeletHost | nindent 14 }}
-            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -115,14 +104,6 @@ spec:
             - name: sys
               mountPath: /sys
               readOnly: true
-            - mountPath: /var/lib/kubelet/pod-resources
-              name: pod-gpu-resources
-              readOnly: true
-            {{- if .Values.podMapper.enabled }}
-            - name: config
-              mountPath: /etc/config
-              readOnly: true
-            {{- end }}
             {{- with .Values.additionalVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -135,15 +116,6 @@ spec:
           hostPath:
             path: /sys
             type: Directory
-        - name: pod-gpu-resources
-          hostPath:
-            path: {{ printf "%s/pod-resources" (include "metadata-collector.kubeletRootDir" .) | quote }}
-            type: Directory
-        {{- if .Values.podMapper.enabled }}
-        - name: config
-          configMap:
-            name: {{ include "metadata-collector.fullname" . }}
-        {{- end }}
         {{- with .Values.additionalHostVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -54,6 +54,7 @@ if [ ! -f go.work ]; then
     ./labeler \
     ./node-drainer \
     ./platform-connectors \
+    ./pod-device-mapper \
     ./plugins/slinky-drainer \
     ./preflight \
     ./lifecycle-manager \
@@ -75,6 +76,7 @@ ko build "${KO_FLAGS[@]}" \
   ./labeler \
   ./node-drainer \
   ./platform-connectors \
+  ./pod-device-mapper \
   ./plugins/slinky-drainer \
   ./preflight \
   ./lifecycle-manager \

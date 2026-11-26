@@ -70,6 +70,8 @@ navigation:
         path: event-exporter.md
       - page: Metadata Collector
         path: metadata-collector.md
+      - page: Pod Device Mapper
+        path: pod-device-mapper.md
       - page: Labeler
         path: labeler.md
       - page: Platform Connectors
@@ -152,6 +154,8 @@ navigation:
         path: configuration/incluster-file-server.md
       - page: Metadata Collector
         path: configuration/metadata-collector.md
+      - page: Pod Device Mapper
+        path: configuration/pod-device-mapper.md
       - page: Labeler
         path: configuration/labeler.md
       - page: Platform Connectors
