@@ -434,12 +434,7 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	validationRequest *v1alpha1.ValidationRequest) (ctrl.Result, error) {
 	hasFailedTestGroups, hasRunningTestGroups, hasPendingTestGroups, err := r.reconcileTestGroups(ctx, validationRequest)
 	if err != nil {
-		// A failure while reconciling one running TestGroup must not block cleanup of attempts that an earlier
-		// reconcile already persisted for other TestGroups.
-		if cleanupErr := r.cleanupPersistedTestGroupObjects(ctx, validationRequest.Name); cleanupErr != nil {
-			slog.WarnContext(ctx, "Failed to clean up finished TestGroup objects", "validationRequest",
-				validationRequest.Name, "error", cleanupErr)
-		}
+		r.cleanupAfterReconcileFailure(ctx, validationRequest.Name)
 
 		return ctrl.Result{}, err
 	}
@@ -449,12 +444,7 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 		if err := r.startPendingTestGroups(ctx, validationRequest); err != nil {
 			// Finished attempts must still be persisted and cleaned up, since their provider objects may be the
 			// reason a new one cannot be created (for example an object count quota).
-			if updateErr := r.Status().Update(ctx, validationRequest); updateErr != nil {
-				return ctrl.Result{}, errors.Join(err,
-					fmt.Errorf("update ValidationRequest %q status after start failure: %w", validationRequest.Name, updateErr))
-			}
-
-			return ctrl.Result{}, errors.Join(err, r.cleanupFinishedTestGroupObjects(ctx, validationRequest))
+			return ctrl.Result{}, errors.Join(err, r.persistAndCleanup(ctx, validationRequest, "after start failure"))
 		}
 	}
 
@@ -468,25 +458,16 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	if allTerminal {
 		// Persist the attempt results and delete the provider objects before releasing the nodes. If a provider
 		// object cannot be deleted, the nodes stay claimed so another request cannot create a second object on them.
-		if err := r.Status().Update(ctx, validationRequest); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status before completion: %w",
-				validationRequest.Name, err)
-		}
-
-		if err := r.cleanupFinishedTestGroupObjects(ctx, validationRequest); err != nil {
+		if err := r.persistAndCleanup(ctx, validationRequest, "before completion"); err != nil {
 			return ctrl.Result{}, err
 		}
 
 		phase := terminalPhase(hasFailedTestGroups, validationRequest)
+
 		return r.completeValidationRequest(ctx, validationRequest, phase, nil, nil)
 	}
 
-	if err := r.Status().Update(ctx, validationRequest); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update ValidationRequest %q status while running: %w",
-			validationRequest.Name, err)
-	}
-
-	if err := r.cleanupFinishedTestGroupObjects(ctx, validationRequest); err != nil {
+	if err := r.persistAndCleanup(ctx, validationRequest, "while running"); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -496,6 +477,27 @@ func (r *ValidationRequestReconciler) reconcileRunning(ctx context.Context,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// cleanupAfterReconcileFailure cleans up attempts that an earlier reconcile already persisted, so that a failure while
+// reconciling one running TestGroup does not block cleanup for the other TestGroups. Errors are only logged because the
+// caller returns the reconcile error.
+func (r *ValidationRequestReconciler) cleanupAfterReconcileFailure(ctx context.Context, validationRequestName string) {
+	if err := r.cleanupPersistedTestGroupObjects(ctx, validationRequestName); err != nil {
+		slog.WarnContext(ctx, "Failed to clean up finished TestGroup objects", "validationRequest",
+			validationRequestName, "error", err)
+	}
+}
+
+// persistAndCleanup persists the attempt results before deleting the provider objects of finished attempts. Nothing is
+// deleted if the status update fails.
+func (r *ValidationRequestReconciler) persistAndCleanup(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, stage string) error {
+	if err := r.Status().Update(ctx, validationRequest); err != nil {
+		return fmt.Errorf("update ValidationRequest %q status %s: %w", validationRequest.Name, stage, err)
+	}
+
+	return r.cleanupFinishedTestGroupObjects(ctx, validationRequest)
 }
 
 /*
@@ -700,17 +702,10 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 		return fmt.Errorf("checking group nodes: %w", err)
 	}
 
-	testGroupObjectSucceeded, testGroupObjectFailed, err := r.checkTestGroupObjectStatus(ctx, currentTestGroup,
-		testGroupAttempt.ObjectName)
+	testGroupObjectSucceeded, testGroupObjectFailed, err := r.checkAttemptObjectStatus(ctx, validationRequest,
+		currentTestGroup, testGroupAttempt.ObjectName)
 	if err != nil {
-		return fmt.Errorf("checking provider resource: %w", err)
-	}
-
-	// A missing provider object reads as a failure, but it is also what a finished and cleaned up attempt looks like.
-	if testGroupObjectFailed {
-		if err := r.checkValidationRequestIsCurrent(ctx, validationRequest); err != nil {
-			return err
-		}
+		return err
 	}
 
 	var failedNodes []string
@@ -760,6 +755,26 @@ func (r *ValidationRequestReconciler) reconcileRunningTestGroup(ctx context.Cont
 
 	return r.finalizeTestGroupAttempt(ctx, validationRequest.Name, currentTestGroup, testGroupAttempt, newGroupPhase,
 		attemptPhase, attemptFailureReason, failedNodes)
+}
+
+// checkAttemptObjectStatus reads the provider object status of an attempt. A missing provider object reads as a
+// failure, but it is also what a finished and cleaned up attempt looks like, so a failure is only reported if the
+// ValidationRequest is current.
+func (r *ValidationRequestReconciler) checkAttemptObjectStatus(ctx context.Context,
+	validationRequest *v1alpha1.ValidationRequest, testGroup *v1alpha1.TestGroupStatus,
+	objectName string) (bool, bool, error) {
+	succeeded, failed, err := r.checkTestGroupObjectStatus(ctx, testGroup, objectName)
+	if err != nil {
+		return false, false, fmt.Errorf("checking provider resource: %w", err)
+	}
+
+	if failed {
+		if err := r.checkValidationRequestIsCurrent(ctx, validationRequest); err != nil {
+			return false, false, err
+		}
+	}
+
+	return succeeded, failed, nil
 }
 
 func (r *ValidationRequestReconciler) finalizeTestGroupAttempt(ctx context.Context, validationRequestName string,
