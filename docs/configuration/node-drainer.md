@@ -375,7 +375,7 @@ If the cache cannot resolve a node, node-drainer retries the node, and does not 
 
 Node-drainer keeps a recorded method when the current configuration cannot apply it. In these cases, node-drainer logs an error, increments `node_drainer_processing_errors_total`, and retries:
 
-- The record says `Custom`, but custom drain is off. While custom drain is off, node-drainer does not delete the DrainRequest CR of the health event. Thus, the plugin can continue to drain the node. The name of the CR is `drain-<node name>-<event ID>`, and the CR is in the custom drain namespace. Do one of these steps:
+- The record says `Custom`, but custom drain is off. While custom drain is off, node-drainer does not delete the DrainRequest CR of the health event. Thus, the plugin can continue to drain the node. The name of the CR is `drain-<node name>-<record ID>`, and the CR is in the custom drain namespace. The record ID is the ID of the health event in the datastore (the MongoDB `_id` or the PostgreSQL `id`). Do one of these steps:
   - Enable custom drain again.
   - End the quarantine. Then delete the DrainRequest CR of the health event.
 - The record says `BuiltIn`, custom drain is on with no `nodeSelector`, and both `userNamespaces` and `podDrainPolicies` are empty. Node-drainer does not use the empty lists. With empty lists, node-drainer can mark the node drained while its pods continue to run. While custom drain is off, empty lists act as they do for a health event with no record. Do one of these steps:

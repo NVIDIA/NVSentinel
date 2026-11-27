@@ -74,7 +74,7 @@ The CRD is `DrainRequest` in the group and version **`nvsentinel.nvidia.com/v1al
 | `nodeName` | string | The node to drain. Useful for logs and status. The plugin in this tutorial puts it in the completion message. |
 | `podsToDrain` | map<string,[]string> | Maps each namespace to the names of the pods that node-drainer found evictable for this health event. Your plugin drains exactly these pods. If the map is empty, the plugin has nothing to do. |
 
-> node-drainer can supply more optional context. If your drain logic needs it, add these fields: `checkName`, `recommendedAction`, `errorCode`, `healthEventID`, `entitiesImpacted`, `metadata` and `reason`. Kubernetes prunes the fields that your CRD does not declare. Your CRD needs none of these fields, because node-drainer does not use `spec` for the name or the namespace of the CR. The name comes from the health event (`drain-{NODE}-{EVENTID}`), and the namespace comes from the `customDrain.namespace` Helm value.
+> node-drainer can supply more optional context. If your drain logic needs it, add these fields: `checkName`, `recommendedAction`, `errorCode`, `healthEventID`, `entitiesImpacted`, `metadata` and `reason`. Kubernetes prunes the fields that your CRD does not declare. Your CRD needs none of these fields, because node-drainer does not use `spec` for the name or the namespace of the CR. The name comes from the health event (`drain-{NODE}-{RECORDID}`), and the namespace comes from the `customDrain.namespace` Helm value. `{RECORDID}` is the ID of the health event in the datastore (the MongoDB `_id` or the PostgreSQL `id`).
 
 **`status`**: the field that *your plugin* writes:
 
@@ -670,7 +670,7 @@ STATE:.metadata.labels.dgxc\.nvidia\.com/nvsentinel-state"
 
 Expected `STATE` progression: `(none)` → `quarantined` (fault-quarantine cordoned it) → `draining` (node-drainer started) → `drain-succeeded`.
 
-node-drainer creates the CR (`drain-{NODE}-{EVENTID}` in `nvsentinel`), and your plugin acts on it. The CR exists only for a short time. When your plugin sets `DrainComplete=True`, node-drainer **deletes it**. Run these commands quickly, or read the logs of the plugin:
+node-drainer creates the CR (`drain-{NODE}-{RECORDID}` in `nvsentinel`), and your plugin acts on it. The CR exists only for a short time. When your plugin sets `DrainComplete=True`, node-drainer **deletes it**. Run these commands quickly, or read the logs of the plugin:
 
 ```bash
 # The CR node-drainer rendered from your template, with spec.podsToDrain filled in.
@@ -716,7 +716,8 @@ maintenance window/SLO, or drain via the Eviction API or a scheduler call instea
 
 A drain plugin reconciles DrainRequest custom resources (group/version
 nvsentinel.nvidia.com/v1alpha1, namespaced). In production node-drainer creates one DrainRequest
-per health event (name drain-{node}-{eventID} in namespace nvsentinel), polls its status, and
+per health event (name drain-{node}-{recordID} in namespace nvsentinel, where recordID is the
+MongoDB _id or the PostgreSQL id of the health event), polls its status, and
 considers the drain done when the controller sets status.conditions[] Type="DrainComplete"
 Status="True".
 
