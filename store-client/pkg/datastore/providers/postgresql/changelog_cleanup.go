@@ -168,15 +168,15 @@ func (c *changelogCleaner) closePool(ctx context.Context, db *sql.DB) error {
 	}
 }
 
-func releaseCleanupLock(conn *sql.Conn) {
+func releaseCleanupLock(conn *sql.Conn, key int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var released bool
 
-	err := conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", cleanupLockKey).Scan(&released)
+	err := conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", key).Scan(&released)
 	if err != nil || !released {
-		slog.Warn("Releasing changelog cleanup lock failed; discarding session", "error", err)
+		slog.Warn("Releasing cleanup lock failed; discarding session", "key", key, "error", err)
 		discardCleanupSession(conn)
 	}
 }
@@ -199,7 +199,7 @@ func (c *changelogCleaner) run(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 
-	defer releaseCleanupLock(conn)
+	defer releaseCleanupLock(conn, cleanupLockKey)
 
 	var ready bool
 	if err := conn.QueryRowContext(ctx, cleanupPrerequisitesQuery).Scan(&ready); err != nil {

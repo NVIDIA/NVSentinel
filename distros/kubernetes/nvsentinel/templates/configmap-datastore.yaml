@@ -111,6 +111,26 @@ data:
   {{- end }}
   {{- end }}
 
+  # Health event retention (PostgreSQL only; MongoDB uses mongodb-store.collectionExpirySeconds).
+  # The components that open the store read these when they start.
+  {{- if eq .Values.global.datastore.provider "postgresql" }}
+  {{- with .Values.global.datastore.healthEventsCleanup }}
+  {{- if .retention }}
+  DATASTORE_HEALTH_EVENTS_RETENTION: {{ .retention | quote }}
+  {{- end }}
+  {{- if .interval }}
+  DATASTORE_HEALTH_EVENTS_CLEANUP_INTERVAL: {{ .interval | quote }}
+  {{- end }}
+  {{- /* Presence, not truthiness: an explicit 0 reaches the store, which rejects it. */}}
+  {{- if hasKey . "batchSize" }}
+  DATASTORE_HEALTH_EVENTS_CLEANUP_BATCH_SIZE: {{ .batchSize | quote }}
+  {{- end }}
+  {{- if hasKey . "maxBatches" }}
+  DATASTORE_HEALTH_EVENTS_CLEANUP_MAX_BATCHES: {{ .maxBatches | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
   # Certificate rotation configuration (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods
   {{- if eq .Values.global.datastore.provider "mongodb" }}
