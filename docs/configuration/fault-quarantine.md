@@ -93,6 +93,8 @@ On a normal `RESUME` startup, fault-quarantine queries the datastore for process
 
 For each replayed health event, recovery uses one current snapshot of the node from the API server. It does not use the informer cache. The live watcher opens first, so health events inserted during recovery stay queued for normal processing.
 
+A live health event can also end with no quarantine status. This occurs when fault-quarantine cannot update the node, for example because the API server returns an error, or cannot store the status. Fault-quarantine then stops, and Kubernetes restarts the pod. The startup replays the health event. While the failure continues, each startup stops on the same health event. The `fault_quarantine_processing_errors_total` metric counts each stop with the `error_type` label `live_event_unfinished`.
+
 Skipped, invalid, and superseded documents receive a terminal fault-quarantine recovery marker in their status. The detailed result stays available through the recovery metric. Successful quarantine updates already carry a terminal quarantine status. Later scans exclude both forms. Normal recovery does not advance a wall-clock checkpoint, because event creation time and datastore insertion order can differ.
 
 If an installation has no persisted cutoff, fault-quarantine initializes and persists the lower bound at the current startup boundary. It does not scan the full history of the cluster.

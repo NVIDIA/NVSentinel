@@ -59,6 +59,15 @@ func (e *recoveryOverlapLookupError) Error() string       { return e.err.Error()
 func (e *recoveryOverlapLookupError) Unwrap() error       { return e.err }
 func (e *recoveryOverlapLookupError) withholdCheckpoint() {}
 
+// unfinishedLiveEventError is the failure of a live event that left the event with no status.
+type unfinishedLiveEventError struct {
+	err error
+}
+
+func (e *unfinishedLiveEventError) Error() string       { return e.err.Error() }
+func (e *unfinishedLiveEventError) Unwrap() error       { return e.err }
+func (e *unfinishedLiveEventError) withholdCheckpoint() {}
+
 type checkpointWithholdingError interface {
 	error
 	withholdCheckpoint()
@@ -302,10 +311,26 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	processed, err := w.processHealthEvent(ctx, &healthEventWithStatus, recordUUID, eventID)
 	if err != nil {
-		return err
+		return unfinishedLiveEvent(ctx, processed, err)
 	}
 
 	return w.completeLiveEventIfSkipped(ctx, recordUUID, processed)
+}
+
+// unfinishedLiveEvent marks a failure that left a live event with no status, so that the watcher stops
+// in place of moving on to the next event. Cold start then replays the event on the next startup. It
+// is the only thing that replays an event with no status, and it runs only at startup.
+//
+// A permanent error fails the same way on a replay, and a shutdown is not a failure of the event, so
+// neither is marked.
+func unfinishedLiveEvent(ctx context.Context, processed bool, err error) error {
+	if processed || ctx.Err() != nil || coldstart.IsPermanentError(err) {
+		return err
+	}
+
+	metrics.ProcessingErrors.WithLabelValues("live_event_unfinished").Inc()
+
+	return &unfinishedLiveEventError{err: err}
 }
 
 func (w *EventWatcher) shouldSkipRecoveredLiveEvent(
