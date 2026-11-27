@@ -22,6 +22,8 @@ import (
 
 const NodeNameLabelKey = "nvsentinel.nvidia.com/node-name"
 
+// TemplateData holds the values that the drain template renders. EventID is the record ID of the health event, and
+// HealthEvent.Id holds the same value.
 type TemplateData struct {
 	HealthEvent *protos.HealthEvent
 	EventID     string

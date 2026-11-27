@@ -638,25 +638,32 @@ func (x *Entity) GetEntityValue() string {
 }
 
 type HealthEvent struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	Version                 uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	Agent                   string                 `protobuf:"bytes,2,opt,name=agent,proto3" json:"agent,omitempty"`
-	ComponentClass          string                 `protobuf:"bytes,3,opt,name=componentClass,proto3" json:"componentClass,omitempty"`
-	CheckName               string                 `protobuf:"bytes,4,opt,name=checkName,proto3" json:"checkName,omitempty"`
-	IsFatal                 bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
-	IsHealthy               bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
-	Message                 string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	RecommendedAction       RecommendedAction      `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommendedAction" json:"recommendedAction,omitempty"`
-	ErrorCode               []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
-	EntitiesImpacted        []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
-	Metadata                map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	GeneratedTimestamp      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=generatedTimestamp,proto3" json:"generatedTimestamp,omitempty"`
-	NodeName                string                 `protobuf:"bytes,13,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
-	QuarantineOverrides     *BehaviourOverrides    `protobuf:"bytes,14,opt,name=quarantineOverrides,proto3" json:"quarantineOverrides,omitempty"`
-	DrainOverrides          *BehaviourOverrides    `protobuf:"bytes,15,opt,name=drainOverrides,proto3" json:"drainOverrides,omitempty"`
-	ProcessingStrategy      ProcessingStrategy     `protobuf:"varint,16,opt,name=processingStrategy,proto3,enum=datamodels.ProcessingStrategy" json:"processingStrategy,omitempty"`
-	Id                      string                 `protobuf:"bytes,17,opt,name=id,proto3" json:"id,omitempty"`
-	CustomRecommendedAction string                 `protobuf:"bytes,18,opt,name=customRecommendedAction,proto3" json:"customRecommendedAction,omitempty"`
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Version             uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Agent               string                 `protobuf:"bytes,2,opt,name=agent,proto3" json:"agent,omitempty"`
+	ComponentClass      string                 `protobuf:"bytes,3,opt,name=componentClass,proto3" json:"componentClass,omitempty"`
+	CheckName           string                 `protobuf:"bytes,4,opt,name=checkName,proto3" json:"checkName,omitempty"`
+	IsFatal             bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
+	IsHealthy           bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
+	Message             string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
+	RecommendedAction   RecommendedAction      `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommendedAction" json:"recommendedAction,omitempty"`
+	ErrorCode           []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
+	EntitiesImpacted    []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
+	Metadata            map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	GeneratedTimestamp  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=generatedTimestamp,proto3" json:"generatedTimestamp,omitempty"`
+	NodeName            string                 `protobuf:"bytes,13,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
+	QuarantineOverrides *BehaviourOverrides    `protobuf:"bytes,14,opt,name=quarantineOverrides,proto3" json:"quarantineOverrides,omitempty"`
+	DrainOverrides      *BehaviourOverrides    `protobuf:"bytes,15,opt,name=drainOverrides,proto3" json:"drainOverrides,omitempty"`
+	ProcessingStrategy  ProcessingStrategy     `protobuf:"varint,16,opt,name=processingStrategy,proto3,enum=datamodels.ProcessingStrategy" json:"processingStrategy,omitempty"`
+	// ID that the producer of the event may set. Health monitors leave it empty, and the platform
+	// connector stores it as received. lifecycle-manager sets a UUID when the MaintenanceRequest
+	// gives none, and sets clear-<MaintenanceRequest UID> on the healthy event that it sends when
+	// the MaintenanceRequest is deleted. health-events-analyzer copies the id into the events it
+	// derives, so it is not unique. It is not the record ID of the stored event (the MongoDB _id or
+	// the PostgreSQL id). fault-quarantine and node-drainer replace it in memory with the record ID,
+	// which the quarantine annotation entries and the custom drain CR names use.
+	Id                      string `protobuf:"bytes,17,opt,name=id,proto3" json:"id,omitempty"`
+	CustomRecommendedAction string `protobuf:"bytes,18,opt,name=customRecommendedAction,proto3" json:"customRecommendedAction,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }

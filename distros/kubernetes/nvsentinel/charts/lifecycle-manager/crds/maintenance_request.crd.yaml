@@ -126,6 +126,7 @@ spec:
                       x-kubernetes-int-or-string: true
                     id:
                       type: string
+                      description: ID that the producer of the event may set. Health monitors leave it empty, and the platform connector stores it as received. lifecycle-manager sets a UUID when the MaintenanceRequest gives none, and sets clear-<MaintenanceRequest UID> on the healthy event that it sends when the MaintenanceRequest is deleted. health-events-analyzer copies the id into the events it derives, so it is not unique. It is not the record ID of the stored event (the MongoDB _id or the PostgreSQL id). fault-quarantine and node-drainer replace it in memory with the record ID, which the quarantine annotation entries and the custom drain CR names use.
                     customRecommendedAction:
                       type: string
                   description: healthEvent describes the preparation NVSentinel must perform. lifecycle-manager identifies itself as the publishing agent and preserves the requester-supplied agent in metadata. The requester's recommendedAction stands, so the normal quarantine, drain, and remediation flow fires for whichever action the event names.

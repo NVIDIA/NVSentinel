@@ -914,12 +914,13 @@ func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEven
 
 // activeQuarantineContainsEvent reports whether the incoming event belongs to the current
 // quarantine session. fault-quarantine writes the event's record key as the id of its annotation
-// entry, so an entry with the event's recordID is that event, whatever id its producer set. Event
-// IDs distinguish repeated failures across sessions when both sides have one. An event without an
-// ID, as the health monitors send, matches by fault-quarantine's event key. So does an event with
-// an ID that was generated at or after the listed event: fault-quarantine lists only the first
-// event of a key, and a repeat report of that key belongs to the same quarantine, while an event
-// of an earlier quarantine was generated before the event that the current quarantine lists.
+// entry, so an entry with the event's recordID is that event, whatever id its producer set. An
+// entry with the same id as the incoming event matches as well. An event without an ID, as the
+// health monitors send, matches by fault-quarantine's event key. So does an event whose producer
+// set an ID, when the entry has no ID or the event was generated at or after the listed event:
+// fault-quarantine lists only the first event of a key, and a repeat report of that key belongs to
+// the same quarantine, while an event of an earlier quarantine was generated before the event that
+// the current quarantine lists.
 func activeQuarantineContainsEvent(
 	annotations map[string]string,
 	incomingEvent *protos.HealthEvent,

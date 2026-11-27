@@ -61,6 +61,7 @@ import (
 	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 // mockDatabaseConfig is a simple mock implementation for testing
@@ -2017,6 +2018,76 @@ func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) 
 	assert.Nil(t, updates.filters[0]["healtheventstatus.draindecision"])
 }
 
+// TestReconciler_AlreadyQuarantinedProducerIDSkipsOwnAnnotationEntry covers an AlreadyQuarantined event whose producer
+// set HealthEvent.Id to an id other than the record key. fault-quarantine lists the event in the quarantine annotation
+// under its record key, so the check for an earlier completed drain skips that entry and looks up only the other
+// events of the annotation.
+func TestReconciler_AlreadyQuarantinedProducerIDSkipsOwnAnnotationEntry(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	// The ids are not 24 hex characters, which the store query would turn into ObjectIDs.
+	nodeName := "producer-id-quarantined-node"
+	recordKey := nodeName + "-event"
+
+	annotationValue, err := createHealthEventAnnotationsMap([]*protos.HealthEvent{
+		{Id: recordKey, NodeName: nodeName, CheckName: "test-check"},
+		{Id: "earlier-event", NodeName: nodeName, CheckName: "earlier-check"},
+	})
+	require.NoError(t, err)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName,
+		map[string]string{statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue)},
+		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
+	waitForNodeInInformer(t, setup.informersInstance, nodeName)
+
+	// Neither drain has completed, so the check looks up every entry that it does not skip, in any order.
+	inProgress := func(id string) datastore.HealthEventWithStatus {
+		return datastore.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{Id: id, NodeName: nodeName},
+			HealthEventStatus: datastore.HealthEventStatus{
+				NodeQuarantined:        ptr.To(datastore.Quarantined),
+				UserPodsEvictionStatus: datastore.OperationStatus{Status: datastore.StatusInProgress},
+			},
+		}
+	}
+	healthEventStore := &recordingHealthEventStore{byID: map[string]datastore.HealthEventWithStatus{
+		recordKey:       inProgress(recordKey),
+		"earlier-event": inProgress("earlier-event"),
+	}}
+
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.AlreadyQuarantined})
+	event["healthevent"].(*protos.HealthEvent).Id = "producer-uuid"
+
+	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection, healthEventStore,
+		nodeName))
+
+	assert.Contains(t, healthEventStore.queried, "earlier-event", "the check looks up the other events")
+	assert.NotContains(t, healthEventStore.queried, recordKey, "the check skips the entry of the event itself")
+}
+
+// recordingHealthEventStore answers each lookup by _id from byID and keeps the ids it was asked for. The pass calls it
+// synchronously, so a test reads queried after the pass.
+type recordingHealthEventStore struct {
+	datastore.HealthEventStore
+	byID    map[string]datastore.HealthEventWithStatus
+	queried []string
+}
+
+// FindHealthEventsByQuery keeps the queried _id and returns the stored event with that id, if any. An id of 24 hex
+// characters is an ObjectID in the query, so it is kept as an empty id and not found.
+func (s *recordingHealthEventStore) FindHealthEventsByQuery(_ context.Context,
+	builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	id, _ := builder.ToMongo()["_id"].(string)
+	s.queried = append(s.queried, id)
+
+	if event, ok := s.byID[id]; ok {
+		return []datastore.HealthEventWithStatus{event}, nil
+	}
+
+	return nil, nil
+}
+
 // TestReconciler_HealthyAndSkipRecordNoScope keeps a healthy event and a skipped event free of a
 // drain decision. Neither one was covered by an earlier drain. DrainOverrides.Skip drains nothing, so it
 // moves a quarantined node to drain-succeeded and keeps the draining label and queue state of another
@@ -2921,6 +2992,79 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond, "Event A's CR should be cleaned up")
 }
 
+// TestReconciler_CustomDrainProducerIDFindsOwnCR covers an event whose producer set HealthEvent.Id to an id other than
+// the record key, as lifecycle-manager does. node-drainer creates the custom drain CR of the event under the record
+// key. The pass after that CR completes marks the event AlreadyDrained and deletes the CR, while the CR of another
+// event of the node that still runs stays. A producer id that is not a valid object name does not hold the event back.
+func TestReconciler_CustomDrainProducerIDFindsOwnCR(t *testing.T) {
+	setup := setupCustomDrain(t, testCustomDrainConfig("scheduler=slurm"), nil)
+	createNamespace(setup.ctx, t, setup.client, "default")
+
+	tests := []struct {
+		name       string
+		producerID string
+		// otherCR creates the CR of another event of the node after the first pass and leaves it running.
+		otherCR bool
+	}{
+		{name: "another CR of the node still runs", producerID: "producer-uuid", otherCR: true},
+		{name: "producer id is not a valid object name", producerID: "team/mr-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := testutils.GenerateTestNodeName("producer-id")
+			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{
+				"scheduler":                          "slurm",
+				statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+			}, nil)
+			waitForCachedNodeLabel(t, setup.informersInstance, nodeName, "scheduler", "slurm")
+
+			// The record key stays the fixture _id, nodeName-event. Only the id that the producer set differs.
+			event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+			event["healthevent"].(*protos.HealthEvent).Id = tt.producerID
+			setup.mockDB.storeEvent(nodeName, event)
+			store := &recordingDataStore{mockDataStore: setup.mockDB}
+
+			err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+			require.ErrorContains(t, err, "waiting for custom drain CR to complete")
+			requireCustomDrainCR(t, setup, nodeName)
+			applyRecordedDrainDecision(t, event, store.updates)
+
+			// The other CR is created after the first pass: a pass creates a CR only on a node that has none.
+			otherCRName := customdrain.GenerateCRName(nodeName, nodeName+"-other")
+			if tt.otherCR {
+				createCustomDrainCRWithoutRecord(t, setup, createHealthEvent(healthEventOptions{
+					nodeName: nodeName, eventID: nodeName + "-other", nodeQuarantined: model.Quarantined,
+				}))
+			}
+
+			completeCustomDrainCR(t, setup, nodeName)
+			updatesBefore := len(store.updates)
+
+			require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore,
+				nodeName), "the pass after the CR of the event completes marks the event drained")
+			require.Equal(t, datastore.AlreadyDrained, latestEvictionStatus(t, store.updates[updatesBefore:]))
+			assert.Equal(t, model.DrainMethodCustom, latestDrainDecision(t, store.updates)["method"])
+			assert.Equal(t, 1, drainDecisionUpdateCount(store.updates), "the decision of the first pass stays")
+
+			crs := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default")
+			ownCRName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+			require.Eventually(t, func() bool {
+				_, getErr := crs.Get(setup.ctx, ownCRName, metav1.GetOptions{})
+				return errors.IsNotFound(getErr)
+			}, 10*time.Second, 200*time.Millisecond, "the completed CR of the event is deleted")
+
+			if tt.otherCR {
+				_, err = crs.Get(setup.ctx, otherCRName, metav1.GetOptions{})
+				require.NoError(t, err, "the CR of the other event stays")
+			} else {
+				require.Equal(t, statemanager.DrainSucceededLabelValue, nodeStateLabel(t, setup, nodeName),
+					"the completed CR of the event moves the label")
+			}
+		})
+	}
+}
+
 // transitionErrorStateManager writes the conditional label through the wrapped state manager and then reports an
 // unexpected transition, as a state manager that validates the transition after the write does.
 type transitionErrorStateManager struct {
@@ -3371,31 +3515,49 @@ func TestReconciler_DrainDecision_LostRaceFollowsStoredDecision(t *testing.T) {
 
 // TestReconciler_DrainDecision_CompletedCRWithoutRecordRecordsCustom covers the custom drain CR
 // of an event that completed with no record, as a drain that started before node-drainer
-// recorded decisions leaves it. The pass records Custom, then marks the event drained.
+// recorded decisions leaves it. The pass records Custom, then marks the event drained, also for
+// an event whose producer set its own id.
 func TestReconciler_DrainDecision_CompletedCRWithoutRecordRecordsCustom(t *testing.T) {
-	nodeName := "completed-cr-node"
-	setup := startScopedCustomDrain(t, nodeName)
+	tests := []struct {
+		name       string
+		nodeName   string
+		producerID string
+	}{
+		{name: "event without a producer id", nodeName: "completed-cr-node"},
+		{name: "event with a producer id", nodeName: "completed-cr-producer-id-node", producerID: "producer-uuid"},
+	}
 
-	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
-	setup.mockDB.storeEvent(nodeName, event)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := tt.nodeName
+			setup := startScopedCustomDrain(t, nodeName)
 
-	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
-	requireCustomDrainCR(t, setup, nodeName)
-	completeCustomDrainCR(t, setup, nodeName)
+			event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+			if tt.producerID != "" {
+				event["healthevent"].(*protos.HealthEvent).Id = tt.producerID
+			}
 
-	event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = nil
-	store := &recordingDataStore{mockDataStore: setup.mockDB}
+			setup.mockDB.storeEvent(nodeName, event)
 
-	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
-	require.NoError(t, err)
-	assert.Equal(t, 1, drainDecisionUpdateCount(store.updates))
+			err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+			requireCustomDrainCR(t, setup, nodeName)
+			completeCustomDrainCR(t, setup, nodeName)
 
-	recorded := latestDrainDecision(t, store.updates)
-	assert.Equal(t, model.DrainMethodCustom, recorded["method"])
-	assert.Equal(t, model.CustomDrainNodeSelectorRuleSet, recorded["ruleset"])
-	assert.NotContains(t, recorded, "scope", "a drain of the full node stores no scope")
+			event["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = nil
+			store := &recordingDataStore{mockDataStore: setup.mockDB}
+
+			err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, setup.healthEventStore, nodeName)
+			require.NoError(t, err)
+			assert.Equal(t, 1, drainDecisionUpdateCount(store.updates))
+
+			recorded := latestDrainDecision(t, store.updates)
+			assert.Equal(t, model.DrainMethodCustom, recorded["method"])
+			assert.Equal(t, model.CustomDrainNodeSelectorRuleSet, recorded["ruleset"])
+			assert.NotContains(t, recorded, "scope", "a drain of the full node stores no scope")
+		})
+	}
 }
 
 // TestReconciler_DrainDecision_PartialDrainRecordsScope stores the entity of a partial drain as
@@ -3478,6 +3640,7 @@ func requireCustomDrainCR(t *testing.T, setup *testSetup, nodeName string) {
 
 // createCustomDrainCRWithoutRecord creates the custom drain CR of the event through the custom
 // drain client and stores no drain decision, as node-drainer did before it recorded decisions.
+// The CR is named from the document ID of the event, as node-drainer names it.
 func createCustomDrainCRWithoutRecord(t *testing.T, setup *testSetup, event map[string]any) {
 	t.Helper()
 
@@ -3488,8 +3651,11 @@ func createCustomDrainCRWithoutRecord(t *testing.T, setup *testSetup, event map[
 	client, err := customdrain.NewClient(testCustomDrainConfig("scheduler=slurm"), setup.dynamicClient, restMapper, false)
 	require.NoError(t, err)
 
+	documentID, err := utils.ExtractDocumentID(event)
+	require.NoError(t, err)
+
 	healthEvent := event["healthevent"].(*protos.HealthEvent)
-	_, err = client.CreateDrainCR(setup.ctx, customdrain.TemplateData{HealthEvent: healthEvent, EventID: healthEvent.Id})
+	_, err = client.CreateDrainCR(setup.ctx, customdrain.TemplateData{HealthEvent: healthEvent, EventID: documentID})
 	require.NoError(t, err)
 }
 
