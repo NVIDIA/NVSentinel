@@ -17,6 +17,7 @@ package evaluator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -40,17 +42,26 @@ import (
 type nodeSelectorInformers struct {
 	InformersInterface
 	nodes     map[string]*v1.Node
+	deleted   map[string]bool
 	podChecks int
 }
 
-// GetNode serves the node cache the drain path decision reads.
+// GetNode serves the node cache the drain path decision reads. A miss is a NotFound, as in
+// the real informer.
 func (i *nodeSelectorInformers) GetNode(nodeName string) (*v1.Node, error) {
 	node, exists := i.nodes[nodeName]
 	if !exists {
-		return nil, errors.New("node not found in cache")
+		return nil, fmt.Errorf("node %s not found in cache: %w", nodeName,
+			apierrors.NewNotFound(v1.Resource("nodes"), nodeName))
 	}
 
 	return node, nil
+}
+
+// NodeDeleted stands in for the API server read: a node missing from the cache is deleted only
+// when the test says so, and otherwise is one the cache has not caught up with.
+func (i *nodeSelectorInformers) NodeDeleted(_ context.Context, nodeName string) (bool, error) {
+	return i.deleted[nodeName], nil
 }
 
 // GetNamespacesMatchingPattern stands in for the namespace scan custom drain does before
@@ -212,8 +223,156 @@ func TestEvaluateEventWithDatabase_NodeMissingFromCache_RetriesInsteadOfGuessing
 	require.Zero(t, client.existsCalls)
 }
 
+// TestEvaluateEventWithDatabase_NodeSelector_DeletedNodeIsCancelled ends the event of a deleted
+// node instead of waiting for a node that will not come back.
+func TestEvaluateEventWithDatabase_NodeSelector_DeletedNodeIsCancelled(t *testing.T) {
+	evaluator, client := newNodeSelectorEvaluator(t, "scheduler=slurm", nil)
+	evaluator.informers.(*nodeSelectorInformers).deleted = map[string]bool{"deleted-node": true}
+	recorder := &decisionRecorder{}
+
+	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), quarantinedEvent("deleted-node"), nil, nil,
+		recorder.record)
+	require.NoError(t, err)
+	require.Equal(t, ActionCancel, result.Action)
+	require.Equal(t, model.Cancelled, result.Status)
+	require.True(t, result.NodeDeleted)
+	require.Nil(t, result.DrainDecision)
+	require.Empty(t, recorder.decisions)
+	require.Zero(t, client.existsCalls)
+}
+
+// TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode covers an AlreadyQuarantined event
+// whose node is gone: deleted, it is cancelled; missing only from the cache, it keeps waiting.
+func TestEvaluateEventWithDatabase_AlreadyQuarantined_DeletedNode(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		deleted bool
+		action  DrainAction
+	}{
+		{name: "deleted node is cancelled", deleted: true, action: ActionCancel},
+		{name: "node the cache has not caught up with waits", deleted: false, action: ActionWait},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			evaluator, client := newNodeSelectorEvaluator(t, "", nil)
+			evaluator.informers.(*nodeSelectorInformers).deleted = map[string]bool{"gone-node": tt.deleted}
+			recorder := &decisionRecorder{}
+
+			event := quarantinedEvent("gone-node")
+			event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
+
+			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, nil, recorder.record)
+			require.NoError(t, err)
+			require.Equal(t, tt.action, result.Action)
+			require.Empty(t, recorder.decisions)
+			require.Zero(t, client.existsCalls)
+
+			require.Equal(t, tt.deleted, result.NodeDeleted)
+
+			if tt.deleted {
+				require.Equal(t, model.Cancelled, result.Status)
+			} else {
+				require.Equal(t, time.Minute, result.WaitDelay)
+			}
+		})
+	}
+}
+
+// slowAPIInformers misses the node in the cache, and its API server read never answers.
+type slowAPIInformers struct {
+	nodeSelectorInformers
+	sawDeadline bool
+}
+
+// NodeDeleted waits for the caller's deadline, as a request to a server that does not answer does.
+func (i *slowAPIInformers) NodeDeleted(ctx context.Context, _ string) (bool, error) {
+	_, i.sawDeadline = ctx.Deadline()
+	<-ctx.Done()
+
+	return false, ctx.Err()
+}
+
+// TestEvaluateEventWithDatabase_DeletionLookupTimesOut_KeepsTheUsualPath bounds the API server read
+// of a node missing from the cache: a server that does not answer delays the event once, and the
+// event keeps waiting instead of being cancelled.
+func TestEvaluateEventWithDatabase_DeletionLookupTimesOut_KeepsTheUsualPath(t *testing.T) {
+	previous := nodeDeletedLookupTimeout
+	nodeDeletedLookupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { nodeDeletedLookupTimeout = previous })
+
+	podInformers := &slowAPIInformers{}
+	cfg := config.TomlConfig{
+		SystemNamespaces: "kube-*",
+		UserNamespaces:   []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+	}
+	built, err := NewNodeDrainEvaluator(cfg, podInformers, nil)
+	require.NoError(t, err)
+
+	event := quarantinedEvent("silent-api-node")
+	event.HealthEventStatus.NodeQuarantined = string(model.AlreadyQuarantined)
+
+	start := time.Now()
+	result, err := built.EvaluateEventWithDatabase(t.Context(), event, nil, nil, (&decisionRecorder{}).record)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 5*time.Second)
+	require.True(t, podInformers.sawDeadline, "the API server read has its own deadline")
+	require.Equal(t, ActionWait, result.Action)
+	require.False(t, result.NodeDeleted)
+}
+
+// TestEvaluateEventWithDatabase_RecordedDecision_DeletedNodeIsCancelled ends an event whose drain
+// started before its node was deleted. A custom drain would otherwise wait for a DrainRequest
+// that no plugin can complete for a missing node, and a built-in drain for a label it cannot write.
+func TestEvaluateEventWithDatabase_RecordedDecision_DeletedNodeIsCancelled(t *testing.T) {
+	for _, method := range []string{model.DrainMethodCustom, model.DrainMethodBuiltIn} {
+		t.Run(method, func(t *testing.T) {
+			podInformers := &nodeSelectorInformers{deleted: map[string]bool{"gone-node": true}}
+			cfg := config.TomlConfig{
+				SystemNamespaces: "kube-*",
+				UserNamespaces:   []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+			}
+
+			var client *countingCustomDrainClient
+			var drainClient CustomDrainClientInterface
+
+			if method == model.DrainMethodCustom {
+				cfg.UserNamespaces = nil
+				cfg.CustomDrain = config.CustomDrainConfig{
+					Enabled:               true,
+					TemplateMountPath:     "/etc/drain-template",
+					TemplateFileName:      "drain-template.yaml",
+					Namespace:             "nvsentinel",
+					ApiGroup:              "nvsentinel.nvidia.com",
+					Version:               "v1alpha1",
+					Kind:                  "DrainRequest",
+					StatusConditionType:   "DrainComplete",
+					StatusConditionStatus: "True",
+				}
+				// The DrainRequest exists and never completes.
+				client = &countingCustomDrainClient{nodeHasCR: true, eventCRExists: true}
+				drainClient = client
+			}
+
+			built, err := NewNodeDrainEvaluator(cfg, podInformers, drainClient)
+			require.NoError(t, err)
+
+			result, err := built.EvaluateEventWithDatabase(t.Context(),
+				eventWithDrainDecision("gone-node", method, ""), nil, nil, (&decisionRecorder{}).record)
+			require.NoError(t, err)
+			require.Equal(t, ActionCancel, result.Action)
+			require.Equal(t, model.Cancelled, result.Status)
+			require.True(t, result.NodeDeleted)
+			require.Zero(t, podInformers.podChecks)
+
+			if client != nil {
+				require.Zero(t, client.existsCalls)
+			}
+		})
+	}
+}
+
 // TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain
-// pins the pre-selector behaviour, including that the node cache is never read.
+// pins the pre-selector behaviour: the drain path never reads the node, so a node missing
+// from the cache but still on the API server goes to custom drain as before.
 func TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain(t *testing.T) {
 	evaluator, client := newNodeSelectorEvaluator(t, "", nil)
 	evaluator.config.UserNamespaces = nil
@@ -810,7 +969,7 @@ func (s *completedDrainStore) FindHealthEventsByQuery(context.Context,
 func TestEvaluateEventWithDatabase_ScopedActionWithoutEntity_ReturnsErrorForRetry(t *testing.T) {
 	evaluator := &NodeDrainEvaluator{config: config.TomlConfig{
 		PartialDrainEnabled: true, PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
-	}}
+	}, informers: &nodeSelectorInformers{nodes: map[string]*v1.Node{"node-1": labelledNode("node-1", nil)}}}
 	event := quarantinedEvent("node-1")
 	event.HealthEvent.RecommendedAction = protos.RecommendedAction_COMPONENT_RESET
 	event.HealthEvent.EntitiesImpacted = []*protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}}

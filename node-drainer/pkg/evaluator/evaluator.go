@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -130,6 +131,10 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 
 	nodeName := healthEvent.HealthEvent.NodeName
 	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
+
+	if e.nodeDeleted(ctx, nodeName) {
+		return deletedNodeResult(ctx, nodeName), nil
+	}
 
 	// The event has no entity for its scoped action. Return the error so the queue retries the event with
 	// backoff: a fix to scopedActions lets the drain continue. A terminal Failed status would end the drain.
@@ -349,6 +354,48 @@ func (e *NodeDrainEvaluator) shouldUseCustomDrain(ctx context.Context, nodeName 
 		"customDrain", matches)
 
 	return matches, nil
+}
+
+// nodeDeletedLookupTimeout bounds the API server read of a node missing from the cache. It is well
+// under the queue's requeue backoff (queue.DefaultRequeueBackoffBase), so a server that does not
+// answer delays the event once, and the event keeps its usual path.
+var nodeDeletedLookupTimeout = 5 * time.Second
+
+// nodeDeleted reports whether the event's node was deleted. Every step after this one needs the
+// node: the already-drained check reads it, a DrainRequest waits for a plugin that cannot drain a
+// missing node, and the state label write fails. Each would retry the event forever. A node
+// missing from the informer cache is checked with the API server, so one the cache has not caught
+// up with is not taken for deleted, and a failed check keeps the event on its usual path.
+func (e *NodeDrainEvaluator) nodeDeleted(ctx context.Context, nodeName string) bool {
+	if _, err := e.informers.GetNode(nodeName); err == nil || !apierrors.IsNotFound(err) {
+		return false
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, nodeDeletedLookupTimeout)
+	defer cancel()
+
+	deleted, err := e.informers.NodeDeleted(lookupCtx, nodeName)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to check whether the node was deleted",
+			"node", nodeName,
+			"error", err)
+
+		return false
+	}
+
+	return deleted
+}
+
+// deletedNodeResult cancels the event of a deleted node. Its pods went with it, so there is
+// nothing left to drain.
+func deletedNodeResult(ctx context.Context, nodeName string) *DrainActionResult {
+	slog.InfoContext(ctx, "Cancelling event for a node that no longer exists", "node", nodeName)
+
+	return &DrainActionResult{
+		Action:      ActionCancel,
+		Status:      model.Cancelled,
+		NodeDeleted: true,
+	}
 }
 
 func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusStr string,

@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -607,6 +608,32 @@ func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	assert.Equal(t, node.UID, cachedNode.UID)
 	assert.Equal(t, node.ResourceVersion, cachedNode.ResourceVersion)
 	assert.Equal(t, node.Annotations, cachedNode.Annotations)
+}
+
+func TestNodeMissingFromCacheIsNotFoundAndDeletionIsReadFromTheAPIServer(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	client := fake.NewSimpleClientset(&v1.Node{Name: "node-a"})
+	informers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(), false, `^kube-system$`, NodeFields(nil))
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
+
+	_, err = informers.GetNode("node-b")
+	require.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err), "a node missing from the cache is a NotFound: %v", err)
+
+	deleted, err := informers.NodeDeleted(ctx, "node-b")
+	require.NoError(t, err)
+	assert.True(t, deleted)
+
+	// The API server has the node even when the cache does not yet.
+	_, err = client.CoreV1().Nodes().Create(ctx, &v1.Node{Name: "node-c"}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	deleted, err = informers.NodeDeleted(ctx, "node-c")
+	require.NoError(t, err)
+	assert.False(t, deleted)
 }
 
 func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
