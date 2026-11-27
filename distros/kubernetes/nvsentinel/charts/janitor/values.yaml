@@ -164,9 +164,16 @@ config:
     terminateNode:
       # Enable/disable the terminate node controller (default: true)
       enabled: true
-      # Timeout for terminate operations
+      # Timeout for terminate operations, counted from the terminate signal
       # If not set or set to empty, defaults to config.timeout (25m)
       timeout: "25m"
+      # Paces the terminate signals the janitor sends across the cluster: at most
+      # maxTerminations in any window. A request over the limit waits with the
+      # SignalSent condition Unknown and the reason RateLimited; it does not fail.
+      # maxTerminations 0, the default, is no limit.
+      rateLimit:
+        maxTerminations: 0
+        window: "1m"
 
     # GPU reset controller configuration
     gpuReset:

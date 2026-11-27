@@ -68,6 +68,18 @@ func applyConfigDefaults(config *Config) {
 	applyRequireNodeOutOfServiceDefaults(config)
 	applyExclusionsDefaults(config)
 	applyCSPProviderHostDefaults(config)
+	applyTerminateRateLimitDefaults(config)
+}
+
+// DefaultTerminateRateLimitWindow is the window of the terminate rate limit when only
+// maxTerminations is set.
+const DefaultTerminateRateLimitWindow = time.Minute
+
+func applyTerminateRateLimitDefaults(config *Config) {
+	limit := &config.TerminateNode.RateLimit
+	if limit.MaxTerminations > 0 && limit.Window <= 0 {
+		limit.Window = DefaultTerminateRateLimitWindow
+	}
 }
 
 func applyGlobalDefaults(config *Config) {

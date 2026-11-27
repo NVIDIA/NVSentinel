@@ -60,6 +60,10 @@ type TerminateNodeReconciler struct {
 	// terminateSessionSpans holds one long-lived "terminate_session" span per CR, keyed by CR name.
 	// Started on the first reconcile, ended on completion/failure.
 	terminateSessionSpans sync.Map
+
+	// rateLimit paces terminate signals when Config.RateLimit sets a limit. Built on first use.
+	rateLimitOnce sync.Once
+	rateLimit     *terminateRateLimit
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
@@ -310,7 +314,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
-		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
+		} else if time.Since(terminateSignalSentAt(terminateNode)) > r.getTimeout() {
 			slog.ErrorContext(ctx, "Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
 
 			// Update status
@@ -404,11 +408,38 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 
 				result = ctrl.Result{}
 			default:
+				wait, allowed, limitErr := r.reserveTerminateSignal(ctx, terminateNode)
+				if limitErr != nil {
+					return ctrl.Result{}, limitErr
+				}
+
+				if !allowed {
+					limit := r.Config.RateLimit
+					slog.InfoContext(ctx, "Terminate rate limit reached, waiting to send terminate signal",
+						"node", node.Name, "maxTerminations", limit.MaxTerminations, "window", limit.Window, "wait", wait)
+					terminateNode.SetCondition(metav1.Condition{
+						Type:   janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent,
+						Status: metav1.ConditionUnknown,
+						Reason: conditionReasonRateLimited,
+						Message: fmt.Sprintf("Waiting for the terminate rate limit: at most %d terminate signals in %s",
+							limit.MaxTerminations, limit.Window),
+						LastTransitionTime: metav1.Now(),
+					})
+
+					result = ctrl.Result{RequeueAfter: wait}
+
+					break
+				}
+
 				slog.InfoContext(ctx, "Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
+
 				_, terminateErr := cspClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
 				})
+				if terminateErr != nil {
+					r.releaseTerminateSignal(string(terminateNode.UID))
+				}
 
 				// Update status based on terminate result
 				var signalSentCondition metav1.Condition
@@ -420,6 +451,9 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 						Message:            "Terminate signal sent to CSP",
 						LastTransitionTime: metav1.Now(),
 					}
+
+					// The hold of this signal lasts as long as its recorded time stays in the window.
+					r.recordTerminateSignal(string(terminateNode.UID), signalSentCondition.LastTransitionTime.Time)
 
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
@@ -501,6 +535,92 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 	}
 
 	return result, nil
+}
+
+// terminateSignalSentAt is when the terminate signal was sent, so the timeout covers the wait for
+// the instance to go away and not the time a request waited for the rate limit. A request without
+// the time falls back to its start time.
+func terminateSignalSentAt(terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode) time.Time {
+	for _, condition := range terminateNode.Status.Conditions {
+		if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent &&
+			condition.Status == metav1.ConditionTrue && !condition.LastTransitionTime.IsZero() {
+			return condition.LastTransitionTime.Time
+		}
+	}
+
+	return terminateNode.Status.StartTime.Time
+}
+
+// reserveTerminateSignal claims a terminate signal under the rate limit. Without a limit it always
+// allows. When the window is full it returns how long the request waits.
+func (r *TerminateNodeReconciler) reserveTerminateSignal(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
+) (time.Duration, bool, error) {
+	limit := r.terminateRateLimit()
+	if limit == nil {
+		return 0, true, nil
+	}
+
+	recorded, err := r.recentTerminateSignals(ctx, time.Now().Add(-limit.window))
+	if err != nil {
+		// The limit is a safety guard: without the recent signals, send nothing and retry.
+		return 0, false, fmt.Errorf("list TerminateNodes for the terminate rate limit: %w", err)
+	}
+
+	wait, allowed := limit.reserve(string(terminateNode.UID), time.Now(), recorded)
+
+	return wait, allowed, nil
+}
+
+func (r *TerminateNodeReconciler) releaseTerminateSignal(uid string) {
+	if limit := r.terminateRateLimit(); limit != nil {
+		limit.release(uid)
+	}
+}
+
+func (r *TerminateNodeReconciler) recordTerminateSignal(uid string, sentAt time.Time) {
+	if limit := r.terminateRateLimit(); limit != nil {
+		limit.recordSent(uid, sentAt)
+	}
+}
+
+func (r *TerminateNodeReconciler) terminateRateLimit() *terminateRateLimit {
+	r.rateLimitOnce.Do(func() {
+		if r.Config == nil || r.Config.RateLimit.MaxTerminations <= 0 {
+			return
+		}
+
+		window := r.Config.RateLimit.Window
+		if window <= 0 {
+			window = config.DefaultTerminateRateLimitWindow
+		}
+
+		r.rateLimit = newTerminateRateLimit(r.Config.RateLimit.MaxTerminations, window)
+	})
+
+	return r.rateLimit
+}
+
+// recentTerminateSignals returns the time of every terminate signal sent after since, by
+// TerminateNode UID, as the statuses record it. A name can be reused by a new object; a UID cannot.
+func (r *TerminateNodeReconciler) recentTerminateSignals(ctx context.Context, since time.Time) (map[string]time.Time, error) {
+	var terminateNodes janitordgxcnvidiacomv1alpha1.TerminateNodeList
+	if err := r.List(ctx, &terminateNodes); err != nil {
+		return nil, err
+	}
+
+	recorded := make(map[string]time.Time)
+
+	for i := range terminateNodes.Items {
+		for _, condition := range terminateNodes.Items[i].Status.Conditions {
+			if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent &&
+				condition.Status == metav1.ConditionTrue && condition.LastTransitionTime.After(since) {
+				recorded[string(terminateNodes.Items[i].UID)] = condition.LastTransitionTime.Time
+			}
+		}
+	}
+
+	return recorded, nil
 }
 
 // isNodeNotReady returns true if the node is not in Ready state
