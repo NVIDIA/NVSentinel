@@ -1,0 +1,116 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: nvidia-labeler Deployment and RBAC
+templates:
+  - templates/deployment.yaml
+  - templates/clusterrole.yaml
+  - templates/nvidia-labeler-deployment.yaml
+  - templates/nvidia-labeler-serviceaccount.yaml
+  - templates/nvidia-labeler-clusterrole.yaml
+  - templates/nvidia-labeler-clusterrolebinding.yaml
+set:
+  global.auditLogging.enabled: false
+  global.metricsPort: 2112
+tests:
+  - it: passes the NVIDIA detection values to nvidia-labeler
+    template: templates/nvidia-labeler-deployment.yaml
+    set:
+      assumeDriverInstalled: true
+      dcgmAppLabel: custom-dcgm
+      driverAppLabel: custom-driver
+      gkeInstallerAppLabel: custom-gke
+      requireDCGMReadyForBootstrap: false
+      global.dcgm.mode: external-hostengine
+    asserts:
+      - equal:
+          path: metadata.name
+          value: nvidia-labeler
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: nvidia-labeler
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --metrics-port
+            - "2112"
+            - --kube-api-qps=5
+            - --kube-api-burst=10
+            - --assume-driver-installed
+            - --dcgm-app-label=custom-dcgm
+            - --driver-app-label=custom-driver
+            - --gke-installer-app-label=custom-gke
+            - --require-dcgm-ready-for-bootstrap=false
+            - --assume-dcgm-available
+
+  - it: passes no NVIDIA detection flag to the labeler
+    template: templates/deployment.yaml
+    set:
+      assumeDriverInstalled: true
+      kataLabelOverride: custom.io/kata
+      global.dcgm.mode: external-hostengine
+      expectedDeviceCounts.enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --metrics-port
+            - "2112"
+            - --kube-api-qps=5
+            - --kube-api-burst=10
+            - --kata-label
+            - custom.io/kata
+
+  - it: uses the nvidia-labeler image, with the global tag by default
+    template: templates/nvidia-labeler-deployment.yaml
+    set:
+      global.image.tag: v1.2.3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/nvidia/nvsentinel/nvidia-labeler:v1.2.3
+
+  - it: gives only nvidia-labeler access to pods
+    template: templates/nvidia-labeler-clusterrole.yaml
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [pods]
+              verbs: [get, list, watch]
+            - apiGroups: [""]
+              resources: [nodes]
+              verbs: [get, list, watch, patch]
+
+  - it: gives the labeler no access to pods
+    template: templates/clusterrole.yaml
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            resources: [pods]
+
+  - it: renders nothing for nvidia-labeler when it is disabled
+    set:
+      nvidiaLabeler.enabled: false
+    templates:
+      - templates/nvidia-labeler-deployment.yaml
+      - templates/nvidia-labeler-serviceaccount.yaml
+      - templates/nvidia-labeler-clusterrole.yaml
+      - templates/nvidia-labeler-clusterrolebinding.yaml
+    asserts:
+      - hasDocuments:
+          count: 0

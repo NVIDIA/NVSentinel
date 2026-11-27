@@ -188,8 +188,6 @@ spec:
           volumeMounts:
             - name: var-run-vol
               mountPath: /var/run/
-            - name: syslog-state-vol
-              mountPath: /var/run/syslog_health_monitor
             - name: metadata-vol
               mountPath: /var/lib/nvsentinel
               readOnly: true
@@ -253,10 +251,6 @@ spec:
         - name: var-run-vol
           hostPath:
             path: /var/run/nvsentinel
-            type: DirectoryOrCreate
-        - name: syslog-state-vol
-          hostPath:
-            path: /var/run/syslog_health_monitor
             type: DirectoryOrCreate
         - name: metadata-vol
           hostPath:

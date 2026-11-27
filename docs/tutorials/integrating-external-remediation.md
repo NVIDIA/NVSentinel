@@ -62,7 +62,7 @@ To release the node, janitor makes two changes to the node in one update:
 
 The `managed=false` label has two results:
 
-- The labeler removes its detection labels from the node. The NVSentinel health monitors that run on the node then stop.
+- `labeler` and `nvidia-labeler` remove their detection labels from the node. The NVSentinel health monitors that run on the node then stop.
 - platform-connector stores each health event for the node, but NVSentinel does not act on it.
 
 To take the node back, janitor removes the taint and the label.
