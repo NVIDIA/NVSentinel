@@ -173,6 +173,10 @@ When partial drains are on, node-drainer evicts only the pods that use one devic
 
 A full drain followed by a repair of one device is allowed. Events drained by a version that did not record the drain are not checked.
 
+fault-remediation selects the first impacted entity of `impactedEntityScope` with a non-empty value, in health event order. This value names both the equivalence group and the device in the maintenance CR. If no such entity exists, fault-remediation creates no maintenance CR and retries the health event with backoff. It logs the error and increments `fault_remediation_processing_errors_total` with `error_type="impacted_entity_selection_error"`. The retries continue while the event still needs remediation; an event that is already remediated, has no recommended action, or whose quarantine has ended is acknowledged instead. If fault-remediation cannot read the node to check its quarantine, it retries the event and counts `error_type="quarantine_state_check_error"` instead. While such an event is retried, a healthy event for another device on the node does not set `remediation-failed` for it. A persistent count for one node means its monitor published an event without a usable entity. Check the monitor's event, then let the node recover through a healthy event or remediate it manually.
+
+For a partial GPU drain, set `impactedEntityScope` to `GPU_UUID`. node-drainer uses the same selection rule for `GPU_UUID`, so the drain and the reset target the same GPU.
+
 #### templates
 
 Go template that generates the maintenance CR YAML. See the Template Extension Point section below.

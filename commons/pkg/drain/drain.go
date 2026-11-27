@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -183,15 +184,14 @@ func PartialDrainEntity(healthEvent *protos.HealthEvent, partialDrainEnabled boo
 		return nil, nil
 	}
 
-	for _, entity := range healthEvent.GetEntitiesImpacted() {
-		if entity.EntityType == entityType && len(entity.EntityValue) != 0 {
-			return entity, nil
-		}
+	selected, err := eventutil.FirstImpactedEntity(healthEvent, entityType)
+	if err != nil {
+		return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s; "+
+			"action %s is scoped to entity type %s: %w", healthEvent.NodeName,
+			model.GetEffectiveActionName(healthEvent), entityType, err)
 	}
 
-	return nil, fmt.Errorf("no supported entities for a partial drain found in health event for node: %s; "+
-		"action %s is scoped to entity type %s", healthEvent.NodeName, model.GetEffectiveActionName(healthEvent),
-		entityType)
+	return selected, nil
 }
 
 func doesDrainCoverPartialEntity(ctx context.Context, drainCompleted bool, partialEntity,

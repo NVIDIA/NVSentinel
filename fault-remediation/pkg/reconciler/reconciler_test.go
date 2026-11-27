@@ -25,11 +25,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -42,6 +46,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -3210,4 +3215,262 @@ func TestRecordRemediationDecision_WriteError_StopsRemediation(t *testing.T) {
 	assert.Zero(t, createCalls, "no CR may be created without the record")
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Zero(t, markProcessedCount, "the event must stay unprocessed so that it is retried")
+}
+
+// Embedding preserves the existing client mock while configuring a scoped reset.
+type scopedResetClient struct {
+	MockK8sClient
+}
+
+func (m *scopedResetClient) GetConfig() *config.TomlConfig {
+	return &config.TomlConfig{RemediationActions: map[string]config.MaintenanceResource{
+		"COMPONENT_RESET": {EquivalenceGroup: "reset", ImpactedEntityScope: "GPU_UUID"},
+	}}
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_FinishedEventIsAcknowledged(t *testing.T) {
+	remediated := true
+	tests := []struct {
+		name   string
+		action protos.RecommendedAction
+		status *protos.HealthEventStatus
+	}{
+		{"already remediated", protos.RecommendedAction_COMPONENT_RESET,
+			&protos.HealthEventStatus{FaultRemediated: wrapperspb.Bool(remediated)}},
+		{"recommended action none", protos.RecommendedAction_NONE, &protos.HealthEventStatus{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A finished event needs no entity, so a missing one must not keep it retrying.
+			r := NewFaultRemediationReconciler(nil, nil, nil,
+				ReconcilerConfig{RemediationClient: &scopedResetClient{}}, false)
+			doc := &events.HealthEventDoc{
+				ID: "finished-without-scope",
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
+						NodeName: "node-a", RecommendedAction: tt.action,
+						EntitiesImpacted: []*protos.Entity{{EntityType: "GPU_UUID"}},
+					},
+					HealthEventStatus: tt.status,
+				},
+			}
+			watcher := &MockChangeStreamWatcher{}
+			store := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+					t.Fatal("a finished event must not write status or a decision")
+					return nil
+				},
+			}
+			before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			result, err := r.handleRemediationEvent(context.Background(), doc,
+				datastore.EventWithToken{ResumeToken: []byte("finished-token")}, watcher, store)
+			require.NoError(t, err)
+			require.True(t, result.IsZero())
+			_, processed, _, _ := watcher.GetCallCounts()
+			require.Equal(t, 1, processed, "a finished event must be acknowledged once")
+			after := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			require.Equal(t, before, after, "a finished event is not a selection error")
+		})
+	}
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_EndedQuarantineIsAcknowledged(t *testing.T) {
+	// fault-quarantine recovered the node, but this event's own record still reads Quarantined
+	// with FaultRemediated unset. The live quarantine has ended, so the event must not retry.
+	doc := &events.HealthEventDoc{
+		ID: "recovered-without-scope",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				Id: "recovered-without-scope", NodeName: "node-a",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU_UUID"}},
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+		RemediationClient: &scopedResetClient{},
+		NodeReader:        fake.NewClientBuilder().WithObjects(node).Build(),
+	}, false)
+	watcher := &MockChangeStreamWatcher{}
+	store := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			t.Fatal("an event whose quarantine ended must not write status or a decision")
+			return nil
+		},
+	}
+	before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+
+	result, err := r.handleRemediationEvent(context.Background(), doc,
+		datastore.EventWithToken{ResumeToken: []byte("recovered-token")}, watcher, store)
+	require.NoError(t, err)
+	require.True(t, result.IsZero())
+	_, processed, _, _ := watcher.GetCallCounts()
+	require.Equal(t, 1, processed, "the event must be acknowledged once")
+	require.Equal(t, before, getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a"))
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t *testing.T) {
+	tests := []struct {
+		name     string
+		entities []*protos.Entity
+	}{
+		{"missing", nil},
+		{"empty", []*protos.Entity{{EntityType: "GPU_UUID"}}},
+		{"other type", []*protos.Entity{{EntityType: "PCI", EntityValue: "0000:01:00.0"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := &events.HealthEventDoc{
+				ID: "missing-scope",
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
+						Id: "missing-scope", NodeName: "node-a", RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+						EntitiesImpacted: tt.entities,
+					},
+					HealthEventStatus: &protos.HealthEventStatus{},
+				},
+			}
+			// The node's quarantine still holds this event, so the selection failure must retry.
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+				Name: "node-a", Annotations: quarantineAnnotationForTest(t, doc.HealthEvent),
+			}}
+			// Unconfigured methods panic if selection failure reaches any other I/O path.
+			r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+				RemediationClient: &scopedResetClient{},
+				NodeReader:        fake.NewClientBuilder().WithObjects(node).Build(),
+			}, false)
+			watcher := &MockChangeStreamWatcher{}
+			store := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+					t.Fatal("selection failure must not write status or a decision")
+					return nil
+				},
+			}
+			before := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			for range 2 {
+				// A non-empty token, so an accidental acknowledgement would be counted.
+				result, err := r.handleRemediationEvent(context.Background(), doc,
+					datastore.EventWithToken{ResumeToken: []byte("missing-scope-token")}, watcher, store)
+				require.ErrorContains(t, err, "no non-empty impacted entity of type GPU_UUID")
+				require.True(t, result.IsZero())
+				require.Nil(t, doc.HealthEventStatus.RemediationDecision)
+				require.Nil(t, doc.HealthEventStatus.FaultRemediated)
+			}
+			_, processed, _, _ := watcher.GetCallCounts()
+			require.Zero(t, processed, "failed selection must not acknowledge the event")
+			after := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+			require.Equal(t, before+2, after, "each failed attempt must increment the processing error metric")
+		})
+	}
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_QuarantineCheckFailureIsCountedSeparately(t *testing.T) {
+	// The live quarantine cannot be read. The event retries, but the error is the API read,
+	// so it must not be counted as an entity selection failure.
+	doc := &events.HealthEventDoc{
+		ID: "unreadable-node",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				Id: "unreadable-node", NodeName: "node-a",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU_UUID"}},
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	nodeReader := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(context.Context, ctrlclient.WithWatch, ctrlclient.ObjectKey, ctrlclient.Object,
+			...ctrlclient.GetOption) error {
+			return errors.New("api server unavailable")
+		},
+	}).Build()
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+		RemediationClient: &scopedResetClient{},
+		NodeReader:        nodeReader,
+	}, false)
+	watcher := &MockChangeStreamWatcher{}
+	store := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			t.Fatal("a failed quarantine check must not write status or a decision")
+			return nil
+		},
+	}
+	selectionBefore := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+	checkBefore := getCounterVecValue(t, metrics.ProcessingErrors, "quarantine_state_check_error", "node-a")
+
+	result, err := r.handleRemediationEvent(context.Background(), doc,
+		datastore.EventWithToken{ResumeToken: []byte("unreadable-token")}, watcher, store)
+	require.ErrorContains(t, err, "api server unavailable")
+	require.True(t, result.IsZero())
+	_, processed, _, _ := watcher.GetCallCounts()
+	require.Zero(t, processed, "a failed quarantine check must not acknowledge the event")
+	require.Equal(t, selectionBefore,
+		getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a"))
+	require.Equal(t, checkBefore+1,
+		getCounterVecValue(t, metrics.ProcessingErrors, "quarantine_state_check_error", "node-a"))
+}
+
+func TestPartialRecoveryDoesNotFailRemediationForEventWithoutScopedEntity(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	recoveryEventID := "event-c"
+	labelUpdateCalled := false
+
+	// The active event has no GPU_UUID value, so handleRemediationEvent retries it. The
+	// recomputed label must not treat it as an unsupported action and set remediation-failed.
+	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_COMPONENT_RESET, "")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		nodeLabels: map[string]string{
+			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: &scopedResetClient{MockK8sClient{annotationManagerOverride: mockAnnotationManager}},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+	}
+
+	mockStore := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+			return []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+				},
+			}, nil
+		},
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, recoveryEventID, id)
+
+			return nil
+		},
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(recoveryEventID, nodeName, protos.RecommendedAction_NONE),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.False(t, labelUpdateCalled, "an event that is retried must not force remediation-failed")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
 }

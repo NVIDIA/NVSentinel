@@ -480,10 +480,15 @@ func (r *Reconciler) evaluateEvent(ctx context.Context, healthEvent model.Health
 		_, span := tracing.StartSpan(ctx, "node_drainer.evaluate_event")
 		defer span.End()
 
-		metrics.ProcessingErrors.WithLabelValues("evaluate_event_error", nodeName).Inc()
+		errorType := "evaluate_event_error"
+		if errors.Is(err, eventutil.ErrNoImpactedEntity) {
+			errorType = "impacted_entity_selection_error"
+		}
+
+		metrics.ProcessingErrors.WithLabelValues(errorType, nodeName).Inc()
 		tracing.RecordError(span, err)
 		span.SetAttributes(
-			attribute.String("node_drainer.error.type", "evaluate_event_error"),
+			attribute.String("node_drainer.error.type", errorType),
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 	}

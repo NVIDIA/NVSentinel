@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
@@ -54,8 +55,10 @@ in the event. The recommended action maps to a given MaintenanceResource defined
 For a HealthEvent which includes the RESTART_VM recommended action, we will set EffectiveEquivalenceGroup=restart.
 For a HealthEvent which includes the COMPONENT_RESET recommended action that includes an impacted entity as
 GPU_UUID=GPU-123, we will define the EffectiveEquivalenceGroup=reset-GPU-123, ImpactedEntityScopeValue=GPU-123, and
-SupersedingEquivalenceGroups=["restart"]. Note that we will fail the remediation if a COMPONENT_RESET event is missing
-an impacted entity for GPU_UUID. Additionally, we only allow a TomlConfig to define an ImpactedEntityScope if this
+SupersedingEquivalenceGroups=["restart"]. We use the first GPU_UUID entity with a non-empty value, in
+event order. If a COMPONENT_RESET event has no such entity, we return an error that wraps
+eventutil.ErrNoImpactedEntity, and the caller retries the event instead of failing the remediation.
+Additionally, we only allow a TomlConfig to define an ImpactedEntityScope if this
 entity has been enabled for partial draining (defined in pod_device_annotation.go).
 
 In the second example for COMPONENT_RESET, we will consider the HealthEvent as being a member in both the reset-GPU-123
@@ -80,17 +83,13 @@ func GetGroupConfigForEvent(remediationActions map[string]config.MaintenanceReso
 	var impactedEntityScopeValue string
 
 	if len(actionConfig.ImpactedEntityScope) != 0 {
-		for _, entity := range healthEvent.GetEntitiesImpacted() {
-			if entity.EntityType == actionConfig.ImpactedEntityScope {
-				equivalenceGroupName = fmt.Sprintf("%s-%s", actionConfig.EquivalenceGroup, entity.EntityValue)
-				impactedEntityScopeValue = entity.EntityValue
-			}
+		entity, err := eventutil.FirstImpactedEntity(healthEvent, actionConfig.ImpactedEntityScope)
+		if err != nil {
+			return nil, fmt.Errorf("selecting impacted entity required by action %s: %w", actionName, err)
 		}
 
-		if len(equivalenceGroupName) == 0 {
-			return nil, fmt.Errorf("HealthEvent is missing impacted entity for %s required by action %s",
-				actionConfig.ImpactedEntityScope, actionName)
-		}
+		equivalenceGroupName = fmt.Sprintf("%s-%s", actionConfig.EquivalenceGroup, entity.EntityValue)
+		impactedEntityScopeValue = entity.EntityValue
 	} else {
 		equivalenceGroupName = actionConfig.EquivalenceGroup
 	}

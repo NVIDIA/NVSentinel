@@ -140,7 +140,7 @@ global:
 
 To stop partial drains for GPUs but keep another type, set `GPU_UUID.scopedActions` to `[]`. Setting `GPU_UUID` to `null` does not remove the default.
 
-A health event with a scoped action must include an entity of that type with a value. Otherwise the drain fails and retries.
+A health event with a scoped action must include an entity of that type with a value. The node-drainer uses the first such entity, in health event order. If the event has none, the drain fails and retries, and each attempt increments `node_drainer_processing_errors_total` with `error_type="impacted_entity_selection_error"`.
 
 A partial drain waits if a pod requests a device of the entity type and its `dgxc.nvidia.com/devices` annotation has no entry for that resource name or DRA driver. This happens when the pod device mapper is not working, when it is disabled (`metadata-collector.podMapper.enabled: false`), or when the mapper wrote the annotation before you added the name. Rather than drain the wrong pods, the node-drainer returns an error and retries the event until the annotation has the entry or the pod is removed. A pod requests a device through a container limit for one of the `resourceNames`, or through a DRA ResourceClaim for one of the `deviceClasses`. The node-drainer reads the ResourceClaims of a pod only when its annotation has no entry for one of the drivers of the entity type.
 
