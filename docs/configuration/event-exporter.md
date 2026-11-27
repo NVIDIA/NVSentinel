@@ -265,6 +265,27 @@ The token advances in strict event order, independent of which worker publishes 
 
 On MongoDB, a long outage can make the token too old for the oplog. The exporter then deletes the token and starts from the current position, so it can skip events. If this occurs at startup and backfill is enabled, the exporter runs the [backfill](#backfill-configuration) again. The backfill exports the events of the last `maxAge`, up to `maxEvents`, including events that the sink already received. The `change_stream_resume_token_recoveries_total` metric counts these recoveries.
 
+### Backfill After PostgreSQL Changelog Pruning
+
+When the exporter restores an acknowledged PostgreSQL checkpoint, it resumes streaming and skips backfill. This includes an ID-only checkpoint whose changelog row an external job deletes. If external pruning deletes a changelog row before the exporter acknowledges it, the resumed stream skips that health event.
+
+Backfill can recover skipped health events that remain in `health_events`. The backfill limits and export filter apply. Backfill can also resend health events that the sink already received.
+
+Deleting the resume token can move the start position past undelivered health events whose changelog rows remain.
+
+1. Set `event-exporter.exporter.backfill.enabled` to `true` in the NVSentinel Helm values. Use `info` or `debug` for `event-exporter.logLevel` so the exporter logs `Backfill complete`.
+2. Set `event-exporter.exporter.backfill.maxAge` to cover the oldest undelivered health event at restart. Use its `created_at` time in `health_events` to determine its age. If its age is unknown, use a window that covers all retained health events.
+3. Set `event-exporter.exporter.backfill.maxEvents` high enough to include all health events in that time range.
+4. If GitOps manages NVSentinel, update its source with the values from steps 1–3 or pause reconciliation. Apply the Helm values.
+5. Follow [Watcher Position Recovery](../postgresql-provider.md#watcher-position-recovery) for event-exporter. After all exporter pods stop, run this SQL statement in the NVSentinel PostgreSQL database at the token reset step.
+
+   ```sql
+   DELETE FROM resume_tokens WHERE client_name = 'event-exporter';
+   ```
+
+6. Wait for `Backfill complete` in the restarted exporter's logs before you change the recovery values. If you paused reconciliation for this recovery, resume it after that message. You can resume that reconciliation earlier if the GitOps source matches the values from steps 1–3.
+7. Verify that the expected health events reached the sink.
+
 ## Workers
 
 The number of concurrent workers that process events and publish them to the sink in parallel.

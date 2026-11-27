@@ -25,6 +25,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lib/pq"
@@ -146,8 +147,9 @@ type PostgreSQLChangeStreamWatcher struct {
 	// need the row's changed_at: the row can have been purged by then.
 	highestReadEventID int64
 
-	resumeRetryInterval time.Duration // Initial legacy lookup retry delay; overridden in tests
-	positionInitialized bool          // Set by construction or by Start's own initialization; no reload afterwards
+	resumeRetryInterval   time.Duration // Initial legacy lookup retry delay; overridden in tests
+	positionInitialized   bool          // Set by construction or by Start's own initialization; no reload afterwards
+	resumedFromCheckpoint atomic.Bool
 
 	// Hybrid mode fields
 	mode               ChangeStreamMode
@@ -2246,6 +2248,9 @@ func (w *PostgreSQLChangeStreamWatcher) restoreResumePosition(ctx context.Contex
 	w.persistedTimestamp, w.persistedEventID = w.lastTimestamp, w.lastEventID
 	w.highestReadEventID = w.lastEventID
 
+	// A legacy token can restore to a fallback position with eventID zero.
+	w.resumedFromCheckpoint.Store(*token.EventID > 0)
+
 	slog.Info("Loaded resume position", "client", w.clientName,
 		"timestamp", w.lastTimestamp, "eventID", w.lastEventID)
 
@@ -2658,6 +2663,12 @@ func NewPostgreSQLChangeStreamAdapter(watcher *PostgreSQLChangeStreamWatcher) *P
 		watcher:       watcher,
 		stopConverter: make(chan struct{}),
 	}
+}
+
+// ResumedFromCheckpoint reports whether the watcher restored a checkpoint with
+// a positive stored eventID. PostgreSQL persists the initial position with eventID zero.
+func (a *PostgreSQLChangeStreamAdapter) ResumedFromCheckpoint() bool {
+	return a.watcher.resumedFromCheckpoint.Load()
 }
 
 // Events returns a channel of client.Event

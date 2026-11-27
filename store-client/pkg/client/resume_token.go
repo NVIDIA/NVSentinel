@@ -73,6 +73,13 @@ func (w *resumeControlChangeStreamWatcher) ResumeControlDecision() ResumeControl
 	return w.decision
 }
 
+// ResumedFromCheckpoint forwards the startup result when the wrapped watcher provides it.
+func (w *resumeControlChangeStreamWatcher) ResumedFromCheckpoint() bool {
+	watcher, ok := w.ChangeStreamWatcher.(interface{ ResumedFromCheckpoint() bool })
+
+	return ok && watcher.ResumedFromCheckpoint()
+}
+
 // LagState forwards lag state to the wrapped watcher when supported. Every consumer's watcher
 // reaches RegisterChangeStreamLag through this wrapper, so without this pass-through the
 // assertion there answers for the wrapper and no consumer's lag is ever exported.
