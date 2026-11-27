@@ -92,9 +92,10 @@ func (r *FaultRemediationReconciler) tryRejectUncoveredEvent(
 	}
 
 	// A CR of the event's equivalence group may already cover it, for example a reboot that another event of the
-	// session started. That CR holds or closes the event, as for any other event. No CR is created here.
-	decision, err := r.checkExistingCRStatus(ctx, healthEventWithStatus.HealthEvent, healthEventWithStatus.CreatedAt,
-		groupConfig)
+	// session started. That CR holds or closes the event, as for any other event. No CR is created here, so the check
+	// is read-only: a finished CR that does not cover this event keeps covering the other events of its session.
+	decision, _, err := r.evaluateExistingCRStatus(ctx, healthEventWithStatus.HealthEvent,
+		healthEventWithStatus.CreatedAt, groupConfig)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("error checking existing CR status: %w", err), true
 	}

@@ -3006,6 +3006,18 @@ func TestPartialRecoverySkipsRecomputeWhenLabelNotTerminal(t *testing.T) {
 	assert.Equal(t, 1, markProcessedCount)
 }
 
+// checkExistingCRStatus evaluates the existing CRs of the event's equivalence group and, when a new CR is allowed,
+// removes the finished CRs that it replaces, as a pass that goes on to remediation does in tryStopBeforeRemediation.
+func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, healthEvent *protos.HealthEvent,
+	eventCreatedAt time.Time, groupConfig *common.EquivalenceGroupConfig) (existingCRDecision, error) {
+	decision, finishedGroups, err := r.evaluateExistingCRStatus(ctx, healthEvent, eventCreatedAt, groupConfig)
+	if err != nil || !decision.shouldCreate {
+		return decision, err
+	}
+
+	return decision, r.removeFinishedCRGroups(ctx, healthEvent.NodeName, finishedGroups)
+}
+
 func quarantineAnnotationForTest(t *testing.T, events ...*protos.HealthEvent) map[string]string {
 	t.Helper()
 

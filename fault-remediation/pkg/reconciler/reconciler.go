@@ -1324,11 +1324,8 @@ func (r *FaultRemediationReconciler) tryStopBeforeRemediation(
 
 	// The finished CRs stop covering their events only now that this event goes on to remediation. An event closed
 	// above leaves them in place for the events that the quarantine still holds.
-	if len(finishedGroups) > 0 {
-		if err := r.annotationManager.RemoveGroupsFromState(ctx, nodeName, finishedGroups); err != nil {
-			return ctrl.Result{}, recordCRStatusCheckError(ctx, span, nodeName,
-				fmt.Errorf("failed to remove groups from annotation: %w", err)), true
-		}
+	if err := r.removeFinishedCRGroups(ctx, nodeName, finishedGroups); err != nil {
+		return ctrl.Result{}, recordCRStatusCheckError(ctx, span, nodeName, err), true
 	}
 
 	return ctrl.Result{}, nil, false
@@ -2002,22 +1999,19 @@ func (r *FaultRemediationReconciler) recordRemediationDecision(
 	return nil
 }
 
-// checkExistingCRStatus is evaluateExistingCRStatus followed by the removal of the groups whose finished CR a new CR
-// replaces.
-func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, healthEvent *protos.HealthEvent,
-	eventCreatedAt time.Time, groupConfig *common.EquivalenceGroupConfig) (existingCRDecision, error) {
-	decision, groupsToRemove, err := r.evaluateExistingCRStatus(ctx, healthEvent, eventCreatedAt, groupConfig)
-	if err != nil || !decision.shouldCreate {
-		return decision, err
+// removeFinishedCRGroups removes the groups whose finished CR a new CR of the event's equivalence group replaces. It
+// runs only once the event goes on to remediation, so the finished CRs keep covering the other events until then.
+func (r *FaultRemediationReconciler) removeFinishedCRGroups(ctx context.Context, nodeName string,
+	groups []string) error {
+	if len(groups) == 0 {
+		return nil
 	}
 
-	if len(groupsToRemove) > 0 {
-		if err := r.annotationManager.RemoveGroupsFromState(ctx, healthEvent.NodeName, groupsToRemove); err != nil {
-			return decision, fmt.Errorf("failed to remove groups from annotation: %w", err)
-		}
+	if err := r.annotationManager.RemoveGroupsFromState(ctx, nodeName, groups); err != nil {
+		return fmt.Errorf("failed to remove groups from annotation: %w", err)
 	}
 
-	return decision, nil
+	return nil
 }
 
 // evaluateExistingCRStatus decides, without changing the node, whether a CR of the event's equivalence group holds or
