@@ -65,6 +65,7 @@ KO_IMAGES=(
     "nvsentinel/kubernetes-object-monitor"
     "nvsentinel/nvcre-certification-monitor"
     "nvsentinel/labeler"
+    "nvsentinel/nvidia-labeler"
     "nvsentinel/node-drainer"
     "nvsentinel/janitor"
     "nvsentinel/janitor-provider"

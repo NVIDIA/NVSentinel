@@ -44,7 +44,7 @@ platformConnector:
 
 `platformConnector.k8sConnector.enabled` controls the Kubernetes sink in both platform-connectors roles. When it is disabled, their ClusterRoles omit the `nodes/status` and `events` permissions. When it is enabled, the sink can update node conditions and create or update Kubernetes Events. Neither role needs `pods/eviction`, because node-drainer owns workload eviction.
 
-Authentication still needs `create` on `tokenreviews`. The Metadata Augmentor needs `get` on `nodes`. The node-local role keeps its read permissions for node and pod discovery. Other components, including labeler, metadata-collector and the enabled action controllers, have separate permissions. A disabled Kubernetes sink does not make the whole installation read-only. It also does not remove host access.
+Authentication still needs `create` on `tokenreviews`. The Metadata Augmentor needs `get` on `nodes`. The node-local role keeps its read permissions for node and pod discovery. Other components, including labeler, nvidia-labeler, metadata-collector and the enabled action controllers, have separate permissions. A disabled Kubernetes sink does not make the whole installation read-only. It also does not remove host access.
 
 ## Event Processing Pipeline
 
@@ -144,7 +144,7 @@ platformConnector:
       skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
 ```
 
-To disable the behavior, leave it empty. Do not set a different value, because janitor and labeler also use this label with a fixed key and value. Only the exact value excludes a node. With any other value, including an absent label or a typo, NVSentinel manages the node normally.
+To disable the behavior, leave it empty. Do not set a different value, because janitor, labeler and nvidia-labeler also use this label with a fixed key and value. Only the exact value excludes a node. With any other value, including an absent label or a typo, NVSentinel manages the node normally.
 
 To give a node to another owner, label the node. The owner can be a hardware team that works on the node, or an external remediation system. NVSentinel stays enabled for the rest of the fleet.
 

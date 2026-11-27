@@ -107,7 +107,7 @@ When you enable the flag, the chart makes these changes:
 
 Every node must boot with IPv6 enabled. On a node with `ipv6.disable=1`, the GPU health monitor cannot bind `::`, and it crash-loops.
 
-The flag does not change the charts that NVSentinel does not ship. On an IPv6 cluster, the DCGM host engine of the GPU Operator binds `0.0.0.0` by default. Then the labeler sets no DCGM version label, and the GPU health monitor schedules no pods. Set the bind address in the GPU Operator chart:
+The flag does not change the charts that NVSentinel does not ship. On an IPv6 cluster, the DCGM host engine of the GPU Operator binds `0.0.0.0` by default. Then `nvidia-labeler` sets no DCGM version label, and the GPU health monitor schedules no pods. Set the bind address in the GPU Operator chart:
 
 ```yaml
 dcgm:
@@ -190,7 +190,7 @@ A pod can preempt another pod only when its own priority is higher. Thus, on a s
 Assign a priority class to prevent this. The two values use the same split as the node-scheduling values above:
 
 - `priorityClassName` covers the node-level agents: the health monitor, metadata collector and nic-health-monitor DaemonSets, the preflight image cache, and platform-connectors.
-- `systemPriorityClassName` covers the control-plane components, for example labeler, health-events-analyzer, fault-quarantine and node-drainer.
+- `systemPriorityClassName` covers the control-plane components, for example labeler, nvidia-labeler, health-events-analyzer, fault-quarantine and node-drainer.
 
 Both values apply only to the components that NVSentinel's own charts render. The datastore needs its own key. See [Scope](#scope-nvsentinel-components-only) below.
 
@@ -255,7 +255,7 @@ This value sets the SELinux options for the pods that share host directories and
 
 - platform-connectors, gpu-health-monitor, syslog-health-monitor and nic-health-monitor. In `embedded-mode`, gpu-health-monitor runs privileged and does not need this value.
 - The modules that publish through the platform-connector socket: csp-health-monitor, health-events-analyzer, kubernetes-object-monitor, lifecycle-manager, nvcre-certification-monitor and slurm-drain-monitor.
-- When `global.auditLogging.enabled` is `true`, the modules that write audit logs to `/var/log/nvsentinel` on the node: fault-quarantine, fault-remediation, janitor, janitor-provider, labeler, node-drainer and the platform-connector Deployment.
+- When `global.auditLogging.enabled` is `true`, the modules that write audit logs to `/var/log/nvsentinel` on the node: fault-quarantine, fault-remediation, janitor, janitor-provider, labeler, nvidia-labeler, node-drainer and the platform-connector Deployment.
 
 Privileged pods already run as `spc_t`.
 

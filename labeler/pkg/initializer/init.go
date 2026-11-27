@@ -30,16 +30,10 @@ import (
 )
 
 type InitializationParams struct {
-	KubeconfigPath               string
-	DCGMAppLabel                 string
-	DriverAppLabel               string
-	GKEInstallerAppLabel         string
-	KataLabel                    string
-	AssumeDCGMAvailable          bool
-	AssumeDriverInstalled        bool
-	RequireDCGMReadyForBootstrap bool
-	ExpectedDeviceCounts         devicecounts.Config
-	KubernetesClientRateLimits   kubeclient.RateLimitConfig
+	KubeconfigPath             string
+	KataLabel                  string
+	ExpectedDeviceCounts       devicecounts.Config
+	KubernetesClientRateLimits kubeclient.RateLimitConfig
 }
 
 type Components struct {
@@ -59,14 +53,8 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 	labelerInstance, err := labeler.NewLabeler(
 		clientSet,
 		30*time.Second,
-		params.DCGMAppLabel,
-		params.DriverAppLabel,
-		params.GKEInstallerAppLabel,
 		params.KataLabel,
-		params.AssumeDriverInstalled,
-		params.RequireDCGMReadyForBootstrap,
 		params.ExpectedDeviceCounts,
-		params.AssumeDCGMAvailable,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)

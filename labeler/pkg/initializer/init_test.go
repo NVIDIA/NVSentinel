@@ -65,18 +65,13 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 			for idx := range nodeCount {
 				nodeNames[idx] = fmt.Sprintf("%s-%d-%d", test.prefix, idx, time.Now().UnixNano())
 				_, createErr := adminClient.CoreV1().Nodes().Create(t.Context(), &corev1.Node{
-					Name:   nodeNames[idx],
-					Labels: map[string]string{"nvidia.com/gpu.present": "true"},
+					Name: nodeNames[idx],
 				}, metav1.CreateOptions{})
 				require.NoError(t, createErr)
 			}
 
 			components, initErr := InitializeAll(InitializationParams{
-				KubeconfigPath:        kubeconfigPath,
-				DCGMAppLabel:          "nvidia-dcgm",
-				DriverAppLabel:        "nvidia-driver-daemonset",
-				GKEInstallerAppLabel:  "nvidia-driver-installer",
-				AssumeDriverInstalled: true,
+				KubeconfigPath: kubeconfigPath,
 				KubernetesClientRateLimits: kubeclient.RateLimitConfig{
 					QPS:   test.qps,
 					Burst: 1,
@@ -121,7 +116,7 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 }
 
 // waitForLabelSpan returns the time from the first to the last of the given nodes that nodeWatch shows with the
-// driver-installed label.
+// kata-enabled label.
 func waitForLabelSpan(t *testing.T, nodeWatch watch.Interface, nodeNames []string) time.Duration {
 	t.Helper()
 
@@ -139,7 +134,7 @@ func waitForLabelSpan(t *testing.T, nodeWatch watch.Interface, nodeNames []strin
 			require.True(t, ok, "node watch closed")
 
 			node, isNode := event.Object.(*corev1.Node)
-			if !isNode || !pending[node.Name] || node.Labels[labeler.DriverInstalledLabel] != labeler.LabelValueTrue {
+			if !isNode || !pending[node.Name] || node.Labels[labeler.KataEnabledLabel] != labeler.LabelValueFalse {
 				continue
 			}
 

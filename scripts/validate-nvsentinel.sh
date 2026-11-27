@@ -314,6 +314,7 @@ check_deployment "fault-quarantine" 1
 check_deployment "fault-remediation" 1
 check_deployment "janitor" 1
 check_deployment "labeler" 1
+check_deployment "nvidia-labeler" 1
 check_deployment "node-drainer" 1
 check_optional_deployment "simple-health-client" 1
 

@@ -69,7 +69,28 @@ ConfigMap name.
 {{- end }}
 
 {{/*
-Whether labeler should assume DCGM is available from an existing dcgm.version
+Name, and labels, of the nvidia-labeler Deployment and its RBAC objects.
+*/}}
+{{- define "labeler.nvidiaLabeler.fullname" -}}
+nvidia-labeler
+{{- end }}
+
+{{- define "labeler.nvidiaLabeler.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "labeler.nvidiaLabeler.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "labeler.nvidiaLabeler.labels" -}}
+helm.sh/chart: {{ include "labeler.chart" . }}
+{{ include "labeler.nvidiaLabeler.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Whether nvidia-labeler should assume DCGM is available from an existing dcgm.version
 label when no DCGM pod source is present. This is used by external-hostengine
 and embedded-mode, where operators provide the same node label used by GPU
 health monitor scheduling.

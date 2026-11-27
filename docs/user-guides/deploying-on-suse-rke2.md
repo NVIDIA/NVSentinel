@@ -33,7 +33,7 @@ Nodes with SELinux disabled do not need this setting. On those nodes, the settin
 
 ## Driver installed on the host (SL Micro)
 
-The labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` when it finds a GPU Operator driver pod, including the SUSE precompiled driver container. For SL Micro, SUSE documents a driver that is installed on the host (GPU Operator `driver.enabled: false`). If the driver is installed on the host, there is no driver pod. In this case, set:
+`nvidia-labeler` sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` when it finds a GPU Operator driver pod, including the SUSE precompiled driver container. For SL Micro, SUSE documents a driver that is installed on the host (GPU Operator `driver.enabled: false`). If the driver is installed on the host, there is no driver pod. In this case, set:
 
 ```yaml
 labeler:
@@ -55,7 +55,7 @@ dcgm:
   enabled: true
 ```
 
-GPU Operator then deploys the `nvidia-dcgm` DaemonSet and Service. The default `operator-service` mode of NVSentinel connects to `nvidia-dcgm.gpu-operator.svc:5555`. The labeler derives the `nvsentinel.dgxc.nvidia.com/dcgm.version` node label from the DCGM pod image. Thus, you do not need to change NVSentinel settings. If GPU Operator runs in a namespace other than `gpu-operator`, set `global.dcgm.service.endpoint` to match. See [GPU Health Monitor configuration](../configuration/gpu-health-monitor.md).
+GPU Operator then deploys the `nvidia-dcgm` DaemonSet and Service. The default `operator-service` mode of NVSentinel connects to `nvidia-dcgm.gpu-operator.svc:5555`. `nvidia-labeler` derives the `nvsentinel.dgxc.nvidia.com/dcgm.version` node label from the DCGM pod image. Thus, you do not need to change NVSentinel settings. If GPU Operator runs in a namespace other than `gpu-operator`, set `global.dcgm.service.endpoint` to match. See [GPU Health Monitor configuration](../configuration/gpu-health-monitor.md).
 
 ### Option 2: Embedded hostengine
 

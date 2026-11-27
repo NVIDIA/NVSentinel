@@ -48,7 +48,7 @@ The GPU Health Monitor starts an in-process DCGM hostengine and exposes it to po
 
 Use a GPU Health Monitor image that has the same DCGM major version as its hostengine. The `nvsentinel.dgxc.nvidia.com/dcgm.version` node label selects the 3.x or 4.x image of the GPU Health Monitor.
 
-In `operator-service` mode, labeler sets this label from the version in the DCGM pod image. In `external-hostengine` and `embedded-mode`, you must supply the label.
+In `operator-service` mode, `nvidia-labeler` sets this label from the version in the DCGM pod image. In `external-hostengine` and `embedded-mode`, you must supply the label.
 
 ## Configuration Reference
 
@@ -170,17 +170,17 @@ The GPU Health Monitor has one DaemonSet for each DCGM major version. Each Daemo
 
 | Mode | Who sets the label |
 |---|---|
-| `operator-service` | Labeler, from the GPU Operator DCGM pod image |
+| `operator-service` | `nvidia-labeler`, from the GPU Operator DCGM pod image |
 | `external-hostengine` | You, before you install NVSentinel |
 | `embedded-mode` | You, before you install NVSentinel |
 
-In `external-hostengine` and `embedded-mode`, there is no DCGM pod for labeler to read. Thus, labeler cannot get the version. If you select one of these modes, the chart automatically configures labeler to keep a valid label that already exists. Labeler never creates the label.
+In `external-hostengine` and `embedded-mode`, there is no DCGM pod for `nvidia-labeler` to read. Thus, `nvidia-labeler` cannot get the version. If you select one of these modes, the chart automatically configures `nvidia-labeler` to keep a valid label that already exists. `nvidia-labeler` never creates the label.
 
-One case still removes the label. NVSentinel does not manage a node that has the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. Labeler removes all its detection labels from that node, including `dcgm.version`. This applies in every source mode. Clear the opt-out before you label the node.
+One case still removes the label. NVSentinel does not manage a node that has the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. `nvidia-labeler` removes its detection labels from that node, including `dcgm.version`. This applies in every source mode. Clear the opt-out before you label the node.
 
 An unlabeled node runs no GPU Health Monitor pod, and nothing reports an error. The DaemonSet stays healthy, because Kubernetes never schedules a pod that it can reject. GPU health monitoring is silently absent on that node.
 
-Label every GPU node with its DCGM major version. The only accepted values are `3.x` and `4.x`. Labeler treats any other value as absent.
+Label every GPU node with its DCGM major version. The only accepted values are `3.x` and `4.x`. `nvidia-labeler` treats any other value as absent.
 
 ```bash
 # One node
