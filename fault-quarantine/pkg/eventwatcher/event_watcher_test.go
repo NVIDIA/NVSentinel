@@ -299,6 +299,61 @@ func TestProcessStoredEvent_LivePath_DeduplicatesReplay(t *testing.T) {
 	assert.Equal(t, 1, dbClient.updateCalls)
 }
 
+// TestProcessEvent_ProducerIDReplacedByRecordID gives the stored event an id that its producer set, as
+// lifecycle-manager does. On the live path and on the stored path, quarantine gets the event with its record ID as
+// the id, so the quarantine annotation lists the event under its record ID.
+func TestProcessEvent_ProducerIDReplacedByRecordID(t *testing.T) {
+	documentWithProducerID := func() datastore.Event {
+		document := storedHealthEvent("event-uuid")
+		document["healthevent"].(datastore.Event)["id"] = "producer-uuid"
+
+		return document
+	}
+
+	tests := []struct {
+		name    string
+		process func(t *testing.T, watcher *EventWatcher)
+	}{
+		{
+			name: "live event",
+			process: func(t *testing.T, watcher *EventWatcher) {
+				require.NoError(t, watcher.processEvent(context.Background(), &clientEventStub{
+					document: documentWithProducerID(), eventID: "47", recordUUID: "event-uuid",
+				}))
+			},
+		},
+		{
+			name: "stored event",
+			process: func(t *testing.T, watcher *EventWatcher) {
+				parsed, err := eventutil.ParseHealthEventFromEvent(documentWithProducerID())
+				require.NoError(t, err)
+				require.Equal(t, "producer-uuid", parsed.HealthEvent.Id)
+
+				_, err = watcher.ProcessStoredEvent(context.Background(), parsed, "event-uuid")
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			watcher := NewEventWatcher(nil, &databaseClientStub{}, time.Minute, &objectIDStoreStub{})
+
+			var ids []string
+
+			watcher.SetProcessEventCallback(func(_ context.Context, event *model.HealthEventWithStatus) (*model.Status, error) {
+				ids = append(ids, event.HealthEvent.Id)
+				status := model.Quarantined
+
+				return &status, nil
+			})
+
+			tt.process(t, watcher)
+			assert.Equal(t, []string{"event-uuid"}, ids)
+		})
+	}
+}
+
 func TestProcessStoredEvent_SkippedEvent_DeduplicatesAfterCompletion(t *testing.T) {
 	dbClient := &databaseClientStub{}
 	watcher := NewEventWatcher(nil, dbClient, time.Minute, &objectIDStoreStub{})
