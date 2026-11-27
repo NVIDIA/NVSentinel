@@ -322,6 +322,28 @@ func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_CoveringCRHandles
 	}
 }
 
+// A finished CR of the event's equivalence group that does not cover the mismatched event keeps its reference, because
+// no CR replaces it here. It still covers the other events of its session.
+func TestHandleRemediationEvent_PartialDrainDoesNotCoverAction_KeepsFinishedCR(t *testing.T) {
+	nodeName := "scope-mismatch-finished-cr"
+	// The restart CR of another event finished before this event.
+	annotationManager := &MockNodeAnnotationManager{
+		existingCRs:       map[string]string{"restart": "restart-cr"},
+		existingCRCreated: time.Now().Add(-time.Hour),
+	}
+	f := newMismatchFixture(t, nodeName, "GPU-1", nil, annotationManager)
+	f.client.mockStatusChecker = &mockStatusChecker{
+		stateByCR: map[string]crstatus.CRState{"restart-cr": crstatus.CRStateSucceeded},
+	}
+	f.doc.CreatedAt = time.Now()
+
+	_, err := f.handle(t)
+	require.ErrorIs(t, err, ErrDrainDoesNotCoverAction)
+	assert.Zero(t, f.createCalls, "no CR may be created")
+	assert.Equal(t, "restart-cr", annotationManager.existingCRs["restart"],
+		"the finished CR must keep covering the other events")
+}
+
 // The check does not stop events that it covers. Each event reaches the CR check, which finds the node
 // deleted and closes the event.
 func TestHandleRemediationEvent_DrainCoversAction_Continues(t *testing.T) {

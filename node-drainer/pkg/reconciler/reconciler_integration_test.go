@@ -1778,6 +1778,69 @@ func assertNodeLabel(t *testing.T, client kubernetes.Interface, ctx context.Cont
 	}, 30*time.Second, 1*time.Second)
 }
 
+// nodeStateLabel reads the node state label from the API server, where the state manager reads it: the node cache
+// does not keep the label. An empty value means the node has no state label or one with an empty value.
+func nodeStateLabel(t *testing.T, setup *testSetup, nodeName string) statemanager.NVSentinelStateLabelValue {
+	t.Helper()
+
+	node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	return statemanager.NVSentinelStateLabelValue(node.Labels[statemanager.NVSentinelStateLabelKey])
+}
+
+// requireNoNodeStateLabel checks on the API server that the node has no state label key, which nodeStateLabel does
+// not tell apart from a label with an empty value.
+func requireNoNodeStateLabel(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	value, ok := node.Labels[statemanager.NVSentinelStateLabelKey]
+	require.False(t, ok, "the node should have no state label, found %q", value)
+}
+
+// setNodeStateLabel writes the node state label as another module would, or removes it when value is empty. The
+// state manager reads the label from the API server, so there is no node cache to wait for.
+func setNodeStateLabel(t *testing.T, setup *testSetup, nodeName string,
+	value statemanager.NVSentinelStateLabelValue) {
+	t.Helper()
+
+	node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	if value == "" {
+		delete(node.Labels, statemanager.NVSentinelStateLabelKey)
+	} else {
+		node.Labels[statemanager.NVSentinelStateLabelKey] = string(value)
+	}
+
+	_, err = setup.client.CoreV1().Nodes().Update(setup.ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+// requireNextEventPriority enqueues an event of the node and checks the ready-queue lane and reason it gets. A node
+// in the draining state sends its events to the low lane. No worker runs in these tests, so the event only waits.
+// The queue holds an event id once, so a second check on the same node passes the id of another event.
+func requireNextEventPriority(t *testing.T, setup *testSetup, nodeName, priority, reason string, eventID ...string) {
+	t.Helper()
+
+	opts := healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined}
+	if len(eventID) > 0 {
+		opts.eventID = eventID[0]
+	}
+
+	event := createHealthEvent(opts)
+	setup.mockCollection.StoreDocument(fmt.Sprintf("%v", event["_id"]), event)
+
+	before := getCounterVecValue(t, metrics.QueueItemsAssigned, priority, reason)
+	require.NoError(t, setup.reconciler.GetQueueManager().EnqueueEventGeneric(setup.ctx, nodeName, event,
+		setup.mockCollection, setup.healthEventStore, event["_id"]))
+	require.Equal(t, before+1, getCounterVecValue(t, metrics.QueueItemsAssigned, priority, reason),
+		"the next event of node %s should get priority %s for reason %s", nodeName, priority, reason)
+}
+
 func assertPodsEvicted(t *testing.T, client kubernetes.Interface, ctx context.Context, namespace string) {
 	t.Helper()
 
@@ -1955,44 +2018,84 @@ func TestReconciler_CoveredAlreadyDrainedRequeuesWhenRecordExists(t *testing.T) 
 }
 
 // TestReconciler_HealthyAndSkipRecordNoScope keeps a healthy event and a skipped event free of a
-// drain decision. Neither one was covered by an earlier drain.
+// drain decision. Neither one was covered by an earlier drain. DrainOverrides.Skip drains nothing, so it
+// moves a quarantined node to drain-succeeded and keeps the draining label and queue state of another
+// drain. A healthy event leaves the label as it is, and an event whose node is gone is still marked.
 func TestReconciler_HealthyAndSkipRecordNoScope(t *testing.T) {
 	setup := setupDirectTest(t, []config.UserNamespace{
 		{Name: "test-*", Mode: config.ModeImmediateEvict},
 	}, false)
 
+	healthy := func(event *protos.HealthEvent) { event.IsHealthy = true }
+	skip := func(event *protos.HealthEvent) { event.DrainOverrides = &protos.BehaviourOverrides{Skip: true} }
+
 	tests := []struct {
 		name   string
 		mutate func(*protos.HealthEvent)
+		// label is the state label of the node. No node exists when it is empty, as after the node was deleted.
+		label statemanager.NVSentinelStateLabelValue
+		// otherDrain marks the node draining in the queue, as the drain of another event does.
+		otherDrain bool
+		wantLabel  statemanager.NVSentinelStateLabelValue
 	}{
+		{name: "healthy", mutate: healthy},
+		{name: "skip", mutate: skip},
 		{
-			name:   "healthy",
-			mutate: func(event *protos.HealthEvent) { event.IsHealthy = true },
+			name:      "healthy keeps quarantined",
+			mutate:    healthy,
+			label:     statemanager.QuarantinedLabelValue,
+			wantLabel: statemanager.QuarantinedLabelValue,
 		},
 		{
-			name: "skip",
-			mutate: func(event *protos.HealthEvent) {
-				event.DrainOverrides = &protos.BehaviourOverrides{Skip: true}
-			},
+			name:      "skip moves quarantined to drain-succeeded",
+			mutate:    skip,
+			label:     statemanager.QuarantinedLabelValue,
+			wantLabel: statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:       "skip keeps the draining label of another drain",
+			mutate:     skip,
+			label:      statemanager.DrainingLabelValue,
+			otherDrain: true,
+			wantLabel:  statemanager.DrainingLabelValue,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			nodeName := testutils.GenerateTestNodeName("healthy-skip")
+			if tt.label != "" {
+				createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName,
+					map[string]string{statemanager.NVSentinelStateLabelKey: string(tt.label)}, nil)
+			}
+
+			if tt.otherDrain {
+				setup.reconciler.GetQueueManager().MarkNodeDraining(nodeName)
+			}
+
 			updates := recordStatusUpdates(setup.mockCollection, 1)
 			event := createHealthEvent(healthEventOptions{
-				nodeName:        tt.name + "-node",
+				nodeName:        nodeName,
 				nodeQuarantined: model.Quarantined,
 			})
 			tt.mutate(event["healthevent"].(*protos.HealthEvent))
 
 			require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockCollection,
-				setup.healthEventStore, tt.name+"-node"))
+				setup.healthEventStore, nodeName))
 
 			require.Len(t, updates.writes, 1)
 			_, wroteDecision := updates.writes[0]["healtheventstatus.draindecision"]
 			assert.False(t, wroteDecision)
 			assertEvictionStatus(t, updates.writes[0], model.AlreadyDrained)
+
+			if tt.label != "" {
+				// The pass writes the label before it stores the status, and no queue worker runs here.
+				require.Equal(t, tt.wantLabel, nodeStateLabel(t, setup, nodeName))
+			}
+
+			if tt.otherDrain {
+				requireNextEventPriority(t, setup, nodeName, "low", "node_already_draining")
+			}
 		})
 	}
 }
@@ -2532,91 +2635,138 @@ func TestReconciler_HandleCancellation_UnknownStatus_LogsWarning(t *testing.T) {
 	})
 }
 
+// TestReconciler_CustomDrainHappyPath creates the DrainRequest CR of an event, waits while it runs, and marks the
+// event AlreadyDrained once it completes. The node state label then moves from draining, or from quarantined when
+// the draining write did not land, to drain-succeeded, and the node leaves the draining state. A label that another
+// module moved on or removed during the drain stays as it is. A later event that waits on the CR does not hold the
+// label back, and a label write that lands with an unexpected transition does not fail the event.
 func TestReconciler_CustomDrainHappyPath(t *testing.T) {
-	customDrainCfg := config.CustomDrainConfig{
-		Enabled:               true,
-		TemplateMountPath:     "../customdrain/testdata",
-		TemplateFileName:      "drain-template.yaml",
-		Namespace:             "default",
-		ApiGroup:              "drain.example.com",
-		Version:               "v1alpha1",
-		Kind:                  "DrainRequest",
-		StatusConditionType:   "Complete",
-		StatusConditionStatus: "True",
-	}
-
-	setup := setupCustomDrainTest(t, customDrainCfg)
-
-	nodeName := "custom-drain-node"
-	createNode(setup.ctx, t, setup.client, nodeName)
+	setup := setupCustomDrainTest(t, testCustomDrainConfig(""))
 	createNamespace(setup.ctx, t, setup.client, "default")
 	createNamespace(setup.ctx, t, setup.client, "app-ns")
 
-	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil, nil)
-	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
-
-	gvr := schema.GroupVersionResource{
-		Group:    "drain.example.com",
-		Version:  "v1alpha1",
-		Resource: "drainrequests",
+	tests := []struct {
+		name string
+		// labelAtCompletion is the state label when the CR completes. Creating the CR wrote draining; the test
+		// writes any other value, as another module would. An empty value removes the label.
+		labelAtCompletion statemanager.NVSentinelStateLabelValue
+		// laterEventWaits processes a later event of the node before the CR completes. It waits on the CR and stays
+		// tracked as in progress while the completion of the CR is processed.
+		laterEventWaits bool
+		// transitionError makes the conditional label write report an unexpected transition after it lands, as a
+		// state manager that validates the transition after the write does.
+		transitionError bool
+		// wantLabel is the state label after the completion. An empty value means no label.
+		wantLabel statemanager.NVSentinelStateLabelValue
+	}{
+		{
+			name:              "moves draining to drain-succeeded",
+			labelAtCompletion: statemanager.DrainingLabelValue,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "moves draining while a later event waits on the CR",
+			labelAtCompletion: statemanager.DrainingLabelValue,
+			laterEventWaits:   true,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "goes on when the written label reports an unexpected transition",
+			labelAtCompletion: statemanager.DrainingLabelValue,
+			transitionError:   true,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "moves quarantined to drain-succeeded",
+			labelAtCompletion: statemanager.QuarantinedLabelValue,
+			wantLabel:         statemanager.DrainSucceededLabelValue,
+		},
+		{
+			name:              "keeps remediating",
+			labelAtCompletion: statemanager.RemediatingLabelValue,
+			wantLabel:         statemanager.RemediatingLabelValue,
+		},
+		{
+			name:              "leaves a removed label absent",
+			labelAtCompletion: "",
+			wantLabel:         "",
+		},
 	}
 
-	event := createHealthEvent(healthEventOptions{
-		nodeName:        nodeName,
-		nodeQuarantined: model.Quarantined,
-	})
-	setup.mockDB.storeEvent(nodeName, event)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeName := testutils.GenerateTestNodeName("custom-drain")
+			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{
+				statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+			}, nil)
+			createPod(setup.ctx, t, setup.client, "default", nodeName+"-pod", nodeName, v1.PodRunning, nil, nil, nil)
+			createPod(setup.ctx, t, setup.client, "app-ns", nodeName+"-app-pod", nodeName, v1.PodRunning, nil, nil, nil)
 
-	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
-	require.Error(t, err, "First call should create CR and return error to trigger retry")
-	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+			event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+			setup.mockDB.storeEvent(nodeName, event)
 
-	eventID := nodeName + "-event"
-	crName := customdrain.GenerateCRName(nodeName, eventID)
+			err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+			require.ErrorContains(t, err, "waiting for custom drain CR to complete",
+				"the first pass creates the CR and requeues")
+			requireCustomDrainCR(t, setup, nodeName)
 
-	var retrievedCR *unstructured.Unstructured
-	require.Eventually(t, func() bool {
-		cr, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
-		if err == nil {
-			retrievedCR = cr
-			return true
-		}
-		return false
-	}, 10*time.Second, 500*time.Millisecond, "DrainRequest CR should be created")
+			crName := customdrain.GenerateCRName(nodeName, nodeName+"-event")
+			cr, err := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").Get(setup.ctx, crName,
+				metav1.GetOptions{})
+			require.NoError(t, err)
+			spec, found, err := unstructured.NestedMap(cr.Object, "spec")
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, nodeName, spec["nodeName"])
+			require.Equal(t, statemanager.DrainingLabelValue, nodeStateLabel(t, setup, nodeName),
+				"creating the CR marks the node draining")
 
-	spec, found, err := unstructured.NestedMap(retrievedCR.Object, "spec")
-	require.NoError(t, err)
-	require.True(t, found)
-	assert.Equal(t, nodeName, spec["nodeName"])
+			err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
+			require.ErrorContains(t, err, "waiting for retry delay", "the event waits while the CR runs")
 
-	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for retry delay")
+			if tt.laterEventWaits {
+				waiting := createHealthEvent(healthEventOptions{
+					nodeName: nodeName, eventID: nodeName + "-waiting", nodeQuarantined: model.Quarantined,
+					createdAt: time.Now().Add(time.Minute),
+				})
+				setup.mockDB.storeEvent(nodeName, waiting)
+				err = setup.reconciler.ProcessEventGeneric(setup.ctx, waiting, setup.mockDB, setup.healthEventStore,
+					nodeName)
+				require.ErrorContains(t, err, "waiting for retry delay", "the later event waits on the CR of the node")
+			}
 
-	retrievedCR, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
-	require.NoError(t, err)
+			if tt.labelAtCompletion != statemanager.DrainingLabelValue {
+				setNodeStateLabel(t, setup, nodeName, tt.labelAtCompletion)
+			}
 
-	err = unstructured.SetNestedField(retrievedCR.Object, []any{
-		map[string]any{
-			"type":               "Complete",
-			"status":             "True",
-			"lastTransitionTime": time.Now().Format(time.RFC3339),
-			"reason":             "DrainSucceeded",
-			"message":            "All pods drained",
-		},
-	}, "status", "conditions")
-	require.NoError(t, err)
+			if tt.transitionError {
+				stateManager := setup.reconciler.Config.StateManager
+				setup.reconciler.Config.StateManager = transitionErrorStateManager{StateManager: stateManager}
+				t.Cleanup(func() { setup.reconciler.Config.StateManager = stateManager })
+			}
 
-	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(setup.ctx, retrievedCR, metav1.UpdateOptions{})
-	require.NoError(t, err)
+			completeCustomDrainCR(t, setup, nodeName)
 
-	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
-	require.NoError(t, err)
+			require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB,
+				setup.healthEventStore, nodeName))
 
-	require.Eventually(t, func() bool {
-		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
-		return errors.IsNotFound(err)
-	}, 10*time.Second, 500*time.Millisecond, "CR should be deleted after drain completes")
+			// The pass writes the label before it stores the status, and no queue worker runs here.
+			if tt.wantLabel == "" {
+				requireNoNodeStateLabel(t, setup, nodeName)
+			} else {
+				require.Equal(t, tt.wantLabel, nodeStateLabel(t, setup, nodeName))
+			}
+			// Creating the CR put the node in the draining state. The completed drain ends it, whether or not the
+			// label moved, so the next event of the node is not held in the low lane.
+			requireNextEventPriority(t, setup, nodeName, "high", "node_not_yet_draining")
+
+			require.Eventually(t, func() bool {
+				_, err := setup.dynamicClient.Resource(drainRequestGVR()).Namespace("default").Get(setup.ctx, crName,
+					metav1.GetOptions{})
+				return errors.IsNotFound(err)
+			}, 10*time.Second, 500*time.Millisecond, "CR should be deleted after drain completes")
+		})
+	}
 }
 
 // In dry run node-drainer must not hand the node to the external drain controller, so the
@@ -2688,7 +2838,9 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 	setup := setupCustomDrainTest(t, customDrainCfg)
 
 	nodeName := "multi-event-node"
-	createNode(setup.ctx, t, setup.client, nodeName)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{
+		statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+	}, nil)
 	createNamespace(setup.ctx, t, setup.client, "default")
 
 	gvr := schema.GroupVersionResource{
@@ -2720,6 +2872,8 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
 	require.NoError(t, err, "DrainRequest for Event A should exist")
+	require.Equal(t, statemanager.DrainingLabelValue, nodeStateLabel(t, setup, nodeName),
+		"creating the CR marks the node draining")
 
 	// Process Event B while Event A's drain is still in progress — should wait
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventB, setup.mockDB, setup.healthEventStore, nodeName)
@@ -2749,6 +2903,9 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 	// Process Event B again — Event A's CR is complete, so Event B should be marked AlreadyDrained
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventB, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err, "Event B should be marked AlreadyDrained since the node's drain CR is complete")
+	require.Equal(t, statemanager.DrainSucceededLabelValue, nodeStateLabel(t, setup, nodeName),
+		"the completed CR of Event A moves the label for Event B")
+	requireNextEventPriority(t, setup, nodeName, "high", "node_not_yet_draining")
 
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameB, metav1.GetOptions{})
 	require.True(t, errors.IsNotFound(err), "DrainRequest for Event B should NOT exist")
@@ -2756,11 +2913,30 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 	// Process Event A again — should detect completion and mark AlreadyDrained
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventA, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err, "Event A should complete successfully after its CR is done")
+	require.Equal(t, statemanager.DrainSucceededLabelValue, nodeStateLabel(t, setup, nodeName))
 
 	require.Eventually(t, func() bool {
 		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 500*time.Millisecond, "Event A's CR should be cleaned up")
+}
+
+// transitionErrorStateManager writes the conditional label through the wrapped state manager and then reports an
+// unexpected transition, as a state manager that validates the transition after the write does.
+type transitionErrorStateManager struct {
+	statemanager.StateManager
+}
+
+func (m transitionErrorStateManager) UpdateNVSentinelStateNodeLabelIfMatch(ctx context.Context, nodeName string,
+	newStateLabelValue statemanager.NVSentinelStateLabelValue,
+	expectedValues ...statemanager.NVSentinelStateLabelValue) (bool, error) {
+	nodeModified, err := m.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName, newStateLabelValue,
+		expectedValues...)
+	if err == nil && nodeModified {
+		err = fmt.Errorf("unexpected state transition to %s", newStateLabelValue)
+	}
+
+	return nodeModified, err
 }
 
 func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
@@ -2929,6 +3105,100 @@ func TestReconciler_DrainDecision_LabelChangeKeepsMethod(t *testing.T) {
 		pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
 		return getErr != nil || pod.DeletionTimestamp != nil
 	}, 2*time.Second, 100*time.Millisecond, "a label change must not evict pods on a recorded custom drain")
+}
+
+// TestReconciler_CustomDrainCompleted_KeepsDrainingWhileBuiltInDrainRuns removes the selector label after the
+// custom drain CR of the first event is created, so a later event of the quarantine drains the node with the built-in
+// drain. The completed CR marks its event AlreadyDrained but keeps the draining label and queue state while the
+// built-in drain runs. The next pass of the later event finds it covered by the completed drain, and that event then
+// moves the label to drain-succeeded and ends the draining state.
+func TestReconciler_CustomDrainCompleted_KeepsDrainingWhileBuiltInDrainRuns(t *testing.T) {
+	nodeName := "mixed-drain-node"
+	firstEventID := nodeName + "-event"
+
+	setup := setupCustomDrain(t, testCustomDrainConfig("scheduler=slurm"), []config.UserNamespace{
+		{Name: "*", Mode: config.ModeImmediateEvict},
+	})
+
+	// fault-quarantine lists the first event of the quarantine under its record key.
+	quarantineAnnotation, err := createHealthEventAnnotationsMap([]*protos.HealthEvent{
+		{Id: firstEventID, NodeName: nodeName},
+	})
+	require.NoError(t, err)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{
+		"scheduler":                          "slurm",
+		statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+	}, map[string]string{common.QuarantineHealthEventAnnotationKey: quarantineAnnotation})
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil, nil)
+	waitForCachedNodeLabel(t, setup.informersInstance, nodeName, "scheduler", "slurm")
+	require.Eventually(t, func() bool {
+		pods, err := setup.informersInstance.FindEvictablePodsInNamespaceAndNode(setup.ctx, "app-ns", nodeName, nil)
+		return err == nil && len(pods) == 1
+	}, 30*time.Second, 50*time.Millisecond, "pod should be visible to the drainer")
+
+	healthEventStore := newMockHealthEventStore(nil, nil)
+
+	// storeFirstEvent sets the stored drain status of the first event, which the later event reads to find out
+	// whether an earlier drain covers it.
+	storeFirstEvent := func(status datastore.Status) {
+		healthEventStore.healthEvents = []datastore.HealthEventWithStatus{{
+			HealthEvent: &protos.HealthEvent{Id: firstEventID, NodeName: nodeName},
+			HealthEventStatus: datastore.HealthEventStatus{
+				NodeQuarantined:        ptr.To(datastore.Quarantined),
+				UserPodsEvictionStatus: datastore.OperationStatus{Status: status},
+				DrainDecision:          &datastore.DrainDecision{Method: model.DrainMethodCustom},
+			},
+		}}
+	}
+	storeFirstEvent(datastore.StatusInProgress)
+
+	store := &recordingDataStore{mockDataStore: setup.mockDB}
+	event := createHealthEvent(healthEventOptions{nodeName: nodeName, nodeQuarantined: model.Quarantined})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, healthEventStore, nodeName)
+	require.ErrorContains(t, err, "waiting for custom drain CR to complete")
+	requireCustomDrainCR(t, setup, nodeName)
+	applyRecordedDrainDecision(t, event, store.updates)
+
+	removeNodeLabel(t, setup, nodeName, "scheduler")
+
+	// The later event of the quarantine selects the built-in drain and evicts the pod, which stays until a kubelet
+	// confirms it.
+	later := createHealthEvent(healthEventOptions{
+		nodeName: nodeName, eventID: nodeName + "-later", nodeQuarantined: model.AlreadyQuarantined,
+		createdAt: time.Now().Add(time.Minute),
+	})
+	setup.mockDB.storeEvent(nodeName, later)
+	require.Error(t, setup.reconciler.ProcessEventGeneric(setup.ctx, later, store, healthEventStore, nodeName))
+	// The next pass reads the event with the built-in drain that this pass recorded.
+	later["healtheventstatus"].(*protos.HealthEventStatus).DrainDecision = &protos.DrainDecision{
+		Method: model.DrainMethodBuiltIn,
+	}
+	require.Eventually(t, func() bool {
+		pod, getErr := setup.client.CoreV1().Pods("app-ns").Get(setup.ctx, "app-pod", metav1.GetOptions{})
+		return getErr == nil && pod.DeletionTimestamp != nil
+	}, 10*time.Second, 100*time.Millisecond, "the built-in drain of the later event should evict the pod")
+
+	completeCustomDrainCR(t, setup, nodeName)
+	updatesBefore := len(store.updates)
+	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, healthEventStore, nodeName))
+
+	require.Equal(t, statemanager.DrainingLabelValue, nodeStateLabel(t, setup, nodeName),
+		"the built-in drain of the later event still runs")
+	requireNextEventPriority(t, setup, nodeName, "low", "node_already_draining")
+
+	// The next pass of the later event reads the status that the completion pass stored for the first event, and
+	// finds the later event covered.
+	firstStatus := latestEvictionStatus(t, store.updates[updatesBefore:])
+	require.Equal(t, datastore.AlreadyDrained, firstStatus, "the completed CR marks its event AlreadyDrained")
+	storeFirstEvent(firstStatus)
+	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, later, store, healthEventStore, nodeName))
+
+	require.Equal(t, statemanager.DrainSucceededLabelValue, nodeStateLabel(t, setup, nodeName),
+		"the covered later event moves the label")
+	requireNextEventPriority(t, setup, nodeName, "high", "node_not_yet_draining", nodeName+"-next")
 }
 
 // TestReconciler_DrainDecision_InProgressWithoutRecord evaluates a custom drain that started
@@ -3324,6 +3594,29 @@ func latestDrainDecision(t *testing.T, updates []map[string]any) map[string]any 
 	assert.True(t, hasMethod)
 
 	return decision
+}
+
+// latestEvictionStatus returns the eviction status of the last update that stores one.
+func latestEvictionStatus(t *testing.T, updates []map[string]any) datastore.Status {
+	t.Helper()
+
+	var status datastore.Status
+
+	for _, update := range updates {
+		setMap, ok := update["$set"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
+			value, _ := statusMap["status"].(string)
+			status = datastore.Status(value)
+		}
+	}
+
+	require.NotEmpty(t, status, "an eviction status should be stored")
+
+	return status
 }
 
 // drainDecisionUpdateCount counts the updates that write the drain decision.
