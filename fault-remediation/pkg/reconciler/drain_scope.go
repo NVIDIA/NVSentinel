@@ -77,7 +77,7 @@ func (r *FaultRemediationReconciler) tryRejectUncoveredEvent(
 	nodeName := healthEventWithStatus.HealthEvent.GetNodeName()
 
 	// A deleted node has no active quarantine.
-	active, err := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent)
+	active, err := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent, healthEventWithStatus.ID)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to check the quarantine of node %s: %w", nodeName, err), true
 	}

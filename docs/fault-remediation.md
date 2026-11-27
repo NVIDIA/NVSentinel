@@ -25,9 +25,10 @@ Fault Remediation watches the datastore for drained nodes that need repair. For 
 2. Skips the NONE action. For an action that has no entry in `maintenance.actions`, for example UNKNOWN, Fault Remediation creates no maintenance CR. It increments `fault_remediation_unsupported_actions_total`. If the node is still quarantined for this health event, it sets the state label to `remediation-failed`.
 3. Records the selected remediation action on the health event
 4. Checks if a maintenance CR already exists for the node
-5. Starts log collection, if log collection is enabled
-6. Creates a maintenance CR from the configured template
-7. Updates node labels to track the remediation state
+5. Checks that the node is still quarantined for this health event. An event whose quarantine already ended is closed without a maintenance CR.
+6. Starts log collection, if log collection is enabled
+7. Creates a maintenance CR from the configured template
+8. Updates node labels to track the remediation state
 
 External operators watch these maintenance CRs and do the maintenance work, for example a reboot, a termination or a replacement.
 

@@ -78,7 +78,7 @@ func newCappedReconciler(t *testing.T, maxAttempts int, enableLogCollector ...bo
 func prepareQuarantinedNode(ctx context.Context, t *testing.T, r *FaultRemediationReconciler, nodeName string) {
 	t.Helper()
 
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	cleanupNodeAnnotations(ctx, t, nodeName)
 	applyQuarantineLabels(ctx, t, r, nodeName)
 }

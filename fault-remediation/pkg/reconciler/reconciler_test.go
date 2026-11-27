@@ -555,7 +555,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	// shouldSkipEvent should return true for UNKNOWN action
-	shouldSkip, err := r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus, nil)
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus, "", nil)
 	assert.NoError(t, err)
 	assert.True(t, shouldSkip)
 }
@@ -604,6 +604,7 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 			FaultRemediated:        nil,
 		},
 	}
+	cfg.NodeReader = newMockNodeReader(quarantineAnnotationForTest(t, healthEvent.HealthEvent))
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &events.HealthEventDoc{
@@ -661,6 +662,7 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 			FaultRemediated:        nil,
 		},
 	}
+	cfg.NodeReader = newMockNodeReader(quarantineAnnotationForTest(t, healthEvent.HealthEvent))
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &events.HealthEventDoc{
@@ -669,15 +671,15 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 	}
 	groupConfig := getGroupConfig("restart", nil)
 	crName, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
-	assert.Error(t, err)
+	assert.ErrorContains(t, err, "test error")
 	assert.Empty(t, crName)
 }
 
-// The state manager writes an unexpected transition and still returns an error, so a written remediating label
-// must not stop the remediation of an event the node still quarantines. An unwritten remediating label, an event
-// whose quarantine ended (fault-quarantine removed the label, so the write reports none -> remediating), or a live
-// node read that fails stops the attempt before the CR. An unwritten final label fails the attempt after the CR.
-func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEventQuarantined(t *testing.T) {
+// A label write of performRemediation that lands with an unexpected transition still returns an error from the state
+// manager, which must not stop the remediation. An unwritten remediating label stops it before the CR, and an
+// unwritten final label fails the attempt after the CR. The live quarantine is checked before performRemediation, in
+// tryCloseEventOutsideQuarantine.
+func TestPerformRemediation_LabelWrites_FailOnlyWhenNotWritten(t *testing.T) {
 	type labelResult struct {
 		modified bool
 		err      error
@@ -686,17 +688,15 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 	transitionErr := errors.New("unexpected state transition: draining -> remediating")
 	writeErr := errors.New("failed to update node")
 	createErr := errors.New("failed to create maintenance CR")
-	nodeReadErr := errors.New("failed to read node")
 
 	tests := []struct {
 		name            string
 		remediating     labelResult
 		final           labelResult
 		createErr       error
-		notQuarantined  bool
-		nodeReadErr     error
 		wantFinalLabel  statemanager.NVSentinelStateLabelValue
 		wantErr         error
+		wantLabelCalls  int
 		wantCRName      string
 		wantCreateCalls int
 	}{
@@ -705,28 +705,15 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 			remediating:     labelResult{modified: true, err: transitionErr},
 			final:           labelResult{modified: true, err: transitionErr},
 			wantFinalLabel:  statemanager.RemediationSucceededLabelValue,
+			wantLabelCalls:  2,
 			wantCRName:      "test-cr-label-error",
 			wantCreateCalls: 1,
 		},
 		{
-			name:            "remediating label written but the quarantine of the event ended",
-			remediating:     labelResult{modified: true, err: transitionErr},
-			notQuarantined:  true,
-			wantErr:         transitionErr,
-			wantCreateCalls: 0,
-		},
-		{
-			name:            "remediating label written but the live node cannot be read",
-			remediating:     labelResult{modified: true, err: transitionErr},
-			nodeReadErr:     nodeReadErr,
-			wantErr:         nodeReadErr,
-			wantCreateCalls: 0,
-		},
-		{
-			name:            "remediating label not written",
-			remediating:     labelResult{modified: false, err: writeErr},
-			wantErr:         writeErr,
-			wantCreateCalls: 0,
+			name:           "remediating label not written",
+			remediating:    labelResult{modified: false, err: writeErr},
+			wantErr:        writeErr,
+			wantLabelCalls: 1,
 		},
 		{
 			name:            "final label not written",
@@ -734,6 +721,7 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 			final:           labelResult{modified: false, err: writeErr},
 			wantFinalLabel:  statemanager.RemediationSucceededLabelValue,
 			wantErr:         writeErr,
+			wantLabelCalls:  2,
 			wantCreateCalls: 1,
 		},
 		{
@@ -743,6 +731,7 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 			createErr:       createErr,
 			wantFinalLabel:  statemanager.RemediationFailedLabelValue,
 			wantErr:         createErr,
+			wantLabelCalls:  2,
 			wantCreateCalls: 1,
 		},
 	}
@@ -781,28 +770,9 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 				},
 			}
 
-			healthEvent := &protos.HealthEvent{
-				NodeName:          "node1",
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			}
-
-			nodeReader := newMockNodeReader(quarantineAnnotationForTest(t, healthEvent))
-			if tt.notQuarantined {
-				nodeReader = newMockNodeReader(nil)
-			}
-
-			if tt.nodeReadErr != nil {
-				nodeReader = &MockNodeReader{
-					getFn: func(context.Context, ctrlclient.ObjectKey, ctrlclient.Object) error {
-						return tt.nodeReadErr
-					},
-				}
-			}
-
 			cfg := ReconcilerConfig{
 				RemediationClient: k8sClient,
 				StateManager:      stateManager,
-				NodeReader:        nodeReader,
 				UpdateMaxRetries:  2,
 				UpdateRetryDelay:  1 * time.Microsecond,
 			}
@@ -810,8 +780,11 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 			healthEventDoc := &events.HealthEventDoc{
 				ID: "test-id-123",
 				HealthEventWithStatus: model.HealthEventWithStatus{
-					CreatedAt:   time.Now(),
-					HealthEvent: healthEvent,
+					CreatedAt: time.Now(),
+					HealthEvent: &protos.HealthEvent{
+						NodeName:          "node1",
+						RecommendedAction: protos.RecommendedAction_RESTART_BM,
+					},
 					HealthEventStatus: &protos.HealthEventStatus{
 						NodeQuarantined:        string(model.Quarantined),
 						UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
@@ -829,6 +802,7 @@ func TestPerformRemediation_LabelUpdateError_ContinuesOnlyWhenLabelWrittenAndEve
 				assert.Equal(t, tt.wantCRName, crName)
 			}
 
+			assert.Equal(t, tt.wantLabelCalls, labelCalls)
 			assert.Equal(t, tt.wantCreateCalls, createCalls)
 		})
 	}
@@ -907,7 +881,7 @@ func TestShouldSkipEvent(t *testing.T) {
 				HealthEvent: healthEvent,
 			}
 
-			result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, tt.groupConfig)
+			result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, "", tt.groupConfig)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.shouldSkip, result, tt.description)
 		})
@@ -924,7 +898,7 @@ func TestShouldSkipEvent(t *testing.T) {
 		}
 		groupConfig := getGroupConfig("disk-replace", nil)
 
-		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, groupConfig)
+		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, "", groupConfig)
 		assert.NoError(t, err)
 		assert.False(t, result, "Custom actions with a matching group config should not be skipped")
 	})
@@ -939,9 +913,41 @@ func TestShouldSkipEvent(t *testing.T) {
 			HealthEvent: healthEvent,
 		}
 
-		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, nil)
+		result, err := r.shouldSkipEvent(t.Context(), healthEventWithStatus, "", nil)
 		assert.NoError(t, err)
 		assert.True(t, result, "Custom actions without a matching group config should be skipped")
+	})
+
+	t.Run("Unsupported action of an event with a producer id sets remediation-failed", func(t *testing.T) {
+		const (
+			nodeName = "test-node-producer-id"
+			recordID = "unsupported-record"
+		)
+
+		// The event keeps the id that its producer set, and fault-quarantine lists it under its record key.
+		healthEvent := testAnnotationHealthEvent("producer-uuid", nodeName, protos.RecommendedAction_CONTACT_SUPPORT,
+			"GPU-test")
+		listed := testAnnotationHealthEvent(recordID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT, "GPU-test")
+
+		var labels []statemanager.NVSentinelStateLabelValue
+		producerReconciler := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+			RemediationClient: mockK8sClient,
+			StateManager: &statemanager.MockStateManager{
+				UpdateNVSentinelStateNodeLabelFn: func(_ context.Context, _ string,
+					value statemanager.NVSentinelStateLabelValue, _ bool) (bool, error) {
+					labels = append(labels, value)
+					return true, nil
+				},
+			},
+			NodeReader: newMockNodeReader(quarantineAnnotationForTest(t, listed)),
+		}, false)
+
+		result, err := producerReconciler.shouldSkipEvent(t.Context(),
+			model.HealthEventWithStatus{HealthEvent: healthEvent}, recordID, nil)
+		assert.NoError(t, err)
+		assert.True(t, result, "an unsupported action is skipped")
+		assert.Equal(t, []statemanager.NVSentinelStateLabelValue{statemanager.RemediationFailedLabelValue}, labels,
+			"the node still quarantines the event, so it gets remediation-failed")
 	})
 }
 
@@ -982,7 +988,7 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
 	groupConfig := getGroupConfig("restart", nil)
-	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, groupConfig)
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, "", groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldSkip)
 	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
@@ -1119,7 +1125,7 @@ func TestLogCollectorDisabled(t *testing.T) {
 		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
 	groupConfig := getGroupConfig("restart", nil)
-	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, groupConfig)
+	shouldSkip, err := r.shouldSkipEvent(t.Context(), event, "", groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldSkip)
 	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
@@ -1427,6 +1433,7 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 					},
 				},
 				InProgressRequeueDelay: 42 * time.Millisecond,
+				NodeReader:             newMockNodeReader(quarantinedNodeAnnotations(nodeName)),
 			}
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
@@ -1524,7 +1531,9 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 		name             string
 		currentStatus    datastore.HealthEventStatus
 		activeQuarantine bool
-		expectResolved   bool
+		// producerID is the id that the producer of the event set, as lifecycle-manager does.
+		producerID     string
+		expectResolved bool
 	}{
 		{
 			name: "RemediatedElsewhere_SkipsWithoutNewCR",
@@ -1571,6 +1580,18 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 			expectResolved:   false,
 		},
 		{
+			// The event keeps the id that its producer set, while fault-quarantine lists it under its record
+			// key. A failed attempt of such an event must stay retryable as well.
+			name: "FailedAttemptWithProducerIDStillQuarantined_ProceedsToRemediation",
+			currentStatus: datastore.HealthEventStatus{
+				FaultRemediated: &remediatedFalse,
+				NodeQuarantined: &quarantined,
+			},
+			activeQuarantine: true,
+			producerID:       "producer-uuid",
+			expectResolved:   false,
+		},
+		{
 			name:             "StillUnresolved_ProceedsToRemediation",
 			currentStatus:    datastore.HealthEventStatus{NodeQuarantined: &quarantined},
 			activeQuarantine: true,
@@ -1589,6 +1610,11 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 			var nodeAnnotations map[string]string
 			if tt.activeQuarantine {
 				nodeAnnotations = quarantineAnnotationForTest(t, healthEvent)
+			}
+
+			if tt.producerID != "" {
+				healthEvent = testAnnotationHealthEvent(
+					tt.producerID, nodeName, protos.RecommendedAction_RESTART_BM, "GPU-test")
 			}
 
 			createCalls := 0
@@ -1652,6 +1678,165 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 				assert.Equal(t, 0, statusWrites, "a resolved event must not be rewritten")
 			} else {
 				assert.Equal(t, 1, createCalls, "an unresolved event must proceed to remediation")
+			}
+		})
+	}
+}
+
+// TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediation checks the live quarantine before an
+// event gets a CR. fault-quarantine lists an event under its record key, also when the producer of the
+// event set its own id. An event whose quarantine ended is closed without remediation in one pass, also when a later
+// quarantine of the node lists another event, and a live node read that fails leaves the event open for a retry.
+func TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediation(t *testing.T) {
+	const (
+		nodeName = "test-node"
+		recordID = "live-quarantine-event"
+	)
+
+	nodeReadErr := errors.New("failed to read node")
+
+	tests := []struct {
+		name string
+		// producerID is the id that the producer of the event set, as lifecycle-manager does.
+		producerID string
+		// quarantine is the live quarantine of the node: the event itself when empty, "none" after the quarantine
+		// ended, or "later" for a later quarantine that lists only another event.
+		quarantine  string
+		nodeReadErr error
+		wantCR      bool
+		wantClosed  bool
+		wantErr     error
+	}{
+		{
+			name:   "event listed by its record key",
+			wantCR: true,
+		},
+		{
+			name:       "event with a producer id listed by its record key",
+			producerID: "producer-uuid",
+			wantCR:     true,
+		},
+		{
+			name:       "quarantine ended",
+			quarantine: "none",
+			wantClosed: true,
+		},
+		{
+			name:       "quarantine ended and a later quarantine lists another event",
+			quarantine: "later",
+			wantClosed: true,
+		},
+		{
+			name:        "live node read fails",
+			nodeReadErr: nodeReadErr,
+			wantErr:     nodeReadErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// fault-quarantine writes the record key of an event as the id of its annotation entry.
+			nodeReader := newMockNodeReader(quarantineAnnotationForTest(t, testAnnotationHealthEvent(
+				recordID, nodeName, protos.RecommendedAction_RESTART_BM, "GPU-test")))
+
+			switch tt.quarantine {
+			case "none":
+				nodeReader = newMockNodeReader(nil)
+			case "later":
+				nodeReader = newMockNodeReader(quarantineAnnotationForTest(t, testAnnotationHealthEvent(
+					"later-quarantine-event", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-other")))
+			}
+
+			if tt.nodeReadErr != nil {
+				nodeReader = &MockNodeReader{
+					getFn: func(context.Context, ctrlclient.ObjectKey, ctrlclient.Object) error {
+						return tt.nodeReadErr
+					},
+				}
+			}
+
+			createCalls := 0
+			mockK8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
+					*common.EquivalenceGroupConfig) (string, error) {
+					createCalls++
+					return "maintenance-cr-new", nil
+				},
+				annotationManagerOverride: &MockNodeAnnotationManager{},
+			}
+
+			cfg := ReconcilerConfig{
+				RemediationClient: mockK8sClient,
+				StateManager: &statemanager.MockStateManager{
+					UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+						statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+						return true, nil
+					},
+				},
+				NodeReader: nodeReader,
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			var remediated []bool
+
+			mockStore := &MockHealthEventStore{
+				FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+					[]datastore.HealthEventWithStatus, error) {
+					quarantined := datastore.Quarantined
+					return []datastore.HealthEventWithStatus{{
+						HealthEventStatus: datastore.HealthEventStatus{NodeQuarantined: &quarantined},
+					}}, nil
+				},
+				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+					assert.Equal(t, recordID, id)
+					if status.FaultRemediated != nil {
+						remediated = append(remediated, *status.FaultRemediated)
+					}
+
+					return nil
+				},
+			}
+
+			healthEvent := testAnnotationHealthEvent(
+				tt.producerID, nodeName, protos.RecommendedAction_RESTART_BM, "GPU-test")
+			healthEventDoc := &events.HealthEventDoc{
+				ID:          recordID,
+				CreatedAt:   time.Now(),
+				HealthEvent: healthEvent,
+				HealthEventStatus: &protos.HealthEventStatus{
+					NodeQuarantined:        string(model.Quarantined),
+					UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.AlreadyDrained)},
+				},
+			}
+			eventWithToken := datastore.EventWithToken{
+				Event:       testRawHealthEvent(recordID, nodeName, protos.RecommendedAction_RESTART_BM),
+				ResumeToken: []byte("resume-token"),
+			}
+			mockWatcher := &MockChangeStreamWatcher{}
+
+			_, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+
+			switch {
+			case tt.wantErr != nil:
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Empty(t, remediated, "a failed node read must not close the event")
+				assert.Zero(t, markProcessedCount, "a failed node read must not checkpoint the event")
+			case tt.wantClosed:
+				require.NoError(t, err)
+				assert.Equal(t, []bool{false}, remediated, "the event should be closed without remediation")
+				assert.Equal(t, 1, markProcessedCount, "the closed event should be checkpointed")
+			default:
+				require.NoError(t, err)
+				assert.Equal(t, []bool{true}, remediated, "the event should be remediated")
+			}
+
+			if tt.wantCR {
+				assert.Equal(t, 1, createCalls, "the event should get a CR")
+			} else {
+				assert.Zero(t, createCalls, "the event must not get a CR")
 			}
 		})
 	}
@@ -1922,7 +2107,7 @@ func TestNodeHasActiveQuarantine_APIReaderHasMatchingEvent_ReturnsTrueWithoutCac
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
-	active, err := r.nodeHasActiveQuarantine(t.Context(), activeEvent)
+	active, err := r.nodeHasActiveQuarantine(t.Context(), activeEvent, "")
 
 	assert.NoError(t, err)
 	assert.True(t, active)
@@ -2743,6 +2928,23 @@ func quarantineAnnotationForTest(t *testing.T, events ...*protos.HealthEvent) ma
 
 	annotationBytes, err := json.Marshal(healthEventsMap)
 	assert.NoError(t, err)
+
+	return map[string]string{
+		fqcommon.QuarantineHealthEventAnnotationKey: string(annotationBytes),
+	}
+}
+
+// quarantinedNodeAnnotations returns the quarantine annotation of a node for tests whose events come from
+// createQuarantineEvent. Those events carry no agent, check or entity, so the single entry of the node, which has no
+// id, matches all of them by fault-quarantine's event key.
+func quarantinedNodeAnnotations(nodeName string) map[string]string {
+	healthEventsMap := fqannotation.NewHealthEventsAnnotationMap()
+	healthEventsMap.AddOrUpdateEvent(&protos.HealthEvent{NodeName: nodeName, IsFatal: true})
+
+	annotationBytes, err := json.Marshal(healthEventsMap)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal the quarantine annotation: %v", err))
+	}
 
 	return map[string]string{
 		fqcommon.QuarantineHealthEventAnnotationKey: string(annotationBytes),

@@ -500,7 +500,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	ctx := testContext
 
 	nodeName := "test-node-dedup-" + "test-node-123"
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -515,6 +515,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      stateManager,
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -579,6 +580,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      stateManager,
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -647,6 +649,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      stateManager,
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -737,6 +740,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      stateManager,
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -800,7 +804,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	ctx := testContext
 
 	nodeName := "test-node-sequence-" + "test-node-123"
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -945,7 +949,14 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	ctx := testContext
 
 	nodeName := "test-node-sequence-" + "test-node-123"
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	// fault-quarantine lists the events of the node under their record keys, which the events below reuse.
+	createTestNode(ctx, nodeName, quarantineAnnotationForTest(t,
+		&protos.HealthEvent{Id: "test-event-id", NodeName: nodeName, RecommendedAction: protos.RecommendedAction_RESTART_BM},
+		&protos.HealthEvent{
+			Id: "test-event-id-2", NodeName: nodeName, RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{{EntityType: "GPU_UUID", EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834"}},
+		},
+	), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -1019,7 +1030,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2.HealthEvent)
 	assert.NoError(t, err)
-	shouldSkip, err := r.shouldSkipEvent(ctx, event2, groupConfig)
+	shouldSkip, err := r.shouldSkipEvent(ctx, event2, "", groupConfig)
 	assert.NoError(t, err)
 	assert.False(t, shouldSkip, "Shouldn't valid health event")
 	decision, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
@@ -1238,7 +1249,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	maps.Copy(node.Annotations, quarantineAnnotationForTest(t, activeUnsupportedEvent))
 	_, err = testClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 	require.NoError(t, err)
-	active, err := r.nodeHasActiveQuarantine(ctx, activeUnsupportedEvent)
+	active, err := r.nodeHasActiveQuarantine(ctx, activeUnsupportedEvent, "")
 	require.NoError(t, err)
 	require.True(t, active)
 
@@ -1250,7 +1261,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		event9.HealthEvent)
 	assert.Error(t, err)
 	assert.Nil(t, groupConfig)
-	shouldSkip, err = r.shouldSkipEvent(ctx, event9, groupConfig)
+	shouldSkip, err = r.shouldSkipEvent(ctx, event9, "", groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldSkip, "Should skip invalid health event")
 
@@ -1271,7 +1282,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	defer cancel()
 
 	nodeName := "test-node-full-e2e-" + "test-node-123"
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -1493,7 +1504,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			healthEvent.HealthEvent)
 		assert.NoError(t, err)
 
-		shouldSkip, err := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
+		shouldSkip, err := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, "", groupConfig)
 		assert.NoError(t, err)
 		assert.True(t, shouldSkip, "Should skip unsupported action")
 
@@ -1601,7 +1612,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	defer cancel()
 
 	nodeName := testutils.GenerateTestNodeName("test-cancelled-clean")
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -1667,7 +1678,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	defer cancel()
 
 	nodeName := testutils.GenerateTestNodeName("test-cancelled-all")
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -1736,7 +1747,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	defer cancel()
 
 	nodeName := testutils.GenerateTestNodeName("test-cancelled-unquarantine")
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -1962,7 +1973,7 @@ func TestMetrics_CRGenerationDuration(t *testing.T) {
 		"test":                               "label",
 		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
 	}
-	createTestNode(ctx, nodeName, nil, nodeLabels)
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), nodeLabels)
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -2103,7 +2114,7 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 
 	nodeName := testutils.GenerateTestNodeName("cold-start-remediation")
 
-	createTestNode(ctx, nodeName, nil, map[string]string{
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{
 		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
 	})
 
@@ -2178,7 +2189,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 	defer cancel()
 
 	nodeName := testutils.GenerateTestNodeName("cold-start-cancellation")
-	createTestNode(ctx, nodeName, nil, map[string]string{
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{
 		statemanager.NVSentinelStateLabelKey: string(statemanager.DrainSucceededLabelValue),
 	})
 
@@ -2267,7 +2278,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	defer cancel()
 
 	nodeName := testutils.GenerateTestNodeName("test-cancel-marker")
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -2300,6 +2311,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      statemanager.NewStateManager(testClient),
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -2417,6 +2429,7 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      statemanager.NewStateManager(testClient),
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -2508,7 +2521,7 @@ func TestCustomAction_E2E(t *testing.T) {
 	defer cancel()
 
 	nodeName := "test-node-custom-action-e2e"
-	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	createTestNode(ctx, nodeName, quarantinedNodeAnnotations(nodeName), map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -2537,6 +2550,7 @@ func TestCustomAction_E2E(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      statemanager.NewStateManager(testClient),
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -2611,8 +2625,9 @@ func assertRecordedAction(t *testing.T, eventID, action string) {
 // fault-remediation side of issue #2539. An older node-drainer marks a completed custom drain, or a drain skipped by DrainOverrides.Skip,
 // AlreadyDrained and leaves the state label at draining or quarantined. The remediating write then sets the label
 // and still reports an unexpected transition, which must not fail the first attempt while the node still
-// quarantines the event. An event whose quarantine ended before its first attempt must still fail without a CR,
-// and a healthy event on such a node must not create a CR.
+// quarantines the event. An event whose quarantine ended before its first attempt is closed without a CR, also when
+// a later quarantine of the node already reads drain-succeeded, and a healthy event on such a node must not create a
+// CR. An event whose producer set its own id is found in the quarantine by its record key.
 func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUnhealthyEvent(t *testing.T) {
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
@@ -2626,9 +2641,14 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 		stateLabels []statemanager.NVSentinelStateLabelValue
 		// quarantined lists the event in the node's quarantine annotation, as fault-quarantine does.
 		quarantined bool
-		healthy     bool
-		wantErr     bool
-		wantCR      bool
+		// laterQuarantine lists only the event of a later quarantine of the node in the annotation.
+		laterQuarantine bool
+		// producerID is the id that the producer of the event set, as lifecycle-manager does.
+		producerID string
+		healthy    bool
+		// wantClosed expects the event closed without remediation, because its quarantine ended.
+		wantClosed bool
+		wantCR     bool
 		// wantLabel is checked when it is set.
 		wantLabel statemanager.NVSentinelStateLabelValue
 	}{
@@ -2649,10 +2669,31 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 			wantLabel:   statemanager.RemediationSucceededLabelValue,
 		},
 		{
-			// fault-quarantine removed the label and the annotation when the quarantine ended, so the
-			// remediating write reports none -> remediating, and the event must not get a CR.
-			name:    "quarantine ended before the first attempt",
-			wantErr: true,
+			name: "event with a producer id",
+			stateLabels: []statemanager.NVSentinelStateLabelValue{
+				statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+			},
+			quarantined: true,
+			producerID:  "producer-uuid",
+			wantCR:      true,
+			wantLabel:   statemanager.RemediationSucceededLabelValue,
+		},
+		{
+			// fault-quarantine removed the label and the annotation when the quarantine ended, and the event must
+			// not get a CR.
+			name:       "quarantine ended before the first attempt",
+			wantClosed: true,
+		},
+		{
+			// A later quarantine of the node skipped its drain, so the label already reads drain-succeeded and the
+			// remediating write would be a valid transition.
+			name: "quarantine ended and a later quarantine reads drain-succeeded",
+			stateLabels: []statemanager.NVSentinelStateLabelValue{
+				statemanager.QuarantinedLabelValue, statemanager.DrainSucceededLabelValue,
+			},
+			laterQuarantine: true,
+			wantClosed:      true,
+			wantLabel:       statemanager.DrainSucceededLabelValue,
 		},
 		{
 			name: "healthy event with the label at draining",
@@ -2681,12 +2722,21 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 			}
 
 			var annotations map[string]string
-			if tt.quarantined {
+
+			switch {
+			case tt.quarantined:
 				// fault-quarantine writes the record key as the id of the annotation entry.
 				annotations = quarantineAnnotationForTest(t, &protos.HealthEvent{
 					Id:                eventID,
 					NodeName:          nodeName,
 					RecommendedAction: action,
+				})
+			case tt.laterQuarantine:
+				annotations = quarantineAnnotationForTest(t, &protos.HealthEvent{
+					Id:                "later-quarantine-event",
+					NodeName:          nodeName,
+					CheckName:         "later-check",
+					RecommendedAction: protos.RecommendedAction_NONE,
 				})
 			}
 
@@ -2738,6 +2788,7 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 					},
 				},
 				"healthevent": map[string]any{
+					"id":                tt.producerID,
 					"nodename":          nodeName,
 					"ishealthy":         tt.healthy,
 					"recommendedaction": int32(action),
@@ -2760,12 +2811,8 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 			resumeToken := "stale-state-label-token"
 			result, err := r.Reconcile(ctx, reconcileRequest{documentID: eventID, resumeToken: resumeToken})
 
-			if tt.wantErr {
-				require.Error(t, err, "an event whose quarantine ended must fail as before")
-			} else {
-				require.NoError(t, err, "the first attempt must not fail")
-				assert.True(t, result.IsZero(), "the first attempt must not be requeued")
-			}
+			require.NoError(t, err, "the first pass must not fail")
+			assert.True(t, result.IsZero(), "the first pass must not be requeued")
 
 			// Read the API server, not the cache, to see what this single attempt left.
 			crs, err := testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
@@ -2792,15 +2839,12 @@ func TestReconcile_AlreadyDrainedEventWithStaleStateLabel_RemediatesOnlyActiveUn
 					"unexpected state label after the attempt")
 			}
 
-			if tt.wantErr {
-				// The failed attempt is recorded, so the next pass checks the live quarantine and closes it.
-				assert.Equal(t, []bool{false}, faultRemediated, "the failed attempt should be recorded")
-				assert.Empty(t, watcher.MarkProcessedTokens(), "a failed attempt must not be checkpointed")
-
-				return
+			if tt.wantClosed {
+				assert.Equal(t, []bool{false}, faultRemediated, "the event should be closed without remediation")
+			} else {
+				assert.Equal(t, []bool{true}, faultRemediated, "the event should be closed as remediated")
 			}
 
-			assert.Equal(t, []bool{true}, faultRemediated, "the event should be closed as remediated")
 			assert.Equal(t, [][]byte{[]byte(resumeToken)}, watcher.MarkProcessedTokens(),
 				"the event should be checkpointed")
 		})
