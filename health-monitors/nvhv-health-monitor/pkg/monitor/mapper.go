@@ -74,11 +74,6 @@ func evaluated(r verdict.Result) bool {
 	}
 }
 
-// reportable reports whether a result is a fault: evaluated, and not PASS.
-func reportable(r verdict.Result) bool {
-	return evaluated(r) && r.Severity != verdict.Pass
-}
-
 func newFault(r verdict.Result) fault {
 	return fault{
 		checkID:  r.CheckID,

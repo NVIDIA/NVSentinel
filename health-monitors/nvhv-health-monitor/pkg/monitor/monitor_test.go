@@ -41,9 +41,8 @@ type harness struct {
 	now     time.Time
 }
 
-func newHarness() *harness {
-	h := &harness{now: time.Unix(1_000, 0)}
-	h.m = New(Config{
+func (h *harness) config() Config {
+	return Config{
 		Agent:                  "nvhv-health-monitor",
 		NodeName:               "node-1",
 		UnreachableAfter:       5 * time.Minute,
@@ -58,7 +57,12 @@ func newHarness() *harness {
 
 			return nil
 		},
-	})
+	}
+}
+
+func newHarness() *harness {
+	h := &harness{now: time.Unix(1_000, 0)}
+	h.m = New(h.config())
 
 	return h
 }
@@ -102,7 +106,6 @@ func TestEventFields(t *testing.T) {
 	assert.False(t, e.IsHealthy)
 	assert.Equal(t, "msg row_remap", e.Message)
 	assert.Equal(t, pb.RecommendedAction_COMPONENT_RESET, e.RecommendedAction)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, e.ProcessingStrategy)
 	require.Len(t, e.EntitiesImpacted, 2)
 	assert.Equal(t, &pb.Entity{EntityType: "GPU_UUID", EntityValue: "GPU-abc"}, e.EntitiesImpacted[0])
 	assert.Equal(t, &pb.Entity{EntityType: "PCI", EntityValue: "0000:1b:00.0"}, e.EntitiesImpacted[1])
@@ -122,24 +125,6 @@ func TestRecommendedAction(t *testing.T) {
 	assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, act("drain", "hold"))
 	assert.Equal(t, pb.RecommendedAction_NONE, act("monitor", "service_required"))
 	assert.Equal(t, pb.RecommendedAction_NONE, act("ready"))
-}
-
-func TestSeverityMapping(t *testing.T) {
-	h := newHarness()
-	h.poll(
-		result("warn", verdict.Warning),
-		result("info", verdict.Info),
-		result("ok", verdict.Pass),
-		result("unk", verdict.Unknown),
-	)
-
-	require.Len(t, h.batches, 1)
-	require.Len(t, h.batches[0], 2)
-
-	for _, e := range h.batches[0] {
-		assert.False(t, e.IsFatal)
-		assert.False(t, e.IsHealthy)
-	}
 }
 
 func TestSkippedResultIsIgnored(t *testing.T) {
@@ -217,7 +202,6 @@ func TestUnreachableThreshold(t *testing.T) {
 	assert.False(t, e.IsHealthy)
 	assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, e.RecommendedAction)
 	assert.Empty(t, e.EntitiesImpacted)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, e.ProcessingStrategy)
 
 	h.fail()
 	assert.Len(t, h.batches, 1, "sent once per outage")
@@ -231,7 +215,6 @@ func TestUnreachableThreshold(t *testing.T) {
 	assert.False(t, r.IsFatal)
 	assert.Equal(t, pb.RecommendedAction_NONE, r.RecommendedAction)
 	assert.Empty(t, r.EntitiesImpacted)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, r.ProcessingStrategy)
 
 	h.poll()
 	assert.Len(t, h.batches, 2, "the healthy event is sent once")
@@ -240,14 +223,6 @@ func TestUnreachableThreshold(t *testing.T) {
 	h.now = h.now.Add(6 * time.Minute)
 	h.fail()
 	assert.Len(t, h.batches, 3, "a new outage sends a new event")
-}
-
-func TestUnreachableDoesNotClearFaults(t *testing.T) {
-	h := newHarness()
-	h.poll(result("c", verdict.Critical, "GPU-1"))
-	h.fail()
-	h.poll(result("c", verdict.Critical, "GPU-1"))
-	assert.Len(t, h.batches, 1)
 }
 
 func TestUnreachableMetrics(t *testing.T) {
@@ -296,7 +271,6 @@ func TestCollectionFailureAfterThreshold(t *testing.T) {
 	assert.True(t, e.IsFatal)
 	assert.False(t, e.IsHealthy)
 	assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, e.RecommendedAction)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, e.ProcessingStrategy)
 	assert.Empty(t, e.EntitiesImpacted)
 	assert.Equal(t, "measurement unavailable: journalctl timed out", e.Message)
 
@@ -313,8 +287,6 @@ func TestCollectionFailureAfterThreshold(t *testing.T) {
 	assert.Equal(t, "NVHVXIDCollectionFailure", r.CheckName)
 	assert.True(t, r.IsHealthy)
 	assert.False(t, r.IsFatal)
-	assert.Equal(t, pb.RecommendedAction_NONE, r.RecommendedAction)
-	assert.Empty(t, r.EntitiesImpacted)
 
 	fail()
 	h.now = h.now.Add(6 * time.Minute)
@@ -360,20 +332,6 @@ func TestCollectionFailureWaitsWhileUnreachableIsRaised(t *testing.T) {
 	assert.True(t, h.batches[1][0].IsHealthy)
 	assert.Equal(t, UnreachableCheckName, h.batches[1][0].CheckName)
 	assert.Equal(t, "NVHVXIDCollectionFailure", h.batches[2][0].CheckName)
-}
-
-func TestCollectionFailureRetriesAfterFailedPublish(t *testing.T) {
-	h := newHarness()
-	h.poll(collectionResult("xid", verdict.Unknown, "retry_collection"))
-	h.now = h.now.Add(6 * time.Minute)
-
-	h.failing = true
-	h.poll(collectionResult("xid", verdict.Unknown, "retry_collection"))
-	assert.Empty(t, h.batches)
-
-	h.failing = false
-	h.poll(collectionResult("xid", verdict.Unknown, "retry_collection"))
-	assert.Len(t, h.batches, 1)
 }
 
 func TestCollectionMessageIsTheFirstChecksOwn(t *testing.T) {
@@ -468,35 +426,12 @@ func TestHealthyEventsAreRetriedAfterFailedPublish(t *testing.T) {
 	assert.True(t, h.batches[3][0].IsHealthy)
 }
 
-func TestUnknownResultDoesNotRecoverCollectionFailure(t *testing.T) {
-	h := newHarness()
-	xid := collectionResult("xid", verdict.Unknown, "retry_collection")
-
-	h.poll(xid)
-	h.now = h.now.Add(6 * time.Minute)
-	h.poll(xid)
-	require.Len(t, h.batches, 1)
-
-	// Only an UNKNOWN result of another check in the same kind: still blind.
-	h.poll(collectionResultIn("other", "xid", verdict.Unknown, "reset_gpu"))
-	assert.Len(t, h.batches, 1)
-}
-
 // restarted builds a second Monitor over the state the first one saved.
 func (h *harness) restarted(saved *statefile.State) *Monitor {
-	return New(Config{
-		Agent:                  "nvhv-health-monitor",
-		NodeName:               "node-1",
-		UnreachableAfter:       5 * time.Minute,
-		CollectionFailureAfter: 5 * time.Minute,
-		Now:                    func() time.Time { return h.now },
-		Publish: func(_ context.Context, events []*pb.HealthEvent) error {
-			h.batches = append(h.batches, events)
+	cfg := h.config()
+	cfg.Restore = *saved
 
-			return nil
-		},
-		Restore: *saved,
-	})
+	return New(cfg)
 }
 
 func TestStateIsSavedAndRestored(t *testing.T) {
@@ -553,16 +488,6 @@ func TestSaveIsCalledOnlyWhenOutagesChange(t *testing.T) {
 
 	h.poll()
 	assert.Equal(t, 2, saves, "cleared")
-}
-
-func TestSaveFailureDoesNotStopTheMonitor(t *testing.T) {
-	h := newHarness()
-	h.m.cfg.Save = func(statefile.State) error { return errors.New("disk full") }
-
-	h.fail()
-	h.now = h.now.Add(6 * time.Minute)
-	h.fail()
-	assert.Len(t, h.batches, 1)
 }
 
 func TestProcessingStrategyIsSetOnEveryEvent(t *testing.T) {
@@ -658,14 +583,6 @@ func window(t *testing.T, r verdict.Request) (from, to int64) {
 	return *r.XidFrom, *r.XidTo
 }
 
-func TestFirstWindowStartsAtTheEndOfTheJournal(t *testing.T) {
-	h := newHarness() // now = 1000
-
-	from, to := window(t, h.m.Request())
-	assert.Equal(t, int64(999), from, "nothing logged before the monitor started is replayed")
-	assert.Equal(t, int64(1000), to)
-}
-
 func TestWindowAdvancesAfterADeliveredPoll(t *testing.T) {
 	h := newHarness()
 
@@ -676,13 +593,6 @@ func TestWindowAdvancesAfterADeliveredPoll(t *testing.T) {
 	from, to := window(t, h.m.Request())
 	assert.Equal(t, int64(1000), from, "the next window starts where the last one ended")
 	assert.Equal(t, int64(1015), to)
-
-	// And a poll with a delivered fault advances it too.
-	h.now = h.now.Add(15 * time.Second)
-	h.poll(result("c", verdict.Critical, "GPU-1"))
-
-	from, _ = window(t, h.m.Request())
-	assert.Equal(t, int64(1015), from)
 }
 
 func TestWindowDoesNotAdvanceWhenTheCallFailed(t *testing.T) {

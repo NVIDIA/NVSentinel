@@ -77,14 +77,9 @@ func (c *Components) Close() {
 
 // InitializeAll validates the parameters and builds every component.
 func InitializeAll(params Params) (*Components, error) {
-	timeout, err := validate(params)
+	timeout, strategy, err := validate(params)
 	if err != nil {
 		return nil, err
-	}
-
-	strategyValue, ok := pb.ProcessingStrategy_value[params.ProcessingStrategy]
-	if !ok {
-		return nil, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
 	}
 
 	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
@@ -121,7 +116,7 @@ func InitializeAll(params Params) (*Components, error) {
 		UnreachableAfter:       params.UnreachableAfter,
 		CollectionFailureAfter: params.CollectionFailureAfter,
 		Publish:                pub.Publish,
-		ProcessingStrategy:     pb.ProcessingStrategy(strategyValue),
+		ProcessingStrategy:     strategy,
 		Restore:                restored,
 		Save:                   stateFile.Save,
 	})
@@ -154,14 +149,15 @@ func InitializeAll(params Params) (*Components, error) {
 	}, nil
 }
 
-// validate checks the parameters and returns the effective request timeout.
-func validate(params Params) (time.Duration, error) {
+// validate checks the parameters and returns the effective request timeout and
+// the processing strategy.
+func validate(params Params) (time.Duration, pb.ProcessingStrategy, error) {
 	if params.NodeName == "" {
-		return 0, errors.New("node name is required (--node-name or NODE_NAME)")
+		return 0, 0, errors.New("node name is required (--node-name or NODE_NAME)")
 	}
 
 	if params.PollInterval <= 0 {
-		return 0, errors.New("poll-interval must be positive")
+		return 0, 0, errors.New("poll-interval must be positive")
 	}
 
 	timeout := params.RequestTimeout
@@ -170,8 +166,13 @@ func validate(params Params) (time.Duration, error) {
 	}
 
 	if timeout < 0 || timeout > params.PollInterval {
-		return 0, fmt.Errorf("request-timeout must be positive and at most the poll interval (%s)", params.PollInterval)
+		return 0, 0, fmt.Errorf("request-timeout must be positive and at most the poll interval (%s)", params.PollInterval)
 	}
 
-	return timeout, nil
+	strategy, ok := pb.ProcessingStrategy_value[params.ProcessingStrategy]
+	if !ok {
+		return 0, 0, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
+	}
+
+	return timeout, pb.ProcessingStrategy(strategy), nil
 }

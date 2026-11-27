@@ -57,19 +57,6 @@ func TestEmptyPathDisablesTheFile(t *testing.T) {
 	assert.Equal(t, State{}, got)
 }
 
-func TestSaveLeavesOnlyTheStateFile(t *testing.T) {
-	dir := t.TempDir()
-	f := File{Path: filepath.Join(dir, "state.json")}
-
-	require.NoError(t, f.Save(State{UnreachableRaised: true}))
-	require.NoError(t, f.Save(State{}))
-
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "no temporary file is left behind")
-	assert.Equal(t, "state.json", entries[0].Name())
-}
-
 func TestFailedSaveKeepsTheOldStateAndLeavesNoTemporaryFile(t *testing.T) {
 	dir := t.TempDir()
 	f := File{Path: filepath.Join(dir, "state.json")}

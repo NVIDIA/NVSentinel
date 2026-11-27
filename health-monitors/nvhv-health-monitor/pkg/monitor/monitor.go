@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"sort"
 	"time"
 
 	"google.golang.org/grpc/status"
@@ -136,14 +135,22 @@ func (m *Monitor) handleReachable(ctx context.Context) {
 		return
 	}
 
-	if err := m.cfg.Publish(ctx, []*pb.HealthEvent{m.outageEvent(UnreachableCheckName, "NVHV is reachable again", true)}); err != nil {
-		slog.Warn("Publish healthy NVHVUnreachable failed; retrying next poll", "error", err)
+	if m.publishOne(ctx, m.outageEvent(UnreachableCheckName, "NVHV is reachable again", true)) {
+		m.unreachableSent = false
+		m.saveState()
+	}
+}
 
-		return
+// publishOne sends a single outage event and reports whether it was delivered;
+// a failure is logged and the caller retries on the next poll.
+func (m *Monitor) publishOne(ctx context.Context, e *pb.HealthEvent) bool {
+	if err := m.cfg.Publish(ctx, []*pb.HealthEvent{e}); err != nil {
+		slog.Warn("Publish failed; retrying next poll", "check", e.GetCheckName(), "error", err)
+
+		return false
 	}
 
-	m.unreachableSent = false
-	m.saveState()
+	return true
 }
 
 // outageEvent is a node-level event of an outage check (NVHVUnreachable,
@@ -183,16 +190,10 @@ func (m *Monitor) handleUnreachable(ctx context.Context) {
 		return
 	}
 
-	event := m.outageEvent(UnreachableCheckName, "NVHV is unreachable; check its logs and the GPU driver state", false)
-
-	if err := m.cfg.Publish(ctx, []*pb.HealthEvent{event}); err != nil {
-		slog.Warn("Publish NVHVUnreachable failed; retrying next poll", "error", err)
-
-		return
+	if m.publishOne(ctx, m.outageEvent(UnreachableCheckName, "NVHV is unreachable; check its logs and the GPU driver state", false)) {
+		m.unreachableSent = true
+		m.saveState()
 	}
-
-	m.unreachableSent = true
-	m.saveState()
 }
 
 // handleVerdict publishes the faults that are new or changed since the last
@@ -212,7 +213,7 @@ func (m *Monitor) handleVerdict(ctx context.Context, v *verdict.Verdict) bool {
 			// Reported by handleCollection, not as a fault of the node.
 		case r.Severity == verdict.Pass && !r.Skipped:
 			forget(next, r)
-		case reportable(r):
+		case evaluated(r):
 			f := newFault(r)
 			if prev, ok := next[f.key()]; !ok || prev.fingerprint != f.fingerprint {
 				next[f.key()] = f
@@ -287,7 +288,7 @@ func (m *Monitor) saveState() {
 		}
 	}
 
-	sort.Strings(s.CollectionRaised)
+	slices.Sort(s.CollectionRaised)
 
 	if err := m.cfg.Save(s); err != nil {
 		slog.Warn("Save state failed", "error", err)

@@ -16,11 +16,9 @@ package monitor
 
 import (
 	"context"
-	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
 )
 
@@ -79,15 +77,10 @@ func (m *Monitor) handleCollection(ctx context.Context, v *verdict.Verdict) {
 			continue
 		}
 
-		name := collectionFailureName(category)
-		if err := m.cfg.Publish(ctx, []*pb.HealthEvent{m.outageEvent(name, "NVHV collects the data again", true)}); err != nil {
-			slog.Warn("Publish healthy collection failure failed; retrying next poll", "check", name, "error", err)
-
-			continue
+		if m.publishOne(ctx, m.outageEvent(collectionFailureName(category), "NVHV collects the data again", true)) {
+			delete(m.collection, category)
+			m.saveState()
 		}
-
-		delete(m.collection, category)
-		m.saveState()
 	}
 
 	now := m.cfg.Now()
@@ -103,27 +96,21 @@ func (m *Monitor) handleCollection(ctx context.Context, v *verdict.Verdict) {
 			continue
 		}
 
-		event := m.outageEvent(collectionFailureName(category), collectionMessage(results), false)
-
-		if err := m.cfg.Publish(ctx, []*pb.HealthEvent{event}); err != nil {
-			slog.Warn("Publish collection failure failed; retrying next poll", "check", event.CheckName, "error", err)
-
-			continue
+		if m.publishOne(ctx, m.outageEvent(collectionFailureName(category), collectionMessage(results), false)) {
+			ep.sent = true
+			m.saveState()
 		}
-
-		ep.sent = true
-		m.saveState()
 	}
 }
 
 // collectionMessage is NVHV's own message of the first failing check, by check
 // ID so it is stable from poll to poll.
 func collectionMessage(failed []verdict.Result) string {
-	sort.SliceStable(failed, func(i, j int) bool { return failed[i].CheckID < failed[j].CheckID })
+	first := slices.MinFunc(failed, func(a, b verdict.Result) int { return strings.Compare(a.CheckID, b.CheckID) })
 
-	msg := strings.Join(failed[0].Messages, "; ")
+	msg := strings.Join(first.Messages, "; ")
 	if msg == "" {
-		msg = "NVHV could not collect the data of check " + failed[0].CheckID
+		msg = "NVHV could not collect the data of check " + first.CheckID
 	}
 
 	return msg
