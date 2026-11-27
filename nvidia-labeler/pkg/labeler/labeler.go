@@ -329,11 +329,9 @@ func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
 				return
 			}
 
-			oldReady := isPodReady(oldPod)
-
-			newReady := isPodReady(newPod)
-			if oldReady == newReady {
-				slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
+			// The labels depend only on readiness and, for DCGM pods, the image.
+			if isPodReady(oldPod) == isPodReady(newPod) && slices.Equal(podImages(oldPod), podImages(newPod)) {
+				slog.Debug("Pod readiness and images unchanged", "pod", newPod.Name)
 				return
 			}
 
@@ -355,14 +353,38 @@ func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
 	}
 }
 
+// podFromEventObject returns the pod of an event. A delete that the watch missed
+// arrives as a tombstone that holds the last known pod.
+func podFromEventObject(obj any) (*v1.Pod, bool) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+
+	pod, ok := obj.(*v1.Pod)
+
+	return pod, ok
+}
+
+// isScheduledPod reports whether an event is about a pod that has a node.
+func isScheduledPod(obj any) bool {
+	pod, ok := podFromEventObject(obj)
+	return ok && pod.Spec.NodeName != ""
+}
+
+func podImages(pod *v1.Pod) []string {
+	images := make([]string, len(pod.Spec.Containers))
+	for i, container := range pod.Spec.Containers {
+		images[i] = container.Image
+	}
+
+	return images
+}
+
 // registerPodEventHandlers sets up event handlers for the pod informers.
 func (l *Labeler) registerPodEventHandlers() error {
 	scheduledPods := cache.FilteringResourceEventHandler{
-		FilterFunc: func(obj any) bool {
-			pod, ok := obj.(*v1.Pod)
-			return ok && pod.Spec.NodeName != ""
-		},
-		Handler: l.getEventHandlers(),
+		FilterFunc: isScheduledPod,
+		Handler:    l.getEventHandlers(),
 	}
 
 	for name, informer := range map[string]cache.SharedIndexInformer{
@@ -784,7 +806,7 @@ func (l *Labeler) handlePodLabelEvent(obj any, deleting bool) error {
 		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
 	}()
 
-	pod, ok := obj.(*v1.Pod)
+	pod, ok := podFromEventObject(obj)
 	if !ok {
 		return fmt.Errorf("pod event: expected Pod object, got %T", obj)
 	}

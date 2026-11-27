@@ -31,9 +31,9 @@ tests:
       - failedTemplate:
           errorPattern: "labeler.nvidiaLabeler.enabled is false, but these components are enabled: global.nicHealthMonitor.enabled\\."
 
-  - it: treats a quoted "false" as off
+  - it: lists every enabled reader
     set:
-      labeler.nvidiaLabeler.enabled: "false"
+      labeler.nvidiaLabeler.enabled: false
     asserts:
       - failedTemplate:
           errorPattern: "global.gpuHealthMonitor.enabled, global.syslogHealthMonitor.enabled, global.metadataCollector.enabled\\."

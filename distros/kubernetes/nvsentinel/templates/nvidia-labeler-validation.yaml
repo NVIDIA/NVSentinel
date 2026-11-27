@@ -17,12 +17,11 @@
 # (managed: "false"). The GPU, syslog and NIC health monitors and metadata-collector
 # select nodes on these labels. With nvidia-labeler off, nothing removes the labels,
 # so those pods would stay on an opted-out node. Subcharts cannot read each other's
-# values, so it is checked here. Values are compared as rendered strings, so a
-# quoted "false" still counts as off.
+# values, so it is checked here, with the same truthiness as the labeler chart's
+# templates: a disabled nvidia-labeler renders no objects.
 {{- $global := .Values.global | default dict }}
 {{- if ($global.labeler | default dict).enabled }}
-{{- $nvidiaLabelerEnabled := ((.Values.labeler | default dict).nvidiaLabeler | default dict).enabled }}
-{{- if and (not (kindIs "invalid" $nvidiaLabelerEnabled)) (eq (lower (printf "%v" $nvidiaLabelerEnabled)) "false") }}
+{{- if not ((.Values.labeler | default dict).nvidiaLabeler | default dict).enabled }}
 {{- $readers := list }}
 {{- range $toggle := list "gpuHealthMonitor" "syslogHealthMonitor" "nicHealthMonitor" "metadataCollector" }}
 {{- if (index $global $toggle | default dict).enabled }}

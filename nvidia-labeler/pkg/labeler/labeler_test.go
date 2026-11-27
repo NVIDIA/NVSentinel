@@ -17,7 +17,6 @@ package labeler
 import (
 	"context"
 	"fmt"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,7 +38,6 @@ import (
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
@@ -1313,21 +1311,6 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					driverObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDriverIndex, tt.existingNode.Name)
 					return len(dcgmObjs) > 0 || len(driverObjs) > 0
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
-
-				// Restore original labels - reconcileAllNodes() may have removed them
-				// before pods were indexed during the initial sync race.
-				// Uses RetryOnConflict because the labeler may concurrently update
-				// the same node during its initial reconciliation.
-				err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-					node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
-					if err != nil {
-						return err
-					}
-					maps.Copy(node.Labels, tt.existingNode.Labels)
-					_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-					return err
-				})
-				require.NoError(t, err, "failed to restore node labels")
 			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
@@ -1770,7 +1753,14 @@ func TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testi
 	go func() {
 		reconcileDone <- l.reconcileNodeLabels(nodeName, nil)
 	}()
-	<-reconcileReachedPatch
+
+	select {
+	case <-reconcileReachedPatch:
+	case err := <-reconcileDone:
+		t.Fatalf("reconcile returned without patching: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile did not reach the patch")
+	}
 
 	// Informer stores remove an object before invoking its delete handler.
 	require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
@@ -2017,4 +2007,56 @@ func TestIsPodReady(t *testing.T) {
 			assert.Equal(t, tt.want, isPodReady(pod))
 		})
 	}
+}
+
+// TestPodEventHandlers_ImageChangeWithoutReadinessChange_UpdatesDCGMLabel covers an
+// in-place DCGM image change on a bootstrapped node whose DCGM pod stays not ready.
+func TestPodEventHandlers_ImageChangeWithoutReadinessChange_UpdatesDCGMLabel(t *testing.T) {
+	node := &corev1.Node{
+		Name:        "test-node",
+		Labels:      map[string]string{DCGMVersionLabel: "3.x"},
+		Annotations: map[string]string{DCGMBootstrapCompletedAnnotation: "true"},
+	}
+	oldPod := &corev1.Pod{
+		Name:   "dcgm-pod",
+		UID:    "dcgm-pod-uid",
+		Labels: map[string]string{"app": "nvidia-dcgm"},
+		Spec: corev1.PodSpec{
+			NodeName:   node.Name,
+			Containers: []corev1.Container{{Image: "nvcr.io/nvidia/dcgm:3.3.0"}},
+		},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Spec.Containers[0].Image = "nvcr.io/nvidia/dcgm:4.1.0"
+
+	l, clientset := newLabelerWithCachedDriverPods(t, node, newPod)
+	l.getEventHandlers().OnUpdate(oldPod, newPod)
+
+	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "4.x", updated.Labels[DCGMVersionLabel])
+}
+
+// TestPodEventHandlers_DeleteTombstone_RemovesDriverLabel covers a driver pod delete
+// that the watch missed. The informer delivers it as a tombstone.
+func TestPodEventHandlers_DeleteTombstone_RemovesDriverLabel(t *testing.T) {
+	node := &corev1.Node{Name: "test-node", Labels: map[string]string{DriverInstalledLabel: LabelValueTrue}}
+	pod := &corev1.Pod{
+		Name:   "driver-pod",
+		UID:    "driver-pod-uid",
+		Labels: map[string]string{"app": "nvidia-driver-daemonset"},
+		Spec:   corev1.PodSpec{NodeName: node.Name},
+		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	}
+
+	// The pod is already gone from the cache, as after a relist.
+	l, clientset := newLabelerWithCachedDriverPods(t, node)
+	tombstone := cache.DeletedFinalStateUnknown{Key: "default/driver-pod", Obj: pod}
+
+	handler := cache.FilteringResourceEventHandler{FilterFunc: isScheduledPod, Handler: l.getEventHandlers()}
+	handler.OnDelete(tombstone)
+
+	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
 }
