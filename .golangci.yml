@@ -66,6 +66,15 @@ linters:
           deny:
             - pkg: github.com/nvidia/nvsentinel/metadata-collector
               desc: core code must not import the NVIDIA discovery (ADR-070, ADR-072)
+        # ADR-070 and ADR-077: the labeler is core code, and nvidia-labeler holds the NVIDIA detection.
+        labeler:
+          files:
+            - "**/labeler/**"
+            # nvidia-labeler/pkg/labeler matches the line above.
+            - "!**/nvidia-labeler/**"
+          deny:
+            - pkg: github.com/nvidia/nvsentinel/nvidia-labeler
+              desc: core code must not import the NVIDIA detection (ADR-070, ADR-077)
   exclusions:
     generated: lax
     presets:

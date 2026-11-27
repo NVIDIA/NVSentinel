@@ -1,0 +1,135 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if .Values.nvidiaLabeler.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "labeler.nvidiaLabeler.fullname" . }}
+  labels:
+    {{- include "labeler.nvidiaLabeler.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "labeler.nvidiaLabeler.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "labeler.nvidiaLabeler.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "labeler.nvidiaLabeler.fullname" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+        {{- with ((.Values.global).seLinuxOptions) }}
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      initContainers:
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nvidia-labeler
+          image: "{{ .Values.nvidiaLabeler.image.repository }}:{{ .Values.nvidiaLabeler.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.nvidiaLabeler.image.pullPolicy }}
+          args:
+            - "--metrics-port"
+            - "{{ .Values.global.metricsPort }}"
+            - "--kube-api-qps={{ if hasKey .Values "qps" }}{{ .Values.qps }}{{ else if hasKey (.Values.global | default dict) "qps" }}{{ .Values.global.qps }}{{ else }}5{{ end }}"
+            - "--kube-api-burst={{ if hasKey .Values "burst" }}{{ .Values.burst }}{{ else if hasKey (.Values.global | default dict) "burst" }}{{ .Values.global.burst }}{{ else }}10{{ end }}"
+            {{- if .Values.assumeDriverInstalled }}
+            - "--assume-driver-installed"
+            {{- end }}
+            {{- if .Values.dcgmAppLabel }}
+            - "--dcgm-app-label={{ .Values.dcgmAppLabel }}"
+            {{- end }}
+            {{- if .Values.driverAppLabel }}
+            - "--driver-app-label={{ .Values.driverAppLabel }}"
+            {{- end }}
+            {{- if .Values.gkeInstallerAppLabel }}
+            - "--gke-installer-app-label={{ .Values.gkeInstallerAppLabel }}"
+            {{- end }}
+            - "--require-dcgm-ready-for-bootstrap={{ .Values.requireDCGMReadyForBootstrap }}"
+            {{- if eq (include "labeler.assumeDCGMAvailable" .) "true" }}
+            - "--assume-dcgm-available"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          {{- if .Values.global.auditLogging.enabled }}
+          volumeMounts:
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      volumes:
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemPriorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+{{- end }}

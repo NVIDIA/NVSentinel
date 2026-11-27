@@ -2,27 +2,34 @@
 
 ## Overview
 
-The labeler module automatically applies labels to Kubernetes nodes, based on the GPU runtime components. It watches the DCGM and driver pods that the GPU Operator deploys, and it detects the Kata Containers runtime. This document describes all the Helm configuration options for system administrators.
+The labeler chart automatically applies labels to Kubernetes nodes. It runs two Deployments:
+
+- `nvidia-labeler` watches the DCGM and driver pods that the GPU Operator deploys, and writes the DCGM version and driver labels.
+- `labeler` detects the Kata Containers runtime and writes the device-count labels. It has no access to pods.
+
+This document describes all the Helm configuration options for system administrators.
 
 ## Labels Applied
 
 The labeler automatically manages these node labels:
 
-| Label | Values | Purpose |
-|-------|--------|---------|
-| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x` | DCGM major version detected from DCGM pods |
-| `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | NVIDIA driver pod status on node |
-| `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | Kata Containers runtime presence |
-| `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | Current GPU count from the configured class expression |
-| `nvsentinel.dgxc.nvidia.com/gpu.count.expected` | non-negative integer | Expected GPU count from override or learned hardware-class baseline |
-| `nvsentinel.dgxc.nvidia.com/nic.count.current` | non-negative integer | Current NIC count from the configured class expression |
-| `nvsentinel.dgxc.nvidia.com/nic.count.expected` | non-negative integer | Expected NIC count from override or learned hardware-class baseline |
+| Label | Values | Written by | Purpose |
+|-------|--------|------------|---------|
+| `nvsentinel.dgxc.nvidia.com/dcgm.version` | `3.x`, `4.x` | `nvidia-labeler` | DCGM major version detected from DCGM pods |
+| `nvsentinel.dgxc.nvidia.com/driver.installed` | `true`, `false` | `nvidia-labeler` | NVIDIA driver pod status on node |
+| `nvsentinel.dgxc.nvidia.com/kata.enabled` | `true`, `false` | `labeler` | Kata Containers runtime presence |
+| `nvsentinel.dgxc.nvidia.com/gpu.count.current` | non-negative integer | `labeler` | Current GPU count from the configured class expression |
+| `nvsentinel.dgxc.nvidia.com/gpu.count.expected` | non-negative integer | `labeler` | Expected GPU count from override or learned hardware-class baseline |
+| `nvsentinel.dgxc.nvidia.com/nic.count.current` | non-negative integer | `labeler` | Current NIC count from the configured class expression |
+| `nvsentinel.dgxc.nvidia.com/nic.count.expected` | non-negative integer | `labeler` | Expected NIC count from override or learned hardware-class baseline |
+
+`nvidia-labeler` also writes the `nvsentinel.dgxc.nvidia.com/dcgm-bootstrap-completed` node annotation. See [DCGM Bootstrap Gating](#dcgm-bootstrap-gating).
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-This value controls whether the chart deploys the labeler module in the cluster.
+This value controls whether the chart deploys the labeler chart, with both Deployments, in the cluster.
 
 ```yaml
 global:
@@ -30,9 +37,23 @@ global:
     enabled: true
 ```
 
+This value controls whether the chart deploys `nvidia-labeler`. It also sets its image.
+
+```yaml
+labeler:
+  nvidiaLabeler:
+    enabled: true
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/nvidia-labeler
+      pullPolicy: IfNotPresent
+      tag: ""  # Defaults to global.image.tag
+```
+
+The GPU, syslog and NIC health monitors and metadata-collector select nodes on the `dcgm.version` and `driver.installed` labels. `nvidia-labeler` removes these labels from a node that is opted out with `nvsentinel.dgxc.nvidia.com/managed=false`, so that those pods leave the node. Thus, the chart refuses `nvidiaLabeler.enabled: false` while one of these components is enabled. The chart cannot see automation outside NVSentinel. Before you turn off `nvidia-labeler`, make sure that no other automation reads these labels: nothing updates them after that.
+
 ### Resources
 
-This value defines the CPU and memory resource requests and limits for the labeler pod.
+This value defines the CPU and memory resource requests and limits for each of the two pods.
 
 ```yaml
 labeler:
@@ -47,7 +68,7 @@ labeler:
 
 ### Logging
 
-This value sets the verbosity level of the labeler logs.
+This value sets the verbosity level of the logs of both pods.
 
 ```yaml
 labeler:
@@ -56,7 +77,7 @@ labeler:
 
 ### Kubernetes API Rate Limits
 
-The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). If the labeler needs different limits, set the component values:
+Both pods inherit the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). If they need different limits, set the component values, which apply to both:
 
 ```yaml
 labeler:
@@ -74,7 +95,7 @@ The `qps` value has these effects:
 
 ## Pre-Installed Drivers
 
-This value tells the labeler that the NVIDIA drivers are installed directly on the host, not through GPU Operator driver containers. When this value is enabled, the labeler sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes that it manages (`nvidia.com/gpu.present=true`). The labeler excludes nodes that have the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. For example, a node has this label during external remediation. The labeler also skips driver pod detection.
+This value tells `nvidia-labeler` that the NVIDIA drivers are installed directly on the host, not through GPU Operator driver containers. When this value is enabled, `nvidia-labeler` sets `nvsentinel.dgxc.nvidia.com/driver.installed=true` on all GPU nodes that it manages (`nvidia.com/gpu.present=true`). It excludes nodes that have the opt-out label `nvsentinel.dgxc.nvidia.com/managed=false`. For example, a node has this label during external remediation. It also skips driver pod detection.
 
 ```yaml
 labeler:
@@ -83,7 +104,7 @@ labeler:
 
 ## DCGM Pod Discovery
 
-This value is a comma-separated list of values of the `app` pod label. The labeler uses these values to find the DCGM pod on each node. The default matches both the classic GPU Operator DCGM DaemonSet and the DaemonSet of GPUCluster (DRA) mode. Thus, the labeler finds the correct pod in both modes without a configuration for each cluster.
+This value is a comma-separated list of values of the `app` pod label. `nvidia-labeler` uses these values to find the DCGM pod on each node. The default matches both the classic GPU Operator DCGM DaemonSet and the DaemonSet of GPUCluster (DRA) mode. Thus, `nvidia-labeler` finds the correct pod in both modes without a configuration for each cluster.
 
 ```yaml
 labeler:
@@ -92,7 +113,7 @@ labeler:
 
 ## Driver Pod Discovery
 
-These values are the pod label values that the labeler uses to find the driver pod on each node:
+These values are the pod label values that `nvidia-labeler` uses to find the driver pod on each node:
 
 - the `app` label of the GPU Operator driver pod
 - the `k8s-app` label of the GKE driver installer pod
@@ -107,7 +128,7 @@ labeler:
 
 ## DCGM Bootstrap Gating
 
-This value controls whether the DCGM pod must be ready before the labeler sets the DCGM version label for the first time on a node.
+This value controls whether the DCGM pod must be ready before `nvidia-labeler` sets the DCGM version label for the first time on a node.
 
 ```yaml
 labeler:
@@ -314,7 +335,7 @@ The labeler checks both `katacontainers.io/kata-runtime` and `io.katacontainers.
 
 ## GPU Operator Integration
 
-The labeler watches for specific pod labels to detect DCGM and driver status.
+`nvidia-labeler` watches for specific pod labels to detect DCGM and driver status.
 
 ### Expected Pod Labels
 

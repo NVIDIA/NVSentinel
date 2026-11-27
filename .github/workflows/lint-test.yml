@@ -206,6 +206,7 @@ jobs:
           - health-events-analyzer
           - fault-quarantine
           - labeler
+          - nvidia-labeler
           - metadata-collector
           - pod-device-mapper
           - node-drainer

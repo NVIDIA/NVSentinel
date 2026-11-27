@@ -120,6 +120,23 @@ builds:
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
 
+  - id: nvidia-labeler
+    dir: nvidia-labeler
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "Labels nodes with the DCGM version and NVIDIA driver status"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel NVIDIA Labeler"
+      org.opencontainers.image.description: "Labels nodes with the DCGM version and NVIDIA driver status"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
   - id: pod-device-mapper
     dir: pod-device-mapper
     main: .

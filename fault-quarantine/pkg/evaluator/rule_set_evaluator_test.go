@@ -20,7 +20,6 @@ import (
 	"reflect"
 	"testing"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -45,6 +44,17 @@ func (m *MockRuleEvaluator) Evaluate(
 	healthEvent *protos.HealthEvent,
 ) (bool, error) {
 	return m.result, m.err
+}
+
+// joinedErrors returns the errors that errors.Join combined into err.
+func joinedErrors(err error) []error {
+	var joined interface{ Unwrap() []error }
+
+	if !errors.As(err, &joined) {
+		return nil
+	}
+
+	return joined.Unwrap()
 }
 
 func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
@@ -124,8 +134,8 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("Expected error, got nil")
-				} else if merr, ok := err.(*multierror.Error); !ok || len(merr.Errors) == 0 {
-					t.Errorf("Expected multierror with errors, got %v", err)
+				} else if len(joinedErrors(err)) == 0 {
+					t.Errorf("Expected joined errors, got %v", err)
 				}
 			} else if err != nil {
 				t.Errorf("Expected no error, got %v", err)
@@ -235,6 +245,44 @@ func TestRuleSetEvaluator_EvaluationError_IsPermanent(t *testing.T) {
 		assert.Equal(t, common.RuleEvaluationFailed, result)
 		require.Error(t, err)
 		assert.True(t, coldstart.IsPermanentError(err), "%T: %v", ruleSetEvaluator, err)
+	}
+}
+
+// A rule set joins the errors of its rules. Cold start skips the event only when
+// every joined error is permanent; one transient error makes it retry.
+func TestRuleSetEvaluator_JoinedErrors_PermanentOnlyIfAllPermanent(t *testing.T) {
+	permanentRule, err := newHealthEventRule(`event.metadata["missing"].startsWith("value")`)
+	require.NoError(t, err)
+
+	transientRule := &MockRuleEvaluator{err: errors.New("API server unavailable")}
+	ruleSet := config.RuleSetMeta{Name: "RuleSet"}
+
+	tests := []struct {
+		name          string
+		rules         []RuleEvaluator
+		wantPermanent bool
+	}{
+		{
+			name:          "every rule fails permanently",
+			rules:         []RuleEvaluator{permanentRule, permanentRule},
+			wantPermanent: true,
+		},
+		{
+			name:          "one permanent and one transient failure",
+			rules:         []RuleEvaluator{permanentRule, transientRule},
+			wantPermanent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewAnyRuleSetEvaluator(tt.rules, ruleSet).Evaluate(context.Background(), &protos.HealthEvent{})
+			require.Error(t, err)
+			require.Len(t, joinedErrors(err), len(tt.rules))
+
+			// The reconciler joins the errors of every rule set it evaluates.
+			assert.Equal(t, tt.wantPermanent, coldstart.IsPermanentError(errors.Join(err)))
+		})
 	}
 }
 
@@ -375,8 +423,8 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("Expected error, got nil")
-				} else if merr, ok := err.(*multierror.Error); !ok || len(merr.Errors) == 0 {
-					t.Errorf("Expected multierror with errors, got %v", err)
+				} else if len(joinedErrors(err)) == 0 {
+					t.Errorf("Expected joined errors, got %v", err)
 				}
 			} else if err != nil {
 				t.Errorf("Expected no error, got %v", err)
@@ -449,13 +497,11 @@ func TestCreateEvaluators(t *testing.T) {
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("Expected error, got nil")
-				} else if merr, ok := err.(*multierror.Error); !ok || len(merr.Errors) == 0 {
-					t.Errorf("Expected multierror with errors, got %v", err)
+				} else if len(joinedErrors(err)) == 0 {
+					t.Errorf("Expected joined errors, got %v", err)
 				}
 			} else if err != nil {
-				if merr, ok := err.(*multierror.Error); ok && len(merr.Errors) > 0 {
-					t.Errorf("Expected no errors, but got multierror: %v", err)
-				}
+				t.Errorf("Expected no error, got %v", err)
 			}
 		})
 	}
