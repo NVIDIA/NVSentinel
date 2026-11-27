@@ -406,7 +406,9 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	eventID := utils.ExtractEventID(event)
 
-	if healthEventWithStatus.HealthEvent != nil && healthEventWithStatus.HealthEvent.Id == "" {
+	// The custom drain CR and the quarantine annotation entry of the event carry the record ID, not the id that the
+	// producer set, so HealthEvent.Id holds the record ID here. fault-quarantine replaces the id the same way.
+	if healthEventWithStatus.HealthEvent != nil {
 		if docID, err := utils.ExtractDocumentID(event); err == nil {
 			healthEventWithStatus.HealthEvent.Id = docID
 		}

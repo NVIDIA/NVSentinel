@@ -620,6 +620,7 @@ func isTerminalStatus(status model.Status) bool {
 func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
+	// HealthEvent.Id holds the record ID here. ProcessEventGeneric sets it.
 	eventID := healthEvent.HealthEvent.Id
 
 	if eventID == "" {
