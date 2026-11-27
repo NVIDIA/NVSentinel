@@ -1313,9 +1313,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
 			}
 
-			err = labeler.handleNodeEvent(tt.existingNode)
-			require.NoError(t, err, "failed to handle node event")
-
+			// Assert the result of the startup pass in Run, without another reconcile.
 			require.Eventually(t, func() bool {
 				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
 				if err != nil {
@@ -1739,6 +1737,10 @@ func TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testi
 
 	reconcileReachedPatch := make(chan struct{})
 	releaseReconcile := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseReconcile) }) }
+	// Unblocks the reconcile goroutine if an assertion fails while it waits in the reactor.
+	t.Cleanup(release)
 	var blocked atomic.Bool
 	fakeClient.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if blocked.CompareAndSwap(false, true) {
@@ -1773,7 +1775,7 @@ func TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testi
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	close(releaseReconcile)
+	release()
 	require.NoError(t, <-reconcileDone)
 	require.NoError(t, <-deleteDone)
 
