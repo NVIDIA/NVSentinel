@@ -61,9 +61,17 @@ const (
 // The status update did not match, so the queue retries and follows the stored record.
 var errDrainDecisionAlreadyRecorded = errors.New("drain decision already recorded")
 
+// builtInDrainCoveredFrom lists the node state label values that move to drain-succeeded when an event that recorded
+// the built-in drain is covered by the completed drain of another event.
+var builtInDrainCoveredFrom = []statemanager.NVSentinelStateLabelValue{
+	statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+}
+
 type eventStatus struct {
 	status    model.Status
 	createdAt time.Time
+	// builtInDrain is set once the event drains the node with the built-in drain. See markDrainSucceeded.
+	builtInDrain bool
 }
 
 type eventStatusMap map[string]eventStatus
@@ -654,15 +662,20 @@ func (r *Reconciler) executeDrainAction(ctx context.Context, action *evaluator.D
 		return r.executeCustomDrain(ctx, action, healthEvent, event, database, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictImmediate:
+		r.markBuiltInDrain(eventID, nodeName)
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
+
 		return r.executeImmediateEviction(ctx, action, healthEvent, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictWithTimeout:
+		r.markBuiltInDrain(eventID, nodeName)
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
+
 		return r.executeTimeoutEviction(ctx, action, healthEvent, eventID, action.PartialDrainEntity)
 
 	case evaluator.ActionCheckCompletion:
 		slog.DebugContext(ctx, "Executing ActionCheckCompletion", "node", nodeName)
+		r.markBuiltInDrain(eventID, nodeName)
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
 
 		return r.executeCheckCompletion(ctx, action, healthEvent, action.PartialDrainEntity)
@@ -706,6 +719,17 @@ func (r *Reconciler) setDrainScope(ds *queue.DrainSession, action *evaluator.Dra
 func (r *Reconciler) handleMarkAlreadyDrained(ctx context.Context, eventID, nodeName string,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
 	action *evaluator.DrainActionResult) error {
+	// An event that recorded the built-in drain ends here when the completed drain of another event covers it. That
+	// completed drain kept the node draining while this drain ran (see markDrainSucceeded), so this event moves the
+	// label and ends the draining state now. The recorded method, unlike the tracked state of the event, is still
+	// there when this pass is retried or node-drainer restarted.
+	if len(action.DrainSucceededFrom) == 0 &&
+		healthEvent.HealthEventStatus.GetDrainDecision().GetMethod() == model.DrainMethodBuiltIn {
+		covered := *action
+		covered.DrainSucceededFrom = builtInDrainCoveredFrom
+		action = &covered
+	}
+
 	r.clearEventStatus(eventID, nodeName)
 
 	err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, action)
@@ -959,9 +983,20 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 // Unlike the cancellation path, this does not check newerDrainInProgress. That check counts every processed
 // event, including a later event that only waits on the completed CR, and such an event is marked covered once
 // this one is drained, so it would never move the label. On the custom path a later event creates no CR of its
-// own while this one exists.
+// own while this one exists. Only another event that runs the built-in drain keeps the node draining.
 func (r *Reconciler) markDrainSucceeded(ctx context.Context, nodeName string,
 	from []statemanager.NVSentinelStateLabelValue) error {
+	// The custom drain and the built-in drain can run on the node at the same time when its labels change between
+	// two events, because each event keeps the drain method it recorded. That built-in drain moves the label and
+	// ends the draining state when it completes, or when its next pass finds it covered by this drain
+	// (handleMarkAlreadyDrained).
+	if r.builtInDrainInProgress(nodeName) {
+		slog.InfoContext(ctx, "A built-in drain of the node is in progress, keeping its draining state",
+			"node", nodeName)
+
+		return nil
+	}
+
 	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabelIfMatch(ctx, nodeName,
 		statemanager.DrainSucceededLabelValue, from...)
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -1468,11 +1503,37 @@ func (r *Reconciler) markEventInProgress(
 	}
 
 	r.nodeEventsMap[nodeName][eventID] = eventStatus{
-		status:    model.StatusInProgress,
-		createdAt: eventCreatedAt,
+		status:       model.StatusInProgress,
+		createdAt:    eventCreatedAt,
+		builtInDrain: r.nodeEventsMap[nodeName][eventID].builtInDrain,
 	}
 
 	slog.DebugContext(ctx, "Event marked as in progress", "node", nodeName, "eventID", eventID)
+}
+
+// markBuiltInDrain records that the tracked event drains the node with the built-in drain.
+func (r *Reconciler) markBuiltInDrain(eventID string, nodeName string) {
+	r.nodeEventsMapMu.Lock()
+	defer r.nodeEventsMapMu.Unlock()
+
+	if trackedEvent, exists := r.nodeEventsMap[nodeName][eventID]; exists {
+		trackedEvent.builtInDrain = true
+		r.nodeEventsMap[nodeName][eventID] = trackedEvent
+	}
+}
+
+// builtInDrainInProgress reports whether an event in progress drains the node with the built-in drain.
+func (r *Reconciler) builtInDrainInProgress(nodeName string) bool {
+	r.nodeEventsMapMu.Lock()
+	defer r.nodeEventsMapMu.Unlock()
+
+	for _, trackedEvent := range r.nodeEventsMap[nodeName] {
+		if trackedEvent.status == model.StatusInProgress && trackedEvent.builtInDrain {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *Reconciler) clearEventStatus(eventID string, nodeName string) {
