@@ -1630,6 +1630,9 @@ func TestNodeRequiresReconciliation(t *testing.T) {
 		{name: "gpu-present label change", mutate: func(n *corev1.Node) { n.Labels[gpuPresentLabel] = LabelValueTrue }, want: true},
 		{name: "DCGM label set by someone else", mutate: func(n *corev1.Node) { n.Labels[DCGMVersionLabel] = "4.x" }, want: true},
 		{name: "driver label set by someone else", mutate: func(n *corev1.Node) { n.Labels[DriverInstalledLabel] = LabelValueTrue }, want: true},
+		{name: "empty DCGM label added", mutate: func(n *corev1.Node) { n.Labels[DCGMVersionLabel] = "" }, want: true},
+		{name: "empty driver label added", mutate: func(n *corev1.Node) { n.Labels[DriverInstalledLabel] = "" }, want: true},
+		{name: "no change", mutate: func(*corev1.Node) {}, want: false},
 	}
 
 	for _, tt := range tests {
@@ -1929,21 +1932,6 @@ func requireCachedLabel(t *testing.T, l *Labeler, nodeName, key, value string) {
 		node, err := l.getNodeFromCache(nodeName)
 		return err == nil && node.Labels[key] == value
 	}, 10*time.Second, 10*time.Millisecond, "cache never showed %s=%s", key, value)
-}
-
-func requireCachedLabelAbsent(t *testing.T, l *Labeler, nodeName, key string) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		node, err := l.getNodeFromCache(nodeName)
-		if err != nil {
-			return false
-		}
-
-		_, exists := node.Labels[key]
-
-		return !exists
-	}, 10*time.Second, 10*time.Millisecond, "cache never dropped %s", key)
 }
 
 func TestIsPodReady(t *testing.T) {

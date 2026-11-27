@@ -536,7 +536,11 @@ func nodeRequiresReconciliation(oldObj, newObj any) bool {
 	}
 
 	for _, key := range []string{managed.ManagedLabelKey, gpuPresentLabel, DCGMVersionLabel, DriverInstalledLabel} {
-		if oldNode.Labels[key] != newNode.Labels[key] {
+		// Compare presence too: a label can have an empty value.
+		oldValue, oldExists := oldNode.Labels[key]
+		newValue, newExists := newNode.Labels[key]
+
+		if oldExists != newExists || oldValue != newValue {
 			return true
 		}
 	}
