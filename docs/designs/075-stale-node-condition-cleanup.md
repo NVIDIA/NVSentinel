@@ -16,46 +16,78 @@ Use a **Hash-named cleanup Job** with no Helm or Argo CD hook annotations. It re
 |---|---|---|
 | Retired check with a tracked fault | Publish matching healthy events; the normal writer clears the fault signal to `False`. Remove the obsolete condition after recovery completes. | Fault-quarantine removes the matching fault. It releases quarantine only when no tracked faults remain, under its normal rules. |
 | Retired check without a tracked fault | Remove the owned condition, including `True`, `False` or `Unknown`. | Leave node isolation unchanged. |
-| Disabled check | Remove only owned `False` conditions without tracked faults by default. Preserve `True`, `Unknown` and tracked faults. | Recovery requires explicit operator opt-in and verified repair. |
+| Disabled check | Remove only owned `False` conditions without tracked faults by default. Preserve `True`, `Unknown` and tracked faults. | Keep the tracked fault. An operator can opt in to recovery after verifying the repair; see [Opt-in recovery of disabled checks](#opt-in-recovery-of-disabled-checks). |
 
 The Job never acts on unknown types. It never edits quarantine annotations, taints, cordons, stored faults or maintenance requests directly. Recovery uses existing audit, metrics and downstream rules. It does not certify hardware health or cancel a reset already in progress.
 
 ## Implementation
 
-### Ownership and scope
+### Owner and trigger
+
+The NVSentinel Helm chart renders the Job, so the Helm release or GitOps application that installs NVSentinel owns it. There is no controller or schedule. The Job runs once when `nodeConditionCleanup.enabled` is `true` and an install, upgrade or sync renders a Job name that does not exist yet. The name changes only when an input changes, as described in [Job naming and GitOps](#job-naming-and-gitops). To run it again with the same inputs, an operator increments `nodeConditionCleanup.rerunGeneration`.
+
+Responsibilities are split:
+
+- NVSentinel maintainers own the known-check inventory and the retired list. They ship them in chart defaults with the release that retires a check.
+- Operators own enablement, node scope, dry-run and every recovery opt-in for disabled checks.
+
+The Job reports its results in its logs and exit status. A failed Job stays visible in the release or sync status.
+
+### Check inventory and scope
 
 Require a reviewed known-check inventory and an explicit retired list. Each retired entry must identify the expected publishing agents, component classes and event versions. Require the condition Reason to equal `<Type>IsHealthy` or `<Type>IsNotHealthy`. Use exact comparisons for both type and Reason. A matching suffix alone is insufficient. Preserve kubelet conditions, NPD source conditions and mismatched Reasons.
 
-Retirement withdraws an obsolete fault identity from service. Its last fault otherwise has no publisher that can ever resolve it. Maintainers must verify that retirement also removes the need for that fault's isolation. A renamed check needs replacement coverage and an explicit transition policy. Retirement is not evidence that damaged hardware was repaired.
+Retirement withdraws an obsolete fault identity from service. Its last fault otherwise has no publisher that can ever resolve it. Maintainers must verify that retirement also removes the need for that fault's isolation. Retirement is not evidence that damaged hardware was repaired.
+
+No check is renamed today. If a check is renamed, say from `OldCheck` to `NewCheck`, the old type is retired under this policy:
+
+1. Ship the monitor that publishes `NewCheck` first. Do not add `OldCheck` to the retired list in the same release.
+2. Add `OldCheck` to the retired list in a later release, after every selected node runs the new monitor. A monitor publishes its current faults when it starts, so a fault that is still present is already tracked under `NewCheck`.
+3. Recovering `OldCheck` then removes only the old identity. The node stays quarantined if `NewCheck` still reports the fault.
 
 An active supported type must never enter the retired list. `InfiniBandCharDeviceCheck` remains [enabled by default](../../distros/kubernetes/nvsentinel/charts/nic-health-monitor/values.yaml). `EthernetStateCheck` and `InfiniBandStateCheck` remain [distinct supported types](../../health-monitors/nic-health-monitor/pkg/checks/types.go). Dropping an XID from a supported check does not retire the whole type.
 
-Compute disabled candidates only where chart settings fully describe emitted names and node scope. Start with NIC `enabledChecks`. Account for monitor enablement, defaults and node selection. Exclude dynamic policies, external publishers and uncertain inventories. Reject overlapping retired/enabled sets and unknown configured entries before writes. Missing or invalid ownership evidence requires manual review, including tracked faults whose condition is absent.
+The Job treats a check as disabled on a node only when the chart settings say exactly which checks run on which nodes. Today that is true only for the nic-health-monitor `enabledChecks` list. To decide, the Job reads whether the monitor is enabled, its default checks and its node selector. A check from any other source counts as unknown, and the Job leaves it alone. Examples are a check that a custom monitor or an external publisher sends, or one whose name depends on runtime policy.
+
+Before any write, the Job fails if:
+
+- a check is in both the retired list and the enabled list;
+- a configured entry is not in the known-check inventory.
+
+If the Job cannot prove that NVSentinel owns a condition or fault, it reports it for manual review. This includes a tracked fault whose condition is missing.
 
 ### Recovery of retired faults
 
 1. List selected Nodes, record each Node's UID, and verify the ownership guard. Read `quarantineHealthEvent` using the existing parser, including its legacy single-event format.
 2. For each retired type, select every matching tracked identity. Reject unexpected agents, components, versions or malformed annotation data. Never infer identity from condition text.
-3. Build healthy events from those identities. Preserve `nodeName`, `agent`, `componentClass`, `checkName`, `version`, `entitiesImpacted` and `errorCode`. Set `isHealthy=true`, `isFatal=false`, action `NONE` and `processingStrategy=EXECUTE_REMEDIATION`. Clear inherited force/skip overrides. Assign a new event ID and timestamp. Reuse the batch idempotency key on transport retries. Add audit metadata containing the retirement entry and input digest. Set the event's `metadata` key `nvsentinel.nvidia.com/node-uid` to the Node UID recorded in step 1.
-4. Immediately before publishing each recovery event, re-read the Node and require the UID recorded in step 1. Fault-quarantine matches faults by agent, component, check, node name and version, with no Node UID, so a recovery built from a Node that was replaced under the same name could clear a fault on the replacement. Treat a mismatch as a recovery failure and publish nothing for that Node. Then publish through platform-connectors using the monitor API. Keep all normal transformations, persistence and downstream processing. Verify that configured overrides and deduplication permit recovery; a suppressed or altered recovery is a failure.
+3. Build healthy events from those identities. Preserve `nodeName`, `agent`, `componentClass`, `checkName`, `version`, `entitiesImpacted` and `errorCode`. Set `isHealthy=true`, `isFatal=false`, action `NONE` and `processingStrategy=EXECUTE_REMEDIATION`. Clear inherited force/skip overrides. Set `message` to `Healthy event for retired check <checkName>, published by the node condition cleanup Job`, so event history and logs show that the monitor did not send it. The condition writer ignores the message of a healthy event, so this does not change the condition. Assign a new event ID and timestamp. Reuse the batch idempotency key on transport retries. Add audit metadata containing the retirement entry and input digest. Set the event's `metadata` key `nvsentinel.nvidia.com/node-uid` to the Node UID recorded in step 1.
+4. Immediately before publishing each recovery event, re-read the Node and require the UID recorded in step 1. Fault-quarantine matches faults by agent, component, check, node name and version, with no Node UID, so a recovery built from a Node that was replaced under the same name could clear a fault on the replacement. Treat a mismatch as a recovery failure and publish nothing for that Node. Then publish through platform-connectors using the monitor API. Keep all normal transformations, persistence and downstream processing. Verify that configured overrides and deduplication permit recovery; a suppressed or altered recovery is a failure. An override alters the recovery only if it changes `isHealthy`, `isFatal`, `recommendedAction` or `processingStrategy` to another value. A rule that sets the values that the Job already set permits it.
 5. Observe the condition and quarantine annotation through a Node informer with a bounded deadline. Require matching tracked identities to disappear and the condition writer to finish recovery to `False`. The writer clears matching messages and sets `False` when none remain. Other faults can keep the node quarantined.
    The pre-publication check alone cannot close the race: a Node can be replaced after the check but before the event is processed. So the UID is fenced end to end. Any consumer that mutates Node state for an event carrying `nvsentinel.nvidia.com/node-uid` must read the live Node and require that UID before each mutation, including retries. This covers fault-quarantine's annotation update and quarantine release, and platform-connectors' condition writer. On a mismatch, the consumer leaves the Node unchanged, logs and counts the stale recovery, and acknowledges the event so it does not retry. Events without the key keep today's behavior, so monitors are unaffected.
 6. Re-read the Node before removing the obsolete condition. Require the same UID, ownership guard and no remaining tracked fault for that type. Report partial recovery as failure; never replace it with condition-only deletion.
 
-For merely-disabled checks, removal of monitoring does not withdraw the fault or prove repair. Keep faults by default. Any recovery opt-in must name checks and nodes, record operator verification, and use the same event path. Preserve disabled `Unknown` conditions even with opt-in. [Issue #1992](https://github.com/NVIDIA/NVSentinel/issues/1992) explicitly rejects quiet-period XID recovery. [ADR-059](059-derived-condition-recovery.md) provides verified, identity-scoped recovery for configured derived rules. Use that procedure for supported derived checks; do not bypass its verification or history boundary.
+### Opt-in recovery of disabled checks
 
-### Verified recovery path
+Disabling a check stops monitoring. It does not withdraw the fault or prove repair, so the Job keeps the faults of disabled checks by default. An operator can still have a valid reason to clear them. For example, a check was disabled because it was noisy, and its faults are no longer treated as fatal. The condition and quarantine annotation then stay on the node with nothing to clear them.
 
-These code references describe the implementation at `a161c861`:
+For that case, `nodeConditionCleanup.disabledRecovery` lists recovery requests. Each entry must name:
 
-- [HealthEvent schema](../../data-models/protobufs/health_event.proto), lines 78–85 and 118–139: `PlatformConnector.HealthEventOccurredV1(HealthEvents)` and the event fields above.
-- [Monitor dial path](../../health-monitors/nic-health-monitor/main.go), lines 175–193: monitors use the shared publisher with the node-local Unix domain socket or the Deployment endpoint. [Publisher transport](../../commons/pkg/healthpub/dial.go), lines 75–122, selects `HEALTH_PUBLISH_TARGET` and requires the direct-mode token.
-- [Quarantine identity](../../fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go), lines 33–45 and 403–425: matching uses agent, component, check, node and version, then entities and error codes. Empty entity/code lists can broaden recovery; preserve the recorded scope.
-- [Quarantine recovery](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 1804–1874: healthy events remove matching entities. Remaining faults keep quarantine active. [Annotation update](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 2022–2087, retains the final entry until unquarantine succeeds.
-- [Session release](../../fault-quarantine/pkg/reconciler/reconciler.go), lines 2101–2176 and 2288–2334: normal recovery removes session annotations and actions. It preserves pre-existing taints and cordons and can require validation. [ADR-062](062-fault-quarantine-release-at-session-end.md) explains the session boundary.
-- [Condition writer](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go), lines 244–310 and 347–370: `checkName` selects the condition. Healthy events clear matching entity/error messages; an entity-free event clears all messages. An empty message set becomes `False`, not a deleted condition. Reasons follow the ownership convention at lines 1077–1084.
+- the check;
+- the nodes, by name or by a label selector that the Job resolves once and logs;
+- who verified the repair and why, which the Job adds to the audit metadata of each recovery event.
 
-Thus recovery resolves the fault through one event pipeline. The Job does not call fault-quarantine directly. It does not delete event history. MongoDB and PostgreSQL use the same ingestion contract.
+The Job validates each entry like a retired entry: the check must be known and disabled on every named node. It then recovers the tracked faults through the steps above, with the same UID fence and completion checks. An empty list, the default, recovers nothing. The Job never removes a disabled `Unknown` condition, even with opt-in.
+
+[Issue #1992](https://github.com/NVIDIA/NVSentinel/issues/1992) explicitly rejects quiet-period XID recovery. [ADR-059](059-derived-condition-recovery.md) provides verified, identity-scoped recovery for configured derived rules. Use that procedure for supported derived checks; do not bypass its verification or history boundary.
+
+### Why recovery uses the event pipeline
+
+The Job sends recovery events through platform-connectors instead of editing Node state itself. The existing consumers then clear the fault with their normal rules:
+
+- [Fault-quarantine](../../fault-quarantine/pkg/reconciler/reconciler.go) removes the matching tracked fault. It keeps the node quarantined while other faults remain, and it releases the quarantine session under [ADR-062](062-fault-quarantine-release-at-session-end.md).
+- The [condition writer](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go) clears the matching messages and sets the condition to `False` when none remain.
+
+Fault-quarantine [matches faults](../../fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go) by agent, component class, check, node and version, then by entities and error codes. Empty entity or error code lists match more faults, so the recovery keeps the recorded scope. The Job does not call fault-quarantine directly or delete event history, and MongoDB and PostgreSQL use the same ingestion path.
 
 ### Condition-only fallback
 
@@ -63,21 +95,21 @@ Delete a condition without publishing only when no tracked fault for its type ex
 
 A `False` condition with a tracked fault still requires recovery. Malformed annotations, unresolved identities and ingestion failures never qualify for fallback. After publishing recovery, wait for both writers as described above before deleting the resulting `False` condition. The normal writer clears health state; this final deletion removes the unused display entry.
 
-Use conditional JSON patches that test Node UID, the observed annotation state and conditions before replacement. Re-read and recompute after conflicts. The existing [conditionsPatch](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go), lines 175–187, shows the conditions test. Preserve all retained conditions and concurrent updates. A failed read must never become an empty replacement array.
+Use conditional JSON patches that test Node UID, the observed annotation state and conditions before replacement. Re-read and recompute after conflicts. The existing [conditionsPatch](../../platform-connectors/pkg/connectors/kubernetes/process_node_events.go) shows the conditions test. Preserve all retained conditions and concurrent updates. A failed read must never become an empty replacement array.
 
 ### Permissions and execution
 
 Use a dedicated ServiceAccount with `get,list,watch` on Nodes and `patch` on `nodes/status` for final deletion. Dry-run needs only Node reads. Grant no Node-spec writes, evictions, Secret reads, datastore access or TokenReview access to the Job.
 
-Publishing is a separate authority from Kubernetes RBAC. Project a pod-bound token for the platform-connector audience. Enable the Job's ServiceAccount in the connector's cross-node allowlist only when cleanup is enabled. The [node-binding interceptor](../../platform-connectors/pkg/auth/nodebinding.go), lines 16–75 and 224–228, defines that authority. Allow the required network path and mount the public CA bundle for Deployment mode. Socket mode mounts the local UDS and schedules the Job alongside a ready connector. Never weaken authentication to send events under the original agent name.
+Publishing is a separate authority from Kubernetes RBAC. Project a pod-bound token for the platform-connector audience. Enable the Job's ServiceAccount in the connector's cross-node allowlist only when cleanup is enabled. The [node-binding interceptor](../../platform-connectors/pkg/auth/nodebinding.go) defines that authority. Allow the required network path and mount the public CA bundle for Deployment mode. Socket mode mounts the local UDS and schedules the Job alongside a ready connector. Never weaken authentication to send events under the original agent name.
 
-A gRPC reply has different meanings by topology. The [node-local role](../../platform-connectors/pkg/nodelocal/role.go), lines 16–21, acknowledges queue acceptance. The [central role](../../platform-connectors/pkg/central/role.go), lines 16–30, processes inside the request and uses idempotency keys. Queue acceptance alone never proves recovery. Completion requires observed downstream state, including annotation removal for every selected fault. Timeouts leave incomplete work visible for rerun. No fallback bypasses a failed publisher.
+A gRPC reply has different meanings by topology. The [node-local role](../../platform-connectors/pkg/nodelocal/role.go) acknowledges queue acceptance. The [central role](../../platform-connectors/pkg/central/role.go) processes inside the request and uses idempotency keys. Queue acceptance alone never proves recovery. Completion requires observed downstream state, including annotation removal for every selected fault. Timeouts leave incomplete work visible for rerun. No fallback bypasses a failed publisher.
 
 Use context cancellation, paginated lists, an informer, bounded workers, QPS limits and bounded conflict retries. Set Job deadlines and attempt limits for the fleet size. Exit nonzero on partial failure. Log input digests, Node UIDs, identities and outcome counts without copying diagnostic messages. Recovery may produce existing audit records and metrics; repeat publication must leave node state unchanged.
 
 ### Job naming and GitOps
 
-Hash every effective input and the pod specification into the Job name. Include inventories, policies, scope, dry-run, image, command version and an explicit rerun generation. Bundle immutable inputs with that Job. Changed inputs create a new name instead of updating an immutable Job template. An unchanged completed Job stays completed. Recovery itself remains idempotent after retries or manual recreation.
+Hash every effective input and the pod specification into the Job name. Include inventories, policies, `disabledRecovery` entries, scope, dry-run, image, command version and an explicit rerun generation. Bundle immutable inputs with that Job. Changed inputs create a new name instead of updating an immutable Job template. An unchanged completed Job stays completed. Recovery itself remains idempotent after retries or manual recreation.
 
 `generateName` supplies uniqueness but no stable desired identity:
 
@@ -89,6 +121,18 @@ Hash every effective input and the pod specification into the Job name. Include 
 
 These are identity constraints, not a promise that every tool accepts unnamed ordinary Jobs. Retain the current completed or failed Job without TTL deletion. Argo CD self-heal, Flux Kustomizations, or HelmRelease drift correction can recreate a deleted desired Job. Prune old hash names through Helm upgrades or enabled GitOps pruning after saving summaries. Document manual removal when pruning is disabled. Use rerun generation instead of routine Force/Replace annotations. Job failure can affect sync/release status; ingestion readiness stays independent.
 
+### Faults reclassified by an override
+
+[Issue #2520](https://github.com/NVIDIA/NVSentinel/issues/2520), now tracked here, reports a third kind of stale state. An override rule now classifies a recorded fault as healthy or non-fatal, but the check is active and its monitor still runs. A monitor that publishes on transitions does not send the steady fault again, so the new rule never applies. The condition stays until the monitor restarts. When `global.dryRun` is `false`, the quarantine stays too.
+
+There is no reviewed list for this case, so the candidates must be computed. That needs the stored events, and the Job has no datastore access. So platform-connectors computes the candidates when it starts with an override rule set that it has not checked before:
+
+1. For each tracked fault of an NVSentinel-owned condition that is `True`, read the latest stored unhealthy event with the same identity.
+2. Run that event through the current transformers. It is a candidate if the result is healthy or no longer fatal.
+3. By default, only log and count the candidates. With `platformConnector.overrideRecovery.enabled`, publish recovery events built as in step 3 of [Recovery of retired faults](#recovery-of-retired-faults), with the message `Healthy event for check <checkName>, published after an override change`. The UID fence and the completion rules apply unchanged.
+
+A candidate whose check is not in the known-check inventory may be a missing retirement entry. It is only reported, never recovered.
+
 ### Rollout and hook migration
 
 The Hash-named cleanup Job supersedes the cleanup hook. Keep the legacy hook for one transition release, disabled by default. Warn in chart notes when it is enabled. Reject simultaneous enablement of both mechanisms. Map `nodeConditionCleanup.deprecatedConditions` into the retired candidates during explicit migration, then validate every entry against the retirement inventory. Existing lists may contain merely-disabled checks; reject those entries rather than silently converting them to recovery requests.
@@ -96,6 +140,8 @@ The Hash-named cleanup Job supersedes the cleanup hook. Keep the legacy hook for
 After that release, remove hook execution while retaining its value keys as deprecated aliases for the new Job. Require explicit migration approval before any old configuration enables recovery. Keep defaults disabled and lists empty. Preserve retired entries across supported skipped-release upgrades. Document this transition inline in values and release notes before implementation ships.
 
 Before enabling cleanup, observe termination of old publishers and connector pods that can hold their queued batches. This includes both topologies during coexistence under [ADR-052](052-deployment-platform-connector.md). Finish downstream processing of accepted old faults before recovery. Never infer completion from a delay. Run cleanup in a separate configuration change after this barrier.
+
+Recovery does not clear the in-memory state of a monitor that still runs, which matters only for opt-in recovery of a disabled check. A monitor publishes on transitions, so a stale entry in its memory publishes nothing. If the monitor later sends a healthy event for that fault, fault-quarantine finds no tracked fault and skips the event, and the condition is already `False`.
 
 Run dry-run first on an explicit node selector. Export candidate identities for audit. Review retirement coverage and approve recovery effects before enabling writes. Expand scope after checking results. Disable and remove older cleanup Jobs before policy changes or rollback. Rollback stops future cleanup but cannot retract recovery events or restore deleted conditions. Never restore snapshots over newer health state.
 
@@ -107,7 +153,7 @@ Run dry-run first on an explicit node selector. Export candidate identities for 
 - Test retired faults end to end through gRPC, storage, condition clearing and quarantine release on MongoDB and PostgreSQL. Include both connector topologies and mixed versions.
 - Verify another fault keeps the node cordoned. Preserve pre-existing isolation and normal validation. A healthy node must receive no cordon, drain, reset or reboot.
 - Test every agent/component/version/entity/error identity, multiple faults, overrides, deduplication, repeated publication and interrupted recovery. No partial failure may cause fallback deletion.
-- Verify disabled faults remain without explicit opt-in. Test no-tracked-fault deletion separately, including retired `True` and `False` with a tracked fault.
+- Verify disabled faults remain without explicit opt-in. Reject `disabledRecovery` entries with an unknown check, a check that is enabled on a named node, or no verification record. Test that a valid entry recovers only the named checks on the named nodes. Test no-tracked-fault deletion separately, including retired `True` and `False` with a tracked fault.
 - Cover denial, cancellation, timeout, throttling, conflicts and unavailable ingestion. Bound completion observation; prove queue acknowledgment alone cannot mark success.
 - Render charts for migration conflicts, aliases, inventories, authentication and node scope. Test Helm, Argo CD and Flux naming, unchanged completion, rerun, pruning, failures and rollback.
 - Test the rollout barrier with queued old batches. Measure memory, API rates and completion time before fleet rollout.
