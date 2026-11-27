@@ -268,7 +268,7 @@ kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
 | --- | --- |
 | `quarantined` | fault-quarantine cordoned the node. The drain did not start yet. |
 | `draining` | The drain started. node-drainer evicts the pods from the node. |
-| `drain-succeeded` | node-drainer evicted all pods. The node is ready for maintenance. |
+| `drain-succeeded` | The drain is complete, or the health event skips the drain (`drainOverrides.skip`). The node is ready for maintenance. |
 | `drain-failed` | node-drainer failed to evict all pods from the node. |
 
 If the value is `quarantined` or `draining`, run the command again after a few seconds.

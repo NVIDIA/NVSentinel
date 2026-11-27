@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,6 +48,19 @@ func newTestStateManager(nodeName string, startingNodeLabels map[string]string) 
 		return nil, nil, fmt.Errorf("failed to create test node: %v", err)
 	}
 	return ctx, &stateManager{clientSet: clientSet}, nil
+}
+
+// countNodeUpdates returns how many node updates the fake client set received, including rejected ones.
+func countNodeUpdates(manager *stateManager) int {
+	updates := 0
+
+	for _, action := range manager.clientSet.(*fake.Clientset).Actions() {
+		if action.Matches("update", "nodes") {
+			updates++
+		}
+	}
+
+	return updates
 }
 
 func TestUpdateNVSentinelStateNodeLabelWithGetFailure(t *testing.T) {
@@ -241,6 +255,246 @@ func TestRemoveNVSentinelStateNodeLabelIfMatch_ConcurrentNewerValue_PreservesLab
 	node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, string(QuarantinedLabelValue), node.Labels[NVSentinelStateLabelKey])
+}
+
+// The expected values in the UpdateNVSentinelStateNodeLabelIfMatch tests are the ones node-drainer passes:
+// quarantined or draining when a drain CR completed, and only quarantined when the drain is skipped.
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_MatchingValue_SetsLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  NVSentinelStateLabelValue
+		expected []NVSentinelStateLabelValue
+	}{
+		{
+			name:     "quarantined when a drain CR completed",
+			current:  QuarantinedLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue, DrainingLabelValue},
+		},
+		{
+			name:     "draining when a drain CR completed",
+			current:  DrainingLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue, DrainingLabelValue},
+		},
+		{
+			name:     "quarantined when the drain is skipped",
+			current:  QuarantinedLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+				NVSentinelStateLabelKey: string(tt.current),
+			})
+			require.NoError(t, err)
+
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+				ctx, testNodeName, DrainSucceededLabelValue, tt.expected...)
+
+			assert.True(t, nodeModified)
+			assert.NoError(t, err)
+			node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, string(DrainSucceededLabelValue), node.Labels[NVSentinelStateLabelKey])
+		})
+	}
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_NonMatchingValue_PreservesLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  NVSentinelStateLabelValue
+		expected []NVSentinelStateLabelValue
+	}{
+		{
+			name:     "remediating when a drain CR completed",
+			current:  RemediatingLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue, DrainingLabelValue},
+		},
+		{
+			name:     "drain-succeeded when a drain CR completed",
+			current:  DrainSucceededLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue, DrainingLabelValue},
+		},
+		{
+			name:     "draining when the drain is skipped",
+			current:  DrainingLabelValue,
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+				NVSentinelStateLabelKey: string(tt.current),
+			})
+			require.NoError(t, err)
+
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+				ctx, testNodeName, DrainSucceededLabelValue, tt.expected...)
+
+			assert.False(t, nodeModified)
+			assert.NoError(t, err)
+			assert.Zero(t, countNodeUpdates(manager), "a value outside the expected set should not be written")
+			node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, string(tt.current), node.Labels[NVSentinelStateLabelKey])
+		})
+	}
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_MissingLabel_DoesNotAddLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected []NVSentinelStateLabelValue
+	}{
+		{
+			name:     "drain CR completed",
+			expected: []NVSentinelStateLabelValue{QuarantinedLabelValue, DrainingLabelValue},
+		},
+		{
+			// A missing label is not an empty value.
+			name:     "empty expected value",
+			expected: []NVSentinelStateLabelValue{""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, manager, err := newTestStateManager(testNodeName, make(map[string]string))
+			require.NoError(t, err)
+
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+				ctx, testNodeName, DrainSucceededLabelValue, tt.expected...)
+
+			assert.False(t, nodeModified)
+			assert.NoError(t, err)
+			assert.Zero(t, countNodeUpdates(manager), "a missing label should not be added")
+			node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.NotContains(t, node.Labels, NVSentinelStateLabelKey)
+		})
+	}
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_ConcurrentChange_KeepsNewerStateAfterConflict(t *testing.T) {
+	tests := []struct {
+		name string
+		// newerLabels are written by another client between the Get and the Update.
+		newerLabels map[string]string
+	}{
+		{
+			name:        "moved to drain-failed",
+			newerLabels: map[string]string{NVSentinelStateLabelKey: string(DrainFailedLabelValue)},
+		},
+		{
+			// A healthy event removes the label.
+			name:        "removed",
+			newerLabels: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+				NVSentinelStateLabelKey: string(DrainingLabelValue),
+			})
+			require.NoError(t, err)
+
+			clientSet := manager.clientSet.(*fake.Clientset)
+			conflictSent := false
+			clientSet.Fake.PrependReactor("update", "nodes", func(ktesting.Action) (bool, runtime.Object, error) {
+				if conflictSent {
+					return false, nil, nil
+				}
+
+				conflictSent = true
+				newerNode := &v1.Node{Name: testNodeName, Labels: tt.newerLabels}
+				err := clientSet.Tracker().Update(v1.SchemeGroupVersion.WithResource("nodes"), newerNode, "")
+				assert.NoError(t, err)
+
+				return true, nil, errors.NewConflict(
+					schema.GroupResource{Group: "", Resource: "nodes"},
+					testNodeName,
+					fmt.Errorf("simulated concurrent label update"),
+				)
+			})
+
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+				ctx, testNodeName, DrainSucceededLabelValue, QuarantinedLabelValue, DrainingLabelValue)
+
+			assert.False(t, nodeModified)
+			assert.NoError(t, err)
+			assert.Equal(t, 1, countNodeUpdates(manager), "the retry should see the newer state and skip the update")
+			node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, tt.newerLabels, node.Labels)
+		})
+	}
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_ConflictWithMatchingValue_SetsLabelOnRetry(t *testing.T) {
+	ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+		NVSentinelStateLabelKey: string(DrainingLabelValue),
+	})
+	require.NoError(t, err)
+
+	clientSet := manager.clientSet.(*fake.Clientset)
+	conflictSent := false
+	clientSet.Fake.PrependReactor("update", "nodes", func(ktesting.Action) (bool, runtime.Object, error) {
+		if conflictSent {
+			return false, nil, nil
+		}
+
+		conflictSent = true
+
+		return true, nil, errors.NewConflict(
+			schema.GroupResource{Group: "", Resource: "nodes"},
+			testNodeName,
+			fmt.Errorf("simulated update conflict"),
+		)
+	})
+
+	nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+		ctx, testNodeName, DrainSucceededLabelValue, QuarantinedLabelValue, DrainingLabelValue)
+
+	assert.True(t, nodeModified)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, countNodeUpdates(manager), "the update should be retried after the conflict")
+	node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, string(DrainSucceededLabelValue), node.Labels[NVSentinelStateLabelKey])
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_UpdateFailure_ReturnsError(t *testing.T) {
+	ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+		NVSentinelStateLabelKey: string(DrainingLabelValue),
+	})
+	require.NoError(t, err)
+
+	updateErr := fmt.Errorf("update node error")
+	clientSet := manager.clientSet.(*fake.Clientset)
+	clientSet.Fake.PrependReactor("update", "nodes", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, updateErr
+	})
+
+	nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+		ctx, testNodeName, DrainSucceededLabelValue, QuarantinedLabelValue, DrainingLabelValue)
+
+	assert.False(t, nodeModified)
+	assert.ErrorIs(t, err, updateErr)
+}
+
+func TestUpdateNVSentinelStateNodeLabelIfMatch_NodeNotFound_ReturnsError(t *testing.T) {
+	manager := &stateManager{clientSet: fake.NewSimpleClientset()}
+
+	nodeModified, err := manager.UpdateNVSentinelStateNodeLabelIfMatch(
+		context.Background(), testNodeName, DrainSucceededLabelValue, QuarantinedLabelValue, DrainingLabelValue)
+
+	assert.False(t, nodeModified)
+	assert.True(t, errors.IsNotFound(err), "expected a NotFound error, got %v", err)
 }
 
 // Test that label removal from any state doesn't trigger validation errors.

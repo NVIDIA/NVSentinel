@@ -84,7 +84,7 @@
 //
 //	Drain Phase:
 //	  quarantined → draining       (node-drainer starts drain)
-//	  quarantined → drain-succeeded (node-drainer: no pods to drain)
+//	  quarantined → drain-succeeded (node-drainer: no pods to drain, or DrainOverrides.Skip)
 //	  draining → drain-succeeded   (node-drainer: drain completed)
 //	  draining → drain-failed      (node-drainer: drain failed)
 //
@@ -233,6 +233,8 @@ allows canceled drains and healthy events to remove labels from any state withou
 type StateManager interface {
 	UpdateNVSentinelStateNodeLabel(ctx context.Context, nodeName string,
 		newStateLabelValue NVSentinelStateLabelValue, removeStateLabel bool) (bool, error)
+	UpdateNVSentinelStateNodeLabelIfMatch(ctx context.Context, nodeName string,
+		newStateLabelValue NVSentinelStateLabelValue, expectedValues ...NVSentinelStateLabelValue) (bool, error)
 	RemoveNVSentinelStateNodeLabelIfMatch(ctx context.Context, nodeName string,
 		expectedValues ...NVSentinelStateLabelValue) (bool, error)
 }
@@ -323,6 +325,65 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 		if validationErr != nil {
 			return validationErr
 		}
+
+		return nil
+	})
+
+	return nodeModified, err
+}
+
+// UpdateNVSentinelStateNodeLabelIfMatch atomically sets the state label to newStateLabelValue only when its
+// latest value is one of expectedValues. A missing label is not added. As in RemoveNVSentinelStateNodeLabelIfMatch,
+// the check and the update share the conflict-retried read/update loop, so a newer state written concurrently is
+// kept. The caller names the states it may replace, so the transition is not validated and no unexpected-transition
+// metric is counted.
+func (manager *stateManager) UpdateNVSentinelStateNodeLabelIfMatch(
+	ctx context.Context,
+	nodeName string,
+	newStateLabelValue NVSentinelStateLabelValue,
+	expectedValues ...NVSentinelStateLabelValue,
+) (bool, error) {
+	nodeModified := false
+
+	err := retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
+		node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		currentValue, exists := node.Labels[NVSentinelStateLabelKey]
+		if !exists {
+			slog.Info("Skipping conditional label update because the state label is absent",
+				"node", nodeName,
+				"label", NVSentinelStateLabelKey,
+				"target", newStateLabelValue)
+
+			return nil
+		}
+
+		if !slices.Contains(expectedValues, NVSentinelStateLabelValue(currentValue)) {
+			slog.Info("Skipping conditional label update because the current value is not expected",
+				"node", nodeName,
+				"label", NVSentinelStateLabelKey,
+				"value", currentValue,
+				"target", newStateLabelValue)
+
+			return nil
+		}
+
+		node.Labels[NVSentinelStateLabelKey] = string(newStateLabelValue)
+
+		if _, err = manager.clientSet.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("failed to update node %s to conditionally set label: %w", nodeName, err)
+		}
+
+		nodeModified = true
+
+		slog.Info("Label conditionally updated successfully for node",
+			"label", NVSentinelStateLabelKey,
+			"previousValue", currentValue,
+			"value", newStateLabelValue,
+			"node", nodeName)
 
 		return nil
 	})

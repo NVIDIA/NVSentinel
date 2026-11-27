@@ -74,7 +74,7 @@ The State Manager provides:
 | (no label)                 | Any                  | Healthy node, no active fault handling | No       |
 | `quarantined`              | fault-quarantine     | Fault detected, node cordoned or tainted | No       |
 | `draining`                 | node-drainer         | Workload evacuation in progress        | No       |
-| `drain-succeeded`          | node-drainer         | All workloads evacuated successfully   | No       |
+| `drain-succeeded`          | node-drainer         | All workloads evacuated successfully, or drain skipped (`drainOverrides.skip`) | No       |
 | `drain-failed`             | node-drainer         | Workload evacuation failed             | Yes      |
 | `remediating`              | fault-remediation    | Remediation action in progress         | No       |
 | `remediation-succeeded`    | fault-remediation    | Remediation completed successfully     | Yes*     |
@@ -90,8 +90,8 @@ This table lists the expected transitions. The State Machine diagram shows only 
 |:----------------------|:---------------------------|:----------------------------|
 | (no label)            | `quarantined`              | Fault detected              |
 | `quarantined`         | `draining`                 | Drain started               |
-| `quarantined`         | `drain-succeeded`          | No pods to drain            |
-| `draining`            | `drain-succeeded`          | All pods evacuated          |
+| `quarantined`         | `drain-succeeded`          | No pods to drain, or drain skipped (`drainOverrides.skip`) |
+| `draining`            | `drain-succeeded`          | All pods evacuated, or a custom drain CR completed |
 | `draining`            | `drain-failed`             | Evacuation timeout or failure |
 | `drain-succeeded`     | `remediating`              | Remediation started         |
 | `drain-succeeded`     | `remediation-failed`       | Unsupported remediation action, or the maximum number of remediation attempts is reached |

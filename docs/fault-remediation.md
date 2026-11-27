@@ -25,9 +25,11 @@ Fault Remediation watches the datastore for drained nodes that need repair. For 
 2. Skips the NONE action. For an action that has no entry in `maintenance.actions`, for example UNKNOWN, Fault Remediation creates no maintenance CR. It increments `fault_remediation_unsupported_actions_total`. If the node is still quarantined for this health event, it sets the state label to `remediation-failed`.
 3. Records the selected remediation action on the health event
 4. Checks if a maintenance CR already exists for the node
-5. Starts log collection, if log collection is enabled
-6. Creates a maintenance CR from the configured template
-7. Updates node labels to track the remediation state
+5. Before a new remediation starts, checks that the node is still quarantined for this health event. If its quarantine already ended, the event is closed without a maintenance CR. An event that a maintenance CR already covers waits for that CR or is closed with it, as in step 4.
+6. Starts log collection, if log collection is enabled
+7. Sets the state label to `remediating`
+8. Creates a maintenance CR from the configured template
+9. Sets the state label to `remediation-succeeded` if it created the maintenance CR, or to `remediation-failed` if the creation failed. The label shows the result of the CR creation. The status of the repair itself is on the maintenance CR.
 
 External operators watch these maintenance CRs and do the maintenance work, for example a reboot, a termination or a replacement.
 
@@ -115,9 +117,9 @@ Fault Remediation creates a maintenance CR only when it is necessary:
 
 Fault Remediation updates node labels during the remediation lifecycle:
 
-- `remediating`: Maintenance CR created
-- `remediation-succeeded`: Maintenance completed
-- `remediation-failed`: Maintenance had errors
+- `remediating`: Fault Remediation is creating the maintenance CR
+- `remediation-succeeded`: Fault Remediation created the maintenance CR. The repair can still be in progress.
+- `remediation-failed`: Fault Remediation created no maintenance CR, for example because the creation failed, the action has no entry in `maintenance.actions`, or the equivalence group used all its remediation attempts
 
 ### Remediation Decision
 
