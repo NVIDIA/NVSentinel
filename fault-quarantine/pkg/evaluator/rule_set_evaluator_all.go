@@ -16,8 +16,7 @@ package evaluator
 
 import (
 	"context"
-
-	multierror "github.com/hashicorp/go-multierror"
+	"errors"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -33,20 +32,20 @@ func (allEval *AllRuleSetEvaluator) Evaluate(
 	ctx context.Context,
 	healthEvent *protos.HealthEvent,
 ) (common.RuleEvaluationResult, error) {
-	var errs *multierror.Error
+	var errs []error
 
 	for _, evaluator := range allEval.evaluators {
 		ruleEvaluatedResult, err := evaluateRule(ctx, evaluator, healthEvent)
 		if err != nil {
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 		}
 
 		if ruleEvaluatedResult != common.RuleEvaluationSuccess {
-			return ruleEvaluatedResult, errs.ErrorOrNil()
+			return ruleEvaluatedResult, errors.Join(errs...)
 		}
 	}
 
-	return common.RuleEvaluationSuccess, errs.ErrorOrNil()
+	return common.RuleEvaluationSuccess, errors.Join(errs...)
 }
 
 func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSetMeta) *AllRuleSetEvaluator {
