@@ -6,6 +6,10 @@ The Metadata Collector module collects GPU metadata with NVIDIA NVML (Management
 
 The metadata-collector chart also renders the `pod-device-mapper` DaemonSet, which writes the device annotation on pods that partial drains read. Its values are under `metadata-collector` too. See [Pod Device Mapper Configuration](pod-device-mapper.md).
 
+If NVML cannot query the identity of one GPU, metadata-collector logs a warning and skips that GPU. It writes metadata for the GPUs that it can query, with their original GPU IDs. The `metadata_collector_gpus_skipped_total` counter counts skipped GPUs. Skipped GPUs have no entries in `gpu_metadata.json`.
+
+If every detected GPU fails its identity queries, collection fails and the collector leaves the existing file unchanged. A node with zero detected GPUs retains the normal empty-inventory behavior. The collector matches `nvidia-smi topo -m` columns to GPUs by label (`GPU0`, `GPU1`, ...), not by position. NIC topology is still written when a GPU is skipped. Each NIC's relationship list follows the order of the collected GPUs, leaving out the skipped GPU, and each collected GPU gets its own NUMA node. This keeps nic-health-monitor able to start after a GPU falls off the bus. If the matrix has no column for a collected GPU, or a column for a GPU that NVML does not report, metadata-collector omits NIC topology and sets GPU NUMA nodes to `-1`.
+
 ## Configuration Reference
 
 ### Module Enable/Disable

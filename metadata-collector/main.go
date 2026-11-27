@@ -158,7 +158,8 @@ func runCollector(ctx context.Context) (*model.GPUMetadata, error) {
 
 	slog.Info("Collecting GPU metadata")
 
-	metadataCollector := collector.NewCollector(nvmlWrapper, collector.NewDefaultTopoCollector())
+	metadataCollector := collector.NewCollector(nvmlWrapper, collector.NewDefaultTopoCollector(),
+		collector.WithSkippedGPUCounter(newSkippedGPUCounter(prometheus.DefaultRegisterer)))
 
 	metadata, err := metadataCollector.Collect(ctx)
 	if err != nil {

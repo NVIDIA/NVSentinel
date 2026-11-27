@@ -78,3 +78,15 @@ func TestCollectionCompletedGauge_StartsAtZero(t *testing.T) {
 	gauge.SetToCurrentTime()
 	assert.InDelta(t, float64(time.Now().Unix()), testutil.ToFloat64(gauge), 5)
 }
+
+func TestSkippedGPUCounter_NewRegistry_ExposesZero(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	counter := newSkippedGPUCounter(registry)
+
+	assert.Equal(t, float64(0), testutil.ToFloat64(counter))
+	families, err := registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, families, 1)
+	assert.Equal(t, "metadata_collector_gpus_skipped_total", families[0].GetName())
+	assert.Empty(t, families[0].Metric[0].Label)
+}

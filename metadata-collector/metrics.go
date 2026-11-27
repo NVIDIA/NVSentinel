@@ -29,3 +29,12 @@ func newCollectionCompletedGauge(reg prometheus.Registerer) prometheus.Gauge {
 			"Collection can block on a wedged GPU driver, so 0 long after process start means it has stalled.",
 	})
 }
+
+// newSkippedGPUCounter reports degraded inventory even when collection completes.
+func newSkippedGPUCounter(reg prometheus.Registerer) prometheus.Counter {
+	return promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "metadata_collector_gpus_skipped_total",
+		Help: "GPUs that NVML lists but whose handle, UUID, PCI address, or name could not be read. " +
+			"These GPUs are missing from gpu_metadata.json. Collection fails if all GPUs are skipped.",
+	})
+}
