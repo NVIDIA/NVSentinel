@@ -253,7 +253,7 @@ global:
 
 This value sets the SELinux options for the pods that share host directories and do not run privileged:
 
-- platform-connectors, syslog-health-monitor and nic-health-monitor.
+- platform-connectors, gpu-health-monitor, syslog-health-monitor and nic-health-monitor. In `embedded-mode`, gpu-health-monitor runs privileged and does not need this value.
 - The modules that publish through the platform-connector socket: csp-health-monitor, health-events-analyzer, kubernetes-object-monitor, lifecycle-manager, nvcre-certification-monitor and slurm-drain-monitor.
 - When `global.auditLogging.enabled` is `true`, the modules that write audit logs to `/var/log/nvsentinel` on the node: fault-quarantine, fault-remediation, janitor, janitor-provider, labeler, nvidia-labeler, node-drainer and the platform-connector Deployment.
 
