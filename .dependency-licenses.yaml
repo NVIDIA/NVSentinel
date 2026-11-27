@@ -32,6 +32,7 @@ modules:
   - lifecycle-manager
   - metadata-collector
   - node-drainer
+  - nvidia-labeler
   - platform-connectors
   - pod-device-mapper
   - preflight

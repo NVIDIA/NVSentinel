@@ -51,6 +51,7 @@ updates:
       - "/labeler"
       - "/metadata-collector"
       - "/node-drainer"
+      - "/nvidia-labeler"
       - "/pod-device-mapper"
       - "/platform-connectors"
       - "/plugins/mock-slurm-operator"

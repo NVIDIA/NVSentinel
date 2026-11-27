@@ -52,6 +52,7 @@ if [ ! -f go.work ]; then
     ./janitor \
     ./janitor-provider \
     ./labeler \
+    ./nvidia-labeler \
     ./node-drainer \
     ./platform-connectors \
     ./pod-device-mapper \
@@ -74,6 +75,7 @@ ko build "${KO_FLAGS[@]}" \
   ./janitor \
   ./janitor-provider \
   ./labeler \
+  ./nvidia-labeler \
   ./node-drainer \
   ./platform-connectors \
   ./pod-device-mapper \

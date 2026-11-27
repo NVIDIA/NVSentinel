@@ -15,6 +15,13 @@
 # Default values for labeler.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
+#
+# The chart renders two Deployments:
+#   - labeler writes the kata.enabled and device-count labels.
+#   - nvidia-labeler writes the NVIDIA labels: dcgm.version, driver.installed and the
+#     dcgm-bootstrap-completed annotation. It reads the DCGM and driver pods.
+# replicaCount, logLevel, podAnnotations, podLabels, resources, qps, burst and the
+# scheduling values apply to both.
 
 replicaCount: 1
 
@@ -27,6 +34,17 @@ image:
 
 podAnnotations: {}
 
+# The NVIDIA labeler. The GPU, syslog and NIC health monitors and metadata-collector
+# select nodes on its labels, so the umbrella chart refuses enabled: false while one
+# of them is enabled. Check also that no automation outside NVSentinel reads
+# dcgm.version or driver.installed before you turn it off.
+nvidiaLabeler:
+  enabled: true
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/nvidia-labeler
+    pullPolicy: IfNotPresent
+    tag: ""
+
 # Kata Containers detection configuration
 # Additional node label to check when detecting Kata Containers support. If specified, the labeler
 # will check BOTH this custom label AND the default 'katacontainers.io/kata-runtime' label as
@@ -36,28 +54,28 @@ podAnnotations: {}
 # Note: The input label value must be truthy (case-insensitive): "true", "enabled", "1", or "yes"
 kataLabelOverride: ""
 
-# Pre-installed driver configuration
-# When enabled, the labeler unconditionally sets nvsentinel.dgxc.nvidia.com/driver.installed=true
+# Pre-installed driver configuration (nvidia-labeler)
+# When enabled, nvidia-labeler unconditionally sets nvsentinel.dgxc.nvidia.com/driver.installed=true
 # on all GPU nodes, skipping driver pod detection. Use this for clusters where NVIDIA drivers
 # are installed directly on the host rather than via GPU Operator driver containers.
 assumeDriverInstalled: false
 
-# DCGM pod discovery
+# DCGM pod discovery (nvidia-labeler)
 # Comma-separated values of the `app` pod label used to find the DCGM pod on each node.
 # The default matches both the classic GPU Operator DCGM DaemonSet (nvidia-dcgm) and the
 # GPUCluster/DRA-mode one (nvidia-dcgm-dra).
 dcgmAppLabel: "nvidia-dcgm,nvidia-dcgm-dra"
 
-# Driver pod discovery
+# Driver pod discovery (nvidia-labeler)
 # Value of the `app` pod label used to find the GPU Operator driver pod on each node.
 driverAppLabel: "nvidia-driver-daemonset"
 
-# GKE driver installer discovery
+# GKE driver installer discovery (nvidia-labeler)
 # Value of the `k8s-app` pod label used to find the GKE driver installer pod on each node.
 gkeInstallerAppLabel: "nvidia-driver-installer"
 
-# DCGM bootstrap gating
-# When enabled, the labeler requires the DCGM pod to be ready before setting the DCGM version
+# DCGM bootstrap gating (nvidia-labeler)
+# When enabled, nvidia-labeler requires the DCGM pod to be ready before setting the DCGM version
 # label during the initial bootstrapping of a node. Once the bootstrap annotation is set, the
 # version label will be set without requiring DCGM pod readiness.
 requireDCGMReadyForBootstrap: true
