@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -524,8 +523,12 @@ func TestIsPermanentError_JoinedFailures_RequiresEveryFailurePermanent(t *testin
 	assert.True(t, IsPermanentError(fmt.Errorf("evaluate event: %w", permanentErr)))
 	assert.True(t, IsPermanentError(errors.Join(permanentErr, otherPermanentErr)))
 	assert.False(t, IsPermanentError(errors.Join(permanentErr, transientErr)))
-	assert.True(t, IsPermanentError(multierror.Append(nil, permanentErr, otherPermanentErr)))
-	assert.False(t, IsPermanentError(multierror.Append(nil, permanentErr, transientErr)))
+
+	// Unlike multierror.Append, errors.Join does not flatten, so a rule set's
+	// joined error arrives nested inside the caller's join.
+	ruleSetErr := fmt.Errorf("rule set: %w", errors.Join(permanentErr, otherPermanentErr))
+	assert.True(t, IsPermanentError(errors.Join(ruleSetErr, permanentErr)))
+	assert.False(t, IsPermanentError(errors.Join(ruleSetErr, errors.Join(permanentErr, transientErr))))
 }
 
 func TestGetRecoveryNode_RepeatedRead_UsesOneSanitizedSnapshot(t *testing.T) {

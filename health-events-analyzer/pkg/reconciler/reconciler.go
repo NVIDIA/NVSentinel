@@ -25,7 +25,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"k8s.io/client-go/kubernetes"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
@@ -289,14 +288,14 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	ctx, span := tracing.StartSpan(ctx, "health_events_analyzer.handle_event")
 	defer span.End()
 
-	var multiErr *multierror.Error
+	var errs []error
 
 	publishedNewEvent := false
 
 	// Handle XID detector operations (clear on healthy, detect bursts on unhealthy)
 	published, err := r.handleXidDetector(ctx, event)
 	if err != nil {
-		multiErr = multierror.Append(multiErr, err)
+		errs = append(errs, err)
 	}
 
 	if published {
@@ -305,23 +304,21 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 
 	// Process regular rules
 	rulePublished, ruleErrs := r.processRules(ctx, span, event)
-	for _, ruleErr := range ruleErrs {
-		multiErr = multierror.Append(multiErr, ruleErr)
-	}
+	errs = append(errs, ruleErrs...)
 
 	if rulePublished {
 		publishedNewEvent = true
 	}
 
-	if multiErr.ErrorOrNil() != nil {
-		slog.ErrorContext(ctx, "Error in handling the event", "error", multiErr)
+	if joinedErr := errors.Join(errs...); joinedErr != nil {
+		slog.ErrorContext(ctx, "Error in handling the event", "error", joinedErr)
 		span.SetAttributes(
 			attribute.String("health_events_analyzer.error.type", "handle_event_error"),
-			attribute.String("health_events_analyzer.error.message", multiErr.Error()),
+			attribute.String("health_events_analyzer.error.message", joinedErr.Error()),
 		)
-		tracing.RecordError(span, multiErr.ErrorOrNil())
+		tracing.RecordError(span, joinedErr)
 
-		return publishedNewEvent, fmt.Errorf("error in handling the event: %w", multiErr)
+		return publishedNewEvent, fmt.Errorf("error in handling the event: %w", joinedErr)
 	}
 
 	return publishedNewEvent, nil

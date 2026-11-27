@@ -17,6 +17,7 @@ package informers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -27,11 +28,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1182,7 +1182,7 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 
 	var mu sync.Mutex
 
-	var result *multierror.Error
+	var errs []error
 
 	for _, pod := range pods {
 		wg.Add(1)
@@ -1192,7 +1192,7 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 
 			err := i.sendEvictionRequestForPod(ctx, namespace, timeout, pod)
 			if err != nil {
-				if errors.IsNotFound(err) {
+				if apierrors.IsNotFound(err) {
 					slog.InfoContext(ctx, "Pod already evicted from namespace on node",
 						"pod", pod.Name,
 						"namespace", pod.Namespace,
@@ -1205,7 +1205,7 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 						"error", err)
 					mu.Lock()
 
-					result = multierror.Append(result, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
+					errs = append(errs, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
 
 					mu.Unlock()
 				}
@@ -1220,7 +1220,7 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 
 	wg.Wait()
 
-	return result.ErrorOrNil()
+	return errors.Join(errs...)
 }
 
 // sendEvictionRequestForPod sends an eviction with the observed pod's deletion preconditions.
@@ -1239,11 +1239,11 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 
 	err := i.clientset.PolicyV1().Evictions(pod.Namespace).Evict(ctx, eviction)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return nil
 		}
 
-		if errors.IsTooManyRequests(err) {
+		if apierrors.IsTooManyRequests(err) {
 			metrics.ProcessingErrors.WithLabelValues("PDB_blocking_eviction_error", pod.Spec.NodeName).Inc()
 		}
 
@@ -1398,7 +1398,7 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 
 	var mu sync.Mutex
 
-	var result *multierror.Error
+	var errs []error
 
 	for _, pod := range pods {
 		wg.Add(1)
@@ -1412,14 +1412,14 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 				Preconditions:      podDeletionPreconditions(p),
 			})
 			if err != nil {
-				if !errors.IsNotFound(err) {
+				if !apierrors.IsNotFound(err) {
 					slog.ErrorContext(ctx, "Failed to force delete pod in namespace",
 						"pod", p.Name,
 						"namespace", p.Namespace,
 						"error", err)
 					mu.Lock()
 
-					result = multierror.Append(result, fmt.Errorf("pod %s/%s: %w", p.Namespace, p.Name, err))
+					errs = append(errs, fmt.Errorf("pod %s/%s: %w", p.Namespace, p.Name, err))
 
 					mu.Unlock()
 				}
@@ -1433,7 +1433,7 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 
 	wg.Wait()
 
-	return result.ErrorOrNil()
+	return errors.Join(errs...)
 }
 
 // A pod can be relabelled or replaced between cache selection and deletion.

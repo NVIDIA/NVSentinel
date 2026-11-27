@@ -10,7 +10,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.21
 	github.com/aws/aws-sdk-go-v2/service/health v1.52.0
 	github.com/aws/smithy-go v1.28.9
-	github.com/hashicorp/go-multierror v1.1.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/nvidia/nvsentinel/store-client v0.0.0
@@ -81,7 +80,6 @@ require (
 	github.com/googleapis/gax-go/v2 v2.27.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0 // indirect
-	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
