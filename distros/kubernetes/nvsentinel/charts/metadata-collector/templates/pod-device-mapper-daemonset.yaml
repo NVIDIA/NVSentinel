@@ -50,6 +50,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with ((.Values.global).seLinuxOptions) }}
+      securityContext:
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       containers:
         - name: pod-device-mapper
           securityContext:

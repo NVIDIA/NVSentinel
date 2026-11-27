@@ -404,3 +404,17 @@ tests:
       - failedTemplate:
           errorPattern: global.kubeletRootDir must be kubelet's --root-dir
 
+  - it: must not set pod SELinux options by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: must set pod SELinux options from global.seLinuxOptions
+    set:
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.seLinuxOptions
+          value:
+            type: spc_t
