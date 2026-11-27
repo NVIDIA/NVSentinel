@@ -298,10 +298,22 @@ func TestCircuitBreakerCursorCreateSkipsAccumulatedEvents(t *testing.T) {
 
 		// Send event while CB is TRIPPED - this will accumulate in datastore
 		t.Logf("Sending event for node %s while CB is TRIPPED (should accumulate)", testCtx.NodeName)
+		const accumulatedMessage = "Accumulated event while CB tripped"
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("Accumulated event while CB tripped")
+			WithMessage(accumulatedMessage)
 		helpers.SendHealthEvent(newCtx, t, event)
+
+		// The node-local platform connector replies before it stores the event. If the CREATE
+		// restart below opened its change stream first, the event would arrive as a new event.
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Waiting for the accumulated event to be stored before the CREATE reset")
+		require.Eventually(t, func() bool {
+			return helpers.HealthEventStored(newCtx, t, client.RESTConfig(), client, testCtx.NodeName,
+				accumulatedMessage)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "the accumulated event was never stored")
 
 		return newCtx
 	})

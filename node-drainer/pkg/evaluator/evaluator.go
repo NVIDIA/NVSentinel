@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -37,6 +38,16 @@ import (
 
 const (
 	customDrainPollInterval = 30 * time.Second
+)
+
+// The node state label values an AlreadyDrained result moves to drain-succeeded. A drain CR that completed
+// replaces draining, or quarantined when the draining write did not land. DrainOverrides.Skip drains nothing,
+// so it replaces only quarantined: a draining label there belongs to the drain of another event.
+var (
+	customDrainCompletedFrom = []statemanager.NVSentinelStateLabelValue{
+		statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+	}
+	drainSkippedFrom = []statemanager.NVSentinelStateLabelValue{statemanager.QuarantinedLabelValue}
 )
 
 // DrainScope distinguishes a whole-node drain from one scoped to a single entity. It is used
@@ -114,7 +125,11 @@ func checkPreconditions(ctx context.Context, healthEvent model.HealthEventWithSt
 		slog.InfoContext(ctx, "DrainOverrides.Skip is true, skipping drain for node",
 			"node", nodeName)
 
-		return &DrainActionResult{Action: ActionMarkAlreadyDrained, Status: model.AlreadyDrained}
+		return &DrainActionResult{
+			Action:             ActionMarkAlreadyDrained,
+			Status:             model.AlreadyDrained,
+			DrainSucceededFrom: drainSkippedFrom,
+		}
 	}
 
 	return nil
@@ -669,9 +684,10 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 				"node", nodeName)
 
 			return &DrainActionResult{
-				Action:           ActionMarkAlreadyDrained,
-				Status:           model.AlreadyDrained,
-				drainedByOtherCR: true,
+				Action:             ActionMarkAlreadyDrained,
+				Status:             model.AlreadyDrained,
+				DrainSucceededFrom: customDrainCompletedFrom,
+				drainedByOtherCR:   true,
 			}, nil
 		}
 
@@ -710,8 +726,9 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 	)
 
 	return &DrainActionResult{
-		Action: ActionMarkAlreadyDrained,
-		Status: model.AlreadyDrained,
+		Action:             ActionMarkAlreadyDrained,
+		Status:             model.AlreadyDrained,
+		DrainSucceededFrom: customDrainCompletedFrom,
 	}, nil
 }
 
