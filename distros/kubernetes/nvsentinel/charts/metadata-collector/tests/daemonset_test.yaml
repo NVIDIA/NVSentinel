@@ -34,7 +34,7 @@ tests:
           path: spec.template.spec.containers[0].args
           value:
             - --output-path=/var/lib/nvsentinel/gpu_metadata.json
-            - --metrics-port=2112
+            - --metrics-port=2113
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
