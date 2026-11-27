@@ -1779,7 +1779,7 @@ func assertNodeLabel(t *testing.T, client kubernetes.Interface, ctx context.Cont
 }
 
 // nodeStateLabel reads the node state label from the API server, where the state manager reads it: the node cache
-// does not keep the label. An empty value means the node has no state label.
+// does not keep the label. An empty value means the node has no state label or one with an empty value.
 func nodeStateLabel(t *testing.T, setup *testSetup, nodeName string) statemanager.NVSentinelStateLabelValue {
 	t.Helper()
 
@@ -1787,6 +1787,18 @@ func nodeStateLabel(t *testing.T, setup *testSetup, nodeName string) statemanage
 	require.NoError(t, err)
 
 	return statemanager.NVSentinelStateLabelValue(node.Labels[statemanager.NVSentinelStateLabelKey])
+}
+
+// requireNoNodeStateLabel checks on the API server that the node has no state label key, which nodeStateLabel does
+// not tell apart from a label with an empty value.
+func requireNoNodeStateLabel(t *testing.T, setup *testSetup, nodeName string) {
+	t.Helper()
+
+	node, err := setup.client.CoreV1().Nodes().Get(setup.ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	value, ok := node.Labels[statemanager.NVSentinelStateLabelKey]
+	require.False(t, ok, "the node should have no state label, found %q", value)
 }
 
 // setNodeStateLabel writes the node state label as another module would, or removes it when value is empty. The
@@ -2739,7 +2751,11 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 				setup.healthEventStore, nodeName))
 
 			// The pass writes the label before it stores the status, and no queue worker runs here.
-			require.Equal(t, tt.wantLabel, nodeStateLabel(t, setup, nodeName))
+			if tt.wantLabel == "" {
+				requireNoNodeStateLabel(t, setup, nodeName)
+			} else {
+				require.Equal(t, tt.wantLabel, nodeStateLabel(t, setup, nodeName))
+			}
 			// Creating the CR put the node in the draining state. The completed drain ends it, whether or not the
 			// label moved, so the next event of the node is not held in the low lane.
 			requireNextEventPriority(t, setup, nodeName, "high", "node_not_yet_draining")
@@ -3166,14 +3182,18 @@ func TestReconciler_CustomDrainCompleted_KeepsDrainingWhileBuiltInDrainRuns(t *t
 	}, 10*time.Second, 100*time.Millisecond, "the built-in drain of the later event should evict the pod")
 
 	completeCustomDrainCR(t, setup, nodeName)
+	updatesBefore := len(store.updates)
 	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, event, store, healthEventStore, nodeName))
 
 	require.Equal(t, statemanager.DrainingLabelValue, nodeStateLabel(t, setup, nodeName),
 		"the built-in drain of the later event still runs")
 	requireNextEventPriority(t, setup, nodeName, "low", "node_already_draining")
 
-	// The first event is now stored AlreadyDrained, so the next pass of the later event finds it covered.
-	storeFirstEvent(datastore.AlreadyDrained)
+	// The next pass of the later event reads the status that the completion pass stored for the first event, and
+	// finds the later event covered.
+	firstStatus := latestEvictionStatus(t, store.updates[updatesBefore:])
+	require.Equal(t, datastore.AlreadyDrained, firstStatus, "the completed CR marks its event AlreadyDrained")
+	storeFirstEvent(firstStatus)
 	require.NoError(t, setup.reconciler.ProcessEventGeneric(setup.ctx, later, store, healthEventStore, nodeName))
 
 	require.Equal(t, statemanager.DrainSucceededLabelValue, nodeStateLabel(t, setup, nodeName),
@@ -3574,6 +3594,29 @@ func latestDrainDecision(t *testing.T, updates []map[string]any) map[string]any 
 	assert.True(t, hasMethod)
 
 	return decision
+}
+
+// latestEvictionStatus returns the eviction status of the last update that stores one.
+func latestEvictionStatus(t *testing.T, updates []map[string]any) datastore.Status {
+	t.Helper()
+
+	var status datastore.Status
+
+	for _, update := range updates {
+		setMap, ok := update["$set"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]any); ok {
+			value, _ := statusMap["status"].(string)
+			status = datastore.Status(value)
+		}
+	}
+
+	require.NotEmpty(t, status, "an eviction status should be stored")
+
+	return status
 }
 
 // drainDecisionUpdateCount counts the updates that write the drain decision.
