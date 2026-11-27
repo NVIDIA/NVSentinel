@@ -57,6 +57,10 @@ spec:
       # the same node directory, as the same user.
       securityContext:
         fsGroup: 65532
+        {{- with ((.Values.global).seLinuxOptions) }}
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- end }}
       {{- $pgCert := eq (include "nvsentinel.platformConnector.pgClientCert" .) "true" }}
       {{- if or .Values.global.auditLogging.enabled $pgCert }}
