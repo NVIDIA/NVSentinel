@@ -1628,6 +1628,8 @@ func TestNodeRequiresReconciliation(t *testing.T) {
 			want:   true,
 		},
 		{name: "gpu-present label change", mutate: func(n *corev1.Node) { n.Labels[gpuPresentLabel] = LabelValueTrue }, want: true},
+		{name: "DCGM label set by someone else", mutate: func(n *corev1.Node) { n.Labels[DCGMVersionLabel] = "4.x" }, want: true},
+		{name: "driver label set by someone else", mutate: func(n *corev1.Node) { n.Labels[DriverInstalledLabel] = LabelValueTrue }, want: true},
 	}
 
 	for _, tt := range tests {
@@ -1785,74 +1787,55 @@ func TestReconcileNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testi
 }
 
 // TestReconcileNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
-// of the label write path.
+// of the label write path. The caches are filled by the test, so no event handler runs.
 func TestReconcileNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
-	const nodeName = "gpu-node"
-
-	clientset := fake.NewSimpleClientset(&corev1.Node{
-		Name:            nodeName,
+	node := &corev1.Node{
+		Name:            "gpu-node",
 		ResourceVersion: "1",
 		Labels:          map[string]string{gpuPresentLabel: LabelValueTrue},
+	}
+	driverPod := &corev1.Pod{
+		Name:   "driver-pod",
+		UID:    "driver-pod-uid",
+		Labels: map[string]string{"app": "nvidia-driver-daemonset"},
+		Spec:   corev1.PodSpec{NodeName: node.Name},
+		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	}
+
+	l, client := newLabelerWithCachedDriverPods(t, node, driverPod)
+	clientset := client.(*fake.Clientset)
+
+	t.Run("label change costs one merge patch", func(t *testing.T) {
+		clientset.ClearActions()
+
+		require.NoError(t, l.reconcileNodeLabels(node.Name, nil))
+
+		action := nodePatchAction(t, clientset.Actions())
+		assert.Equal(t, types.MergePatchType, action.GetPatchType())
+		assert.JSONEq(t, fmt.Sprintf(`{"metadata":{"labels":{%q:%q}}}`, DriverInstalledLabel, LabelValueTrue),
+			string(action.GetPatch()))
+		assert.Equal(t, 1, countNodeActions(clientset, "patch"))
+		assert.Equal(t, 0, countNodeActions(clientset, "get"))
+		assert.Equal(t, 0, countNodeActions(clientset, "update"))
+
+		updated, err := clientset.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, LabelValueTrue, updated.Labels[DriverInstalledLabel])
+		assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
+			"a merge patch must leave labels it does not mention alone")
 	})
 
-	labeler, _ := startTransformTestLabeler(t, clientset, true)
-	requireCachedLabel(t, labeler, nodeName, DriverInstalledLabel, LabelValueTrue)
+	t.Run("no-op reconcile costs no API call", func(t *testing.T) {
+		// What the informer would hold after the patch above.
+		cached := node.DeepCopy()
+		cached.Labels[DriverInstalledLabel] = LabelValueTrue
+		require.NoError(t, l.nodeInformer.GetStore().Update(cached))
+		clientset.ClearActions()
 
-	tests := []struct {
-		name          string
-		setup         func(*testing.T)
-		expectedPatch string
-	}{
-		{
-			name: "label change costs one merge patch",
-			setup: func(t *testing.T) {
-				node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
-				require.NoError(t, getErr)
-				delete(node.Labels, DriverInstalledLabel)
-				_, updateErr := clientset.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
-				require.NoError(t, updateErr)
-				requireCachedLabelAbsent(t, labeler, nodeName, DriverInstalledLabel)
-			},
-			expectedPatch: fmt.Sprintf(
-				`{"metadata":{"labels":{%q:%q}}}`,
-				DriverInstalledLabel,
-				LabelValueTrue,
-			),
-		},
-		{
-			name: "no-op reconcile costs no API call",
-			setup: func(t *testing.T) {
-				requireCachedLabel(t, labeler, nodeName, DriverInstalledLabel, LabelValueTrue)
-			},
-		},
-	}
+		require.NoError(t, l.reconcileNodeLabels(node.Name, nil))
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.setup(t)
-			clientset.ClearActions()
-
-			require.NoError(t, labeler.reconcileNodeLabels(nodeName, nil))
-
-			expectedPatchCount := 0
-			if tt.expectedPatch != "" {
-				expectedPatchCount = 1
-				action := nodePatchAction(t, clientset.Actions())
-				assert.Equal(t, types.MergePatchType, action.GetPatchType())
-				assert.JSONEq(t, tt.expectedPatch, string(action.GetPatch()))
-			}
-
-			assert.Equal(t, expectedPatchCount, countNodeActions(clientset, "patch"))
-			assert.Equal(t, 0, countNodeActions(clientset, "get"))
-			assert.Equal(t, 0, countNodeActions(clientset, "update"))
-
-			updated, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
-			require.NoError(t, getErr)
-			assert.Equal(t, LabelValueTrue, updated.Labels[DriverInstalledLabel], "the desired label is present")
-			assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
-				"a merge patch must leave labels it does not mention alone")
-		})
-	}
+		assert.Empty(t, clientset.Actions())
+	})
 }
 
 func TestReconcileNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
@@ -2061,4 +2044,37 @@ func TestPodEventHandlers_DeleteTombstone_RemovesDriverLabel(t *testing.T) {
 	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), node.Name, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
+}
+
+// TestNodeEvents_LabelStampedOnOptedOutNode_IsRemoved covers a DCGM or driver label
+// that someone sets on a node while it is opted out. The monitors select on these
+// labels, so nvidia-labeler must remove them again.
+func TestNodeEvents_LabelStampedOnOptedOutNode_IsRemoved(t *testing.T) {
+	const nodeName = "released-node"
+
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		Name:   nodeName,
+		Labels: map[string]string{managed.ManagedLabelKey: managed.ManagedLabelValueFalse},
+	})
+	labeler, _ := startTransformTestLabeler(t, clientset, false)
+	requireCachedLabel(t, labeler, nodeName, managed.ManagedLabelKey, managed.ManagedLabelValueFalse)
+
+	node, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	node.Labels[DCGMVersionLabel] = "4.x"
+	node.Labels[DriverInstalledLabel] = LabelValueTrue
+	_, err = clientset.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		updated, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+		if getErr != nil {
+			return false
+		}
+
+		_, hasDCGM := updated.Labels[DCGMVersionLabel]
+		_, hasDriver := updated.Labels[DriverInstalledLabel]
+
+		return !hasDCGM && !hasDriver
+	}, 10*time.Second, 10*time.Millisecond)
 }

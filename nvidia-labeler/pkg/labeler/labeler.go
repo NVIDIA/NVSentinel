@@ -520,8 +520,13 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 }
 
 // nodeRequiresReconciliation returns true when a node update changed an input that
-// the NVIDIA labeler reads from nodes: the managed opt-out label, or the gpu-present
-// label that assumeDriverInstalled reads. The DCGM and driver labels follow pod events.
+// the NVIDIA labeler reads from nodes, or one of its own labels:
+//   - the managed opt-out label;
+//   - the gpu-present label that assumeDriverInstalled reads;
+//   - dcgm.version or driver.installed, so that a value that someone else set or
+//     removed is corrected, for example a label set on an opted-out node.
+//
+// After its own patch, the reconcile finds nothing to change and makes no API call.
 func nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -530,8 +535,13 @@ func nodeRequiresReconciliation(oldObj, newObj any) bool {
 		return true
 	}
 
-	return oldNode.Labels[managed.ManagedLabelKey] != newNode.Labels[managed.ManagedLabelKey] ||
-		oldNode.Labels[gpuPresentLabel] != newNode.Labels[gpuPresentLabel]
+	for _, key := range []string{managed.ManagedLabelKey, gpuPresentLabel, DCGMVersionLabel, DriverInstalledLabel} {
+		if oldNode.Labels[key] != newNode.Labels[key] {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isTargetPod(podObj any, requireReady bool, excludePod *v1.Pod) (bool, *v1.Pod) {
