@@ -477,8 +477,7 @@ func postgresDrainDecision(
 		LIMIT 1;
 	`, sqlLiteral(nodeName), sqlLiteral(message), sqlLiteral(evictionStatus))
 
-	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
-		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	stdout, stderr, err := queryPostgres(ctx, restConfig, podName, query)
 	if err != nil {
 		t.Logf("PostgreSQL drain decision lookup failed: %v stderr=%s", err, stderr)
 
@@ -553,8 +552,7 @@ func HealthEventQuarantineStatus(
 		LIMIT 1;
 	`, sqlLiteral(nodeName), sqlLiteral(message))
 
-	stdout, stderr, err := ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
-		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
+	stdout, stderr, err := queryPostgres(ctx, restConfig, podName, query)
 	if err != nil {
 		t.Logf("PostgreSQL quarantine status lookup failed: %v stderr=%s", err, stderr)
 
@@ -564,6 +562,61 @@ func HealthEventQuarantineStatus(
 	status := strings.TrimSpace(stdout)
 
 	return status, status != ""
+}
+
+// HealthEventStored reports whether a health event for the node with the given message is in
+// MongoDB or PostgreSQL. The node-local platform connector replies before it stores an event,
+// so a test that needs the event in the datastore must wait for this.
+func HealthEventStored(
+	ctx context.Context, t *testing.T, restConfig *rest.Config, client klient.Client, nodeName, message string,
+) bool {
+	t.Helper()
+
+	if podName, found := TryGetMongoDBPrimaryPodName(ctx, t, client); found {
+		js := fmt.Sprintf(`
+			db = db.getSiblingDB("%s");
+			const count = db.HealthEvents.countDocuments({
+				"healthevent.nodename": %q,
+				"healthevent.message": %q
+			});
+			print("STORED_COUNT=" + count);
+		`, MongoDBDatabase, nodeName, message)
+
+		stdout, _ := ExecMongosh(ctx, t, restConfig, client, podName, js)
+
+		for _, line := range strings.Split(stdout, "\n") {
+			if count, found := strings.CutPrefix(strings.TrimSpace(line), "STORED_COUNT="); found {
+				return count != "0"
+			}
+		}
+
+		return false
+	}
+
+	podName, found := postgresPrimaryPodName(ctx, t, client)
+	if !found {
+		t.Logf("No MongoDB or PostgreSQL pod found for stored event lookup")
+
+		return false
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM health_events
+		WHERE node_name = '%s'
+		  AND document #>> '{healthevent,message}' = '%s';
+	`, sqlLiteral(nodeName), sqlLiteral(message))
+
+	stdout, stderr, err := queryPostgres(ctx, restConfig, podName, query)
+	if err != nil {
+		t.Logf("PostgreSQL stored event lookup failed: %v stderr=%s", err, stderr)
+
+		return false
+	}
+
+	count := strings.TrimSpace(stdout)
+
+	return count != "" && count != "0"
 }
 
 // postgresPrimaryPodName returns the running PostgreSQL primary pod in the NVSentinel namespace.
@@ -584,6 +637,12 @@ func postgresPrimaryPodName(ctx context.Context, t *testing.T, client klient.Cli
 	}
 
 	return "", false
+}
+
+// queryPostgres runs one query in the PostgreSQL primary pod and returns the unaligned tuples.
+func queryPostgres(ctx context.Context, restConfig *rest.Config, podName, query string) (string, string, error) {
+	return ExecInPod(ctx, restConfig, NVSentinelNamespace, podName, "postgresql",
+		[]string{"psql", "-U", "postgres", "-d", "nvsentinel", "-tAc", query})
 }
 
 // sqlLiteral escapes single quotes so the value can sit inside a quoted SQL string.
