@@ -84,3 +84,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 071 | [Configuration — Device Scope for Partial Drains and Scoped Remediation (proposed)](071-device-scope-from-configuration.md) |
 | 072 | [Architecture — Run the Pod Device Mapper Apart from NVIDIA Discovery (proposed)](072-pod-device-mapper-daemonset.md) |
 | 076 | [Health Monitors — Integration with NVHV (proposed)](076-integration-with-nvhv.md) |
+| 077 | [Architecture — Move NVIDIA Detection out of the Labeler (proposed)](077-nvidia-labeler.md) |

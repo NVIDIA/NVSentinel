@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:430985542100b871e108ccc00e8dcc5eef08ca14ee5825e98ebf563d8ffec4ee AS builder
 
 ARG BUILD_TAGS="systemd"
 ARG VERSION="dev"
@@ -54,7 +54,7 @@ RUN cd health-monitors/syslog-health-monitor && \
     CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o syslog-health-monitor main.go
 
 # Runtime stage - using Debian slim for systemd journal support
-FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS runtime
 
 # Install required system libraries for systemd journal
 RUN apt-get update && apt-get install -y --no-install-recommends \
