@@ -19,49 +19,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// podMapperMetrics is the alertable surface for the poll loop: a total to alert on a rising
-// rate, the current streak, which is the value the exit threshold acts on, and the time of the
-// last successful poll, after which no device annotation on the node is older than that poll.
-//
-// The registerer is injected rather than taken from the default so tests get a fresh registry
-// instead of sharing counters between cases.
-type podMapperMetrics struct {
-	failures            prometheus.Counter
-	consecutiveFailures prometheus.Gauge
-	lastSuccess         prometheus.Gauge
-}
-
-func newPodMapperMetrics(reg prometheus.Registerer) *podMapperMetrics {
-	factory := promauto.With(reg)
-
-	return &podMapperMetrics{
-		failures: factory.NewCounter(prometheus.CounterOpts{
-			Name: "metadata_collector_pod_mapper_failures_total",
-			Help: "Pod device mapper poll cycles that failed.",
-		}),
-		consecutiveFailures: factory.NewGauge(prometheus.GaugeOpts{
-			Name: "metadata_collector_pod_mapper_consecutive_failures",
-			Help: "Consecutive failed pod device mapper poll cycles, reset to 0 by any success. " +
-				"The container exits when this reaches --pod-mapper-max-consecutive-failures.",
-		}),
-		lastSuccess: factory.NewGauge(prometheus.GaugeOpts{
-			Name: "metadata_collector_pod_mapper_last_success_timestamp_seconds",
-			Help: "Unix time of the last successful pod device mapper poll, or 0 before the first one. " +
-				"After a successful poll, each device annotation on the node is current or removed.",
-		}),
-	}
-}
-
-func (m *podMapperMetrics) recordFailure(consecutive int) {
-	m.failures.Inc()
-	m.consecutiveFailures.Set(float64(consecutive))
-}
-
-func (m *podMapperMetrics) recordSuccess() {
-	m.consecutiveFailures.Set(0)
-	m.lastSuccess.SetToCurrentTime()
-}
-
 // newCollectionCompletedGauge makes a collection that never finishes alertable: the metrics
 // endpoint is up before collection starts, so a collector blocked on a wedged driver is a live
 // target that keeps reporting 0 here.

@@ -17,7 +17,7 @@
 suite: pod device mapper configuration
 templates:
   - templates/configmap.yaml
-  - templates/daemonset.yaml
+  - templates/pod-device-mapper-daemonset.yaml
 set:
   global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 tests:
@@ -45,7 +45,7 @@ tests:
           path: data["config.toml"]
           pattern: 'entityValueAttribute = .uuid.'
   - it: passes the configuration to the mapper and mounts it
-    template: templates/daemonset.yaml
+    template: templates/pod-device-mapper-daemonset.yaml
     set:
       global.partialRemediationEntityTypes: {}
     asserts:
@@ -63,7 +63,7 @@ tests:
           content:
             name: config
             configMap:
-              name: metadata-collector
+              name: pod-device-mapper
       - exists:
           path: spec.template.metadata.annotations["checksum/config"]
   - it: renders no configuration when the pod device mapper is disabled
@@ -73,10 +73,13 @@ tests:
       - hasDocuments:
           count: 0
         template: templates/configmap.yaml
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --config=/etc/config/config.toml
-        template: templates/daemonset.yaml
-      - notExists:
-          path: spec.template.metadata.annotations["checksum/config"]
-        template: templates/daemonset.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/pod-device-mapper-daemonset.yaml
+  - it: renders no configuration when podMapper.enabled is a quoted "false"
+    set:
+      podMapper.enabled: "false"
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/configmap.yaml
