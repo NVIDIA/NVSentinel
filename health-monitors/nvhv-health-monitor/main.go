@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -27,13 +26,11 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
-	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/nvhvclient"
-	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/poller"
-	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/verdict"
+	featureflags "github.com/nvidia/nvsentinel/commons/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/nvhv-health-monitor/pkg/initializer"
 )
 
 const defaultAgentName = "nvhv-health-monitor"
@@ -51,9 +48,28 @@ var (
 		"Timeout of one NVHV call; defaults to the poll interval and may not exceed it")
 	nodeName = flag.String("node-name", os.Getenv("NODE_NAME"),
 		"Node name. Defaults to the NODE_NAME environment variable")
+	unreachableAfter = flag.Duration("unreachable-threshold", 5*time.Minute,
+		"How long NVHV may stay unreachable before an NVHVUnreachable event is sent")
+	collectionFailureAfter = flag.Duration("collection-failure-threshold", 5*time.Minute,
+		"How long a kind of check may keep failing to collect its data, while NVHV answers, "+
+			"before an NVHV<kind>CollectionFailure event is sent")
+	stateFile = flag.String("state-file", "/var/lib/nvhv-health-monitor/state.json",
+		"Keeps which outage events (NVHVUnreachable, NVHV<kind>CollectionFailure) are raised, "+
+			"so a restarted monitor still sends their healthy events. Empty disables it")
+	processingStrategy = flag.String("processing-strategy", "STORE_ONLY",
+		"Processing strategy of every event: STORE_ONLY (record only) or EXECUTE_REMEDIATION. "+
+			"Faults get no recovery event, so only use EXECUTE_REMEDIATION if something else clears them")
+	metricsPort = flag.Int("metrics-port", 2112,
+		"Port for Prometheus metrics and the /healthz endpoint")
+	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
+		"Platform connector target; HEALTH_PUBLISH_TARGET selects a central connector instead")
+	platformConnectorTokenPath = flag.String("platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to the platform connector. Empty disables it")
 )
 
 func main() {
+	flag.Parse()
+
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
 	slog.Info("Starting nvhv-health-monitor", "version", version, "commit", commit, "date", date)
 
@@ -64,62 +80,48 @@ func main() {
 }
 
 func run() error {
-	flag.Parse()
-
-	timeout, err := validateFlags()
-	if err != nil {
-		return fmt.Errorf("failed to validate the command-line flags: %w", err)
-	}
+	featureflags.NewRegistry(defaultAgentName).SetStoreOnlyMode(*processingStrategy)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, err := grpc.NewClient(*nvhvAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	components, err := initializer.InitializeAll(initializer.Params{
+		NVHVAddress:             *nvhvAddress,
+		NodeName:                *nodeName,
+		PollInterval:            *pollInterval,
+		RequestTimeout:          *requestTimeout,
+		UnreachableAfter:        *unreachableAfter,
+		CollectionFailureAfter:  *collectionFailureAfter,
+		MetricsPort:             *metricsPort,
+		StateFile:               *stateFile,
+		ProcessingStrategy:      *processingStrategy,
+		PlatformConnectorSocket: *platformConnectorSocket,
+		PlatformConnectorToken:  *platformConnectorTokenPath,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to create the gRPC client for NVHV at %s: %w", *nvhvAddress, err)
-	}
-	defer conn.Close()
-
-	p := &poller.Poller{
-		Evaluator: nvhvclient.New(conn),
-		Handle:    logVerdict,
-		Interval:  *pollInterval,
-		Timeout:   timeout,
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
-	slog.Info("Polling NVHV", "address", *nvhvAddress, "interval", *pollInterval, "timeout", timeout)
-	p.Run(ctx)
+	defer components.Close()
 
-	return nil
-}
+	g, gCtx := errgroup.WithContext(ctx)
 
-// validateFlags checks the flags and returns the effective request timeout.
-func validateFlags() (time.Duration, error) {
-	if *nodeName == "" {
-		return 0, errors.New("node name is required (--node-name or NODE_NAME)")
-	}
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", *metricsPort)
 
-	if *pollInterval <= 0 {
-		return 0, errors.New("poll-interval must be positive")
-	}
+		if err := components.Server.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
 
-	timeout := *requestTimeout
-	if timeout == 0 {
-		timeout = *pollInterval
-	}
+		return nil
+	})
 
-	if timeout < 0 || timeout > *pollInterval {
-		return 0, fmt.Errorf("request-timeout must be positive and at most the poll interval (%s)", *pollInterval)
-	}
+	g.Go(func() error {
+		slog.Info("Polling NVHV", "address", *nvhvAddress, "interval", *pollInterval)
+		components.Poller.Run(gCtx)
 
-	return timeout, nil
-}
+		return nil
+	})
 
-// logVerdict is a placeholder until verdicts are turned into health events.
-func logVerdict(_ context.Context, v *verdict.Verdict, err error) {
-	if err != nil {
-		return
-	}
-
-	slog.Info("NVHV verdict", "schemaVersion", v.SchemaVersion, "checks", len(v.Results))
+	return g.Wait()
 }
