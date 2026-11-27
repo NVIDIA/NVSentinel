@@ -1,0 +1,55 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# The monitor writes its default state file, /var/run/syslog_monitor/state.json, through
+# var-run-vol. The chart must not mount a second, unused state directory.
+suite: state volume
+release:
+  namespace: nvsentinel
+set:
+  global.platformConnectorAuth.enabled: false
+tests:
+  - it: regular mode keeps the state file on var-run-vol
+    template: templates/daemonset-regular.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-run-vol
+            mountPath: /var/run/
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: var-run-vol
+            hostPath:
+              path: /var/run/nvsentinel
+              type: DirectoryOrCreate
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == "syslog-state-vol")]
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == "syslog-state-vol")]
+
+  - it: kata mode keeps the state file on var-run-vol
+    template: templates/daemonset-kata.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: var-run-vol
+            mountPath: /var/run/
+      - notExists:
+          path: spec.template.spec.volumes[?(@.name == "syslog-state-vol")]
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[?(@.name == "syslog-state-vol")]

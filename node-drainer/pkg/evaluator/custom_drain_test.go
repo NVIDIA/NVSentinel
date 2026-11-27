@@ -26,6 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -230,12 +231,18 @@ func TestEvaluateEventWithDatabase_NoNodeSelector_SendsEveryNodeToCustomDrain(t 
 }
 
 // TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord
-// covers each way a pass can gain, keep, or refuse a drain decision.
+// covers each way a pass can gain, keep, or refuse a drain decision. It also checks which node state
+// label values each result moves to drain-succeeded: only a completed drain CR and DrainOverrides.Skip move any.
 func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *testing.T) {
 	slurmNodes := map[string]*v1.Node{
 		"slurm-node": labelledNode("slurm-node", map[string]string{"scheduler": "slurm"}),
 		"plain-node": labelledNode("plain-node", nil),
 	}
+
+	fromQuarantinedOrDraining := []statemanager.NVSentinelStateLabelValue{
+		statemanager.QuarantinedLabelValue, statemanager.DrainingLabelValue,
+	}
+	fromQuarantined := []statemanager.NVSentinelStateLabelValue{statemanager.QuarantinedLabelValue}
 
 	tests := []struct {
 		name           string
@@ -243,6 +250,8 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 		customEnabled  bool
 		otherCRDrained bool
 		eventCRDrained bool
+		otherCRRunning bool
+		eventCRRunning bool
 		namespaces     []config.UserNamespace
 		nodes          map[string]*v1.Node
 		event          model.HealthEventWithStatus
@@ -252,6 +261,8 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 		wantRecord     bool
 		wantScopeOnly  bool
 		wantErrorType  string
+		// wantDrainSucceededFrom is empty for a result that leaves the node state label as it is.
+		wantDrainSucceededFrom []statemanager.NVSentinelStateLabelValue
 	}{
 		{
 			name:          "selector match records custom and the selector rule set name",
@@ -293,28 +304,57 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			wantRecord: true,
 		},
 		{
-			name:           "node drained by another custom drain CR records only the scope",
-			customEnabled:  true,
-			otherCRDrained: true,
-			event:          quarantinedEvent("any-node"),
-			wantAction:     ActionMarkAlreadyDrained,
-			wantScopeOnly:  true,
+			name:                   "node drained by another custom drain CR records only the scope",
+			customEnabled:          true,
+			otherCRDrained:         true,
+			event:                  quarantinedEvent("any-node"),
+			wantAction:             ActionMarkAlreadyDrained,
+			wantScopeOnly:          true,
+			wantDrainSucceededFrom: fromQuarantinedOrDraining,
 		},
 		{
-			name:           "completed CR of this event with no record records custom",
+			name:                   "recorded custom drained by another custom drain CR keeps the record",
+			customEnabled:          true,
+			otherCRDrained:         true,
+			event:                  eventWithDrainDecision("any-node", model.DrainMethodCustom, ""),
+			wantAction:             ActionMarkAlreadyDrained,
+			wantMethod:             model.DrainMethodCustom,
+			wantDrainSucceededFrom: fromQuarantinedOrDraining,
+		},
+		{
+			name:                   "completed CR of this event with no record records custom",
+			customEnabled:          true,
+			eventCRDrained:         true,
+			event:                  quarantinedEvent("any-node"),
+			wantAction:             ActionMarkAlreadyDrained,
+			wantMethod:             model.DrainMethodCustom,
+			wantRecord:             true,
+			wantDrainSucceededFrom: fromQuarantinedOrDraining,
+		},
+		{
+			name:                   "recorded custom whose CR completed is already drained and keeps the record",
+			customEnabled:          true,
+			eventCRDrained:         true,
+			event:                  eventWithDrainDecision("any-node", model.DrainMethodCustom, ""),
+			wantAction:             ActionMarkAlreadyDrained,
+			wantMethod:             model.DrainMethodCustom,
+			wantDrainSucceededFrom: fromQuarantinedOrDraining,
+		},
+		{
+			name:           "running CR of another event waits and records custom",
 			customEnabled:  true,
-			eventCRDrained: true,
+			otherCRRunning: true,
 			event:          quarantinedEvent("any-node"),
-			wantAction:     ActionMarkAlreadyDrained,
+			wantAction:     ActionWait,
 			wantMethod:     model.DrainMethodCustom,
 			wantRecord:     true,
 		},
 		{
-			name:           "recorded custom whose CR completed is already drained and keeps the record",
+			name:           "running CR of this event waits and keeps the record",
 			customEnabled:  true,
-			eventCRDrained: true,
+			eventCRRunning: true,
 			event:          eventWithDrainDecision("any-node", model.DrainMethodCustom, ""),
-			wantAction:     ActionMarkAlreadyDrained,
+			wantAction:     ActionWait,
 			wantMethod:     model.DrainMethodCustom,
 		},
 		{
@@ -390,9 +430,16 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			wantAction: ActionMarkAlreadyDrained,
 		},
 		{
-			name:       "drain skip records nothing",
+			name:                   "drain skip records nothing",
+			namespaces:             []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
+			event:                  skippedEvent("plain-node"),
+			wantAction:             ActionMarkAlreadyDrained,
+			wantDrainSucceededFrom: fromQuarantined,
+		},
+		{
+			name:       "healthy event with drain skip records nothing",
 			namespaces: []config.UserNamespace{{Name: "*", Mode: config.ModeImmediateEvict}},
-			event:      skippedEvent("plain-node"),
+			event:      healthySkippedEvent("plain-node"),
 			wantAction: ActionMarkAlreadyDrained,
 		},
 		{
@@ -422,6 +469,15 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 				client.eventCRComplete = true
 			}
 
+			// A running CR leaves the drain of the node incomplete.
+			if tt.otherCRRunning || tt.eventCRRunning {
+				client.nodeHasCR = true
+			}
+
+			if tt.eventCRRunning {
+				client.eventCRExists = true
+			}
+
 			before := 0.0
 			if tt.wantErrorType != "" {
 				before = counterValue(t, metrics.ProcessingErrors, tt.wantErrorType, tt.event.HealthEvent.NodeName)
@@ -432,6 +488,8 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 			result, err := evaluator.EvaluateEventWithDatabase(t.Context(), tt.event, nil, nil, recorder.record)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantAction, result.Action)
+			require.ElementsMatch(t, tt.wantDrainSucceededFrom, result.DrainSucceededFrom,
+				"node state label values the result moves to drain-succeeded")
 
 			if tt.wantRecord {
 				require.Len(t, recorder.decisions, 1)
@@ -462,7 +520,7 @@ func TestEvaluateEventWithDatabase_DrainDecision_KeepsOrWithholdsTheRecord(t *te
 
 // TestEvaluateEventWithDatabase_AlreadyDrained_RecordsScopeOnly
 // checks the annotation path that marks an event AlreadyDrained before a method is chosen.
-// The event records the scope it was covered for, and no method.
+// The event records the scope it was covered for, and no method, and leaves the node state label as it is.
 func TestEvaluateEventWithDatabase_AlreadyDrained_RecordsScopeOnly(t *testing.T) {
 	const nodeName = "already-drained-node"
 
@@ -510,6 +568,7 @@ func TestEvaluateEventWithDatabase_AlreadyDrained_RecordsScopeOnly(t *testing.T)
 	result, err := evaluator.EvaluateEventWithDatabase(t.Context(), event, nil, store, recorder.record)
 	require.NoError(t, err)
 	require.Equal(t, ActionMarkAlreadyDrained, result.Action)
+	require.Empty(t, result.DrainSucceededFrom, "a covered event leaves the node state label as it is")
 	require.Empty(t, recorder.decisions)
 	require.NotNil(t, result.DrainDecision)
 	require.Empty(t, result.DrainDecision.GetMethod())
@@ -770,6 +829,14 @@ func healthyEvent(nodeName string) model.HealthEventWithStatus {
 func skippedEvent(nodeName string) model.HealthEventWithStatus {
 	event := quarantinedEvent(nodeName)
 	event.HealthEvent.DrainOverrides = &protos.BehaviourOverrides{Skip: true}
+
+	return event
+}
+
+// healthySkippedEvent is a healthy event that still carries DrainOverrides.Skip.
+func healthySkippedEvent(nodeName string) model.HealthEventWithStatus {
+	event := skippedEvent(nodeName)
+	event.HealthEvent.IsHealthy = true
 
 	return event
 }
