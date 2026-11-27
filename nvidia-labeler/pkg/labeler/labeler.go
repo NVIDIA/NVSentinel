@@ -477,6 +477,11 @@ func (l *Labeler) resolveDCGMVersionLabelValue(node *v1.Node, excludePod *v1.Pod
 		requireDCGMReady = false
 	}
 
+	// The index returns pods in no fixed order. During a rolling update a node can
+	// have a 3.x and a 4.x pod at once, so prefer 4.x: the result must not depend on
+	// the order, or each write of the label would flip it again.
+	version := ""
+
 	for _, obj := range objs {
 		isTarget, pod := isTargetPod(obj, requireDCGMReady, excludePod)
 		if !isTarget {
@@ -487,12 +492,12 @@ func (l *Labeler) resolveDCGMVersionLabelValue(node *v1.Node, excludePod *v1.Pod
 			if dcgm4Regex.MatchString(container.Image) {
 				return dcgmVersion4, nil
 			} else if dcgm3Regex.MatchString(container.Image) {
-				return dcgmVersion3, nil
+				version = dcgmVersion3
 			}
 		}
 	}
 
-	return "", nil
+	return version, nil
 }
 
 // normalizeDCGMVersion validates the dcgm.version label. Anything else is rejected.
@@ -765,8 +770,19 @@ func (l *Labeler) setDriverAndDCGMLabelValues(
 	return needsUpdate
 }
 
+// labelUpToDate reports whether the node already has the desired value. An empty
+// value means that the label must be absent, so an empty label is not up to date.
+func labelUpToDate(node *v1.Node, key, value string) bool {
+	current, exists := node.Labels[key]
+	if value == "" {
+		return !exists
+	}
+
+	return current == value
+}
+
 func setDriverInstalledLabelValue(node *v1.Node, value string) bool {
-	if node.Labels[DriverInstalledLabel] == value {
+	if labelUpToDate(node, DriverInstalledLabel, value) {
 		return false
 	}
 
@@ -782,7 +798,7 @@ func setDriverInstalledLabelValue(node *v1.Node, value string) bool {
 }
 
 func (l *Labeler) setDCGMVersionLabelValue(node *v1.Node, value string) bool {
-	if node.Labels[DCGMVersionLabel] == value {
+	if labelUpToDate(node, DCGMVersionLabel, value) {
 		return false
 	}
 

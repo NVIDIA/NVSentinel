@@ -1877,7 +1877,11 @@ func TestReconcileNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing
 	// correctly emits no write.
 	clientset.ClearActions()
 	require.NoError(t, labeler.reconcileNodeLabels(nodeName, nil))
-	assert.Empty(t, clientset.Actions())
+	// The informer's own WATCH can land in the action history too, so count only
+	// the calls that a reconcile makes.
+	for _, verb := range []string{"get", "patch", "update"} {
+		assert.Equal(t, 0, countNodeActions(clientset, verb), verb)
+	}
 
 	// Deliver the delayed input event. Its handler must reconcile from the new cache
 	// generation and correct the derived label.
@@ -2065,4 +2069,49 @@ func TestNodeEvents_LabelStampedOnOptedOutNode_IsRemoved(t *testing.T) {
 
 		return !hasDCGM && !hasDriver
 	}, 10*time.Second, 10*time.Millisecond)
+}
+
+// TestResolveDCGMVersion_BothVersionsPresent_Prefers4x covers a rolling update that
+// runs a 3.x and a 4.x DCGM pod on one node. The result must not depend on the
+// order of the index, in either order of insertion.
+func TestResolveDCGMVersion_BothVersionsPresent_Prefers4x(t *testing.T) {
+	node := &corev1.Node{Name: "test-node", Annotations: map[string]string{DCGMBootstrapCompletedAnnotation: "true"}}
+	dcgmPod := func(name, image string) *corev1.Pod {
+		return &corev1.Pod{
+			Name:   name,
+			UID:    types.UID(name),
+			Labels: map[string]string{"app": "nvidia-dcgm"},
+			Spec:   corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Image: image}}},
+		}
+	}
+	old, updated := dcgmPod("dcgm-3", "nvcr.io/nvidia/dcgm:3.3.0"), dcgmPod("dcgm-4", "nvcr.io/nvidia/dcgm:4.1.0")
+
+	for _, pods := range [][]*corev1.Pod{{old, updated}, {updated, old}} {
+		l, _ := newLabelerWithCachedDriverPods(t, node, pods...)
+
+		for range 20 {
+			version, err := l.resolveDCGMVersionLabelValue(node, nil)
+			require.NoError(t, err)
+			require.Equal(t, dcgmVersion4, version)
+		}
+
+		version, err := l.resolveDCGMVersionLabelValue(node, updated)
+		require.NoError(t, err)
+		assert.Equal(t, dcgmVersion3, version, "the 3.x pod remains when the 4.x pod is deleted")
+	}
+}
+
+// TestSetLabelValues_EmptyLabelWithoutSource_IsRemoved covers empty dcgm.version and
+// driver.installed labels on a managed node with no DCGM or driver pod.
+func TestSetLabelValues_EmptyLabelWithoutSource_IsRemoved(t *testing.T) {
+	for _, assumeDCGMAvailable := range []bool{false, true} {
+		node := &corev1.Node{Name: "test-node", Labels: map[string]string{DCGMVersionLabel: "", DriverInstalledLabel: ""}}
+		l := &Labeler{assumeDCGMAvailable: assumeDCGMAvailable}
+
+		assert.True(t, l.setDriverAndDCGMLabelValues(node, "", ""))
+		assert.NotContains(t, node.Labels, DCGMVersionLabel)
+		assert.NotContains(t, node.Labels, DriverInstalledLabel)
+
+		assert.False(t, l.setDriverAndDCGMLabelValues(node, "", ""), "absent labels need no update")
+	}
 }
