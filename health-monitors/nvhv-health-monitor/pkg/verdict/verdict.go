@@ -30,6 +30,11 @@ const (
 	Critical Severity = "CRITICAL"
 )
 
+// Severities lists the severities the monitor's rules are written for. The
+// client checks that NVHV's enum still has each of them, so a renamed value is
+// reported at the first poll and does not silently drop faults.
+var Severities = []Severity{Pass, Info, Warning, Unknown, Critical}
+
 // Request is what the monitor asks of NVHV for one poll.
 type Request struct {
 	// XidFrom and XidTo bound the Xid journal read to the interval (XidFrom,

@@ -70,7 +70,9 @@ func (c *Client) Evaluate(ctx context.Context, r verdict.Request) (*verdict.Verd
 
 	if err := c.conn.Invoke(ctx, s.method, req, resp); err != nil {
 		// NVHV may have been replaced by a version with another schema.
-		c.forgetSchema()
+		c.mu.Lock()
+		c.schema = nil
+		c.mu.Unlock()
 
 		return nil, fmt.Errorf("failed to call NVHV %s: %w", s.method, err)
 	}
@@ -99,11 +101,4 @@ func (c *Client) loadSchema(ctx context.Context) (*schema, error) {
 	c.schema = s
 
 	return s, nil
-}
-
-func (c *Client) forgetSchema() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.schema = nil
 }

@@ -45,9 +45,6 @@ type actionFields struct {
 	state, steps protoreflect.FieldDescriptor
 }
 
-// severities are the enum values the monitor's rules are written for.
-var severities = []protoreflect.Name{"PASS", "INFO", "WARNING", "UNKNOWN", "CRITICAL"}
-
 // newSchema finds the Evaluate method and every field the monitor reads, and
 // fails with ErrIncompatibleSchema if one is missing or has another type.
 func newSchema(files *protoregistry.Files) (*schema, error) {
@@ -90,7 +87,7 @@ func (s *schema) bind() error {
 
 		fd := md.Fields().ByName(protoreflect.Name(name))
 		if fd == nil || fd.Kind() != kind || fd.IsList() != list || fd.IsMap() {
-			err = fmt.Errorf("%w: %s.%s must be a %s%s", ErrIncompatibleSchema, md.FullName(), name, listWord(list), kind)
+			err = fmt.Errorf("%w: %s.%s must be a %s field, repeated: %t", ErrIncompatibleSchema, md.FullName(), name, kind, list)
 
 			return nil
 		}
@@ -146,8 +143,8 @@ func (s *schema) bind() error {
 		return err
 	}
 
-	for _, name := range severities {
-		if s.check.severity.Enum().Values().ByName(name) == nil {
+	for _, name := range verdict.Severities {
+		if s.check.severity.Enum().Values().ByName(protoreflect.Name(name)) == nil {
 			return fmt.Errorf("%w: severity enum has no %s", ErrIncompatibleSchema, name)
 		}
 	}
@@ -161,14 +158,6 @@ func (s *schema) bind() error {
 	}
 
 	return nil
-}
-
-func listWord(list bool) string {
-	if list {
-		return "repeated "
-	}
-
-	return ""
 }
 
 // decode reads a reply into plain verdict values.
@@ -191,15 +180,15 @@ func (s *schema) decodeResult(m protoreflect.Message) verdict.Result {
 		Severity:         verdict.Severity(enumName(m, c.severity)),
 		Category:         enumName(m, c.category),
 		Skipped:          m.Get(c.skipped).Bool(),
-		Messages:         strings(m.Get(c.messages).List()),
-		AffectedEntities: strings(m.Get(c.entities).List()),
+		Messages:         stringList(m.Get(c.messages).List()),
+		AffectedEntities: stringList(m.Get(c.entities).List()),
 		ObservedStrings:  s.observedStrings(m.Get(c.observed).Map()),
 	}
 
 	if m.Has(c.action) {
 		am := m.Get(c.action).Message()
 		r.OperationalState = enumName(am, s.action.state)
-		r.RemediationActions = strings(am.Get(s.action.steps).List())
+		r.RemediationActions = stringList(am.Get(s.action.steps).List())
 	}
 
 	return r
@@ -240,7 +229,7 @@ func enumName(m protoreflect.Message, fd protoreflect.FieldDescriptor) string {
 	return strconv.Itoa(int(n))
 }
 
-func strings(l protoreflect.List) []string {
+func stringList(l protoreflect.List) []string {
 	var out []string
 
 	for i := range l.Len() {
