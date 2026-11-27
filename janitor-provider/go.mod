@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.21
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.350.0
 	github.com/go-logr/logr v1.4.4
-	github.com/nebius/gosdk v0.2.98
+	github.com/nebius/gosdk v0.2.99
 	github.com/nvidia/nvsentinel/api v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/oracle/oci-go-sdk/v65 v65.131.0
