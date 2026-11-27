@@ -39,7 +39,7 @@ tests:
       - equal:
           path: metadata.name
           # &defaultName names this value; the tests below reuse it as *defaultName.
-          value: &defaultName create-mongodb-database-2592000-77cb9ffa
+          value: &defaultName create-mongodb-database-2592000-f2dfdcc5
         documentSelector:
           path: kind
           value: Job

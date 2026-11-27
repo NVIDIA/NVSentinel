@@ -106,10 +106,14 @@ networkPolicy:
 mongodb:
   # Helper images for MongoDB operations
   helperImages:
-    # kubectl image for Kubernetes operations in init containers
+    # kubectl image for the init containers below and the create-mongodb-database
+    # Job. Their scripts run under `sh -c` and use kubectl, head, base64, tr, cut,
+    # sed, grep and sleep, and write to /tmp. alpine/kubectl is Alpine with
+    # kubectl and busybox, published for amd64 and arm64. The image sets no
+    # user, so the containers set runAsUser themselves.
     kubectl:
-      repository: docker.io/bitnamilegacy/kubectl
-      tag: "1.30.6"
+      repository: docker.io/alpine/kubectl
+      tag: "1.37.2"
       pullPolicy: IfNotPresent
     # mongosh image for MongoDB shell operations
     mongosh:
@@ -200,10 +204,19 @@ mongodb:
     minAvailable: ""
     maxUnavailable: ""
 
-  initContainers:
+  # A string, not a list, so that each securityContext can call the subchart's
+  # common.compatibility.renderSecurityContext: the subchart renders this value
+  # as a template. The kubectl helper image sets no user, so the containers run
+  # as runAsUser and runAsGroup 1001, the user the earlier Bitnami kubectl image
+  # ran them as. On OpenShift (global.compatibility.openshift.adaptSecurityContext)
+  # both are removed and the platform assigns them from the namespace's range.
+  # They don't depend on podSecurityContext.enabled. A list still works to
+  # replace these containers.
+  initContainers: |
     - name: create-mongodb-credentials
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
+      securityContext: {{- include "common.compatibility.renderSecurityContext" (dict "secContext" (dict "runAsUser" 1001 "runAsGroup" 1001 "runAsNonRoot" true "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL")) "seccompProfile" (dict "type" "RuntimeDefault")) "context" $) | nindent 4 }}
       command:
         - sh
         - -c
@@ -243,6 +256,7 @@ mongodb:
     - name: create-certmanager-resources
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
+      securityContext: {{- include "common.compatibility.renderSecurityContext" (dict "secContext" (dict "runAsUser" 1001 "runAsGroup" 1001 "runAsNonRoot" true "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL")) "seccompProfile" (dict "type" "RuntimeDefault")) "context" $) | nindent 4 }}
       command:
         - sh
         - -c
@@ -485,9 +499,10 @@ psmdb-db:
 
 psmdb:
   helperImages:
+    # Same image and requirements as mongodb.helperImages.kubectl.
     kubectl:
-      repository: docker.io/lachlanevenson/k8s-kubectl
-      tag: "v1.25.4"
+      repository: docker.io/alpine/kubectl
+      tag: "1.37.2"
       pullPolicy: IfNotPresent
     mongosh:
       repository: ghcr.io/rtsp/docker-mongosh

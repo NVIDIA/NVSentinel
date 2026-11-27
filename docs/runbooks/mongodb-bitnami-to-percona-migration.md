@@ -28,7 +28,7 @@ The runbook is a sequence of steps. If a step has options, select the option tha
 - **The clean path (3b) drops all health event data.** The monitors fill the new database again when they detect issues, but the history is lost. If the monitors already read a one-time fault from the logs, such as a GPU XID, they never raise it again.
 - **Never switch backends in place.** A change to `useBitnami` and `usePerconaOperator` does not migrate the data. Services can connect to a new, empty database, and the existing health events are then not available. Node annotations and maintenance CRs can then refer to health events that are not in the new database. To remove and redeploy the installation, follow this runbook. If you must preserve the health events, use the dump and restore path.
 - **The migration requires no cloud infrastructure changes.** Both backends listen on the same ports (27017 for mongod, 9216 for metrics). Every Service is cluster-internal, storage comes from the same StorageClass, and nothing calls cloud APIs. The migration is entirely in-cluster. In locked-down environments, check these three things:
-  - Your cluster must be able to pull the Percona images (`percona/*` and the `lachlanevenson/k8s-kubectl` helper) from your registry path.
+  - Your cluster must be able to pull the Percona images (`percona/*` and the `alpine/kubectl` helper) from your registry path.
   - The person who runs the migration needs cluster-level Kubernetes RBAC, because the Percona path installs cluster-scoped CRDs.
   - If you built custom network policies or exposure for the old service name, update them.
 - Plan a maintenance window. Between the removal and the completed redeploy, NVSentinel does not monitor the cluster.

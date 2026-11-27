@@ -1,0 +1,393 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Three values pick a kubectl helper image: mongodb.helperImages.kubectl and
+# psmdb.helperImages.kubectl in mongodb-store, and nodeConditionCleanup.image in
+# the umbrella. These cases pin their defaults to maintained multi-arch images
+# (not the frozen bitnamilegacy/kubectl or the unmaintained
+# lachlanevenson/k8s-kubectl) and pin what each consumer needs from them:
+#   - Bitnami MongoDB init containers: sh -c with kubectl, head, base64, tr, cut
+#     and sed, writing to /tmp
+#   - create-mongodb-database Job (Bitnami and Percona): sh -c with kubectl,
+#     head, base64, tr, sed, grep, cut and sleep, read-only root filesystem
+#   - node-condition-cleanup hook: /bin/bash with kubectl, jq, awk, grep, wc, tr
+#     and sleep, as UID 65534 with a read-only root filesystem and no
+#     capabilities
+# alpine/kubectl sets no user, so the mongodb-store helpers set runAsUser 1001
+# themselves, the user the Bitnami kubectl image used to run them as. On
+# OpenShift they leave it unset, so the platform assigns one from the
+# namespace's range.
+#
+# Lives in the umbrella suite because the Job calls umbrella helpers, so it
+# cannot render with the subchart alone.
+suite: kubectl helper images
+release:
+  name: nvsentinel
+  namespace: nvsentinel
+tests:
+  - it: uses the maintained default image for the Bitnami MongoDB init containers
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: create-mongodb-credentials
+      - equal:
+          path: spec.template.spec.initContainers[1].name
+          value: create-certmanager-resources
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[0].command[0]
+          value: sh
+      - equal:
+          path: spec.template.spec.initContainers[1].command[0]
+          value: sh
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: head -c 24 /dev/urandom \| base64 \| tr -d '\+/=' \| cut -c1-32
+      - matchRegex:
+          path: spec.template.spec.initContainers[1].command[2]
+          pattern: base64 -d > /tmp/mongodb-ca-cert
+
+  - it: runs the Bitnami MongoDB init containers as a non-root user
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: &bitnamiInitSecurityContext
+            runAsUser: 1001
+            runAsGroup: 1001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *bitnamiInitSecurityContext
+
+  # OpenShift's restricted-v2 SCC rejects a pod whose user is outside the
+  # namespace's range, and assigns one from it when the pod sets none.
+  - it: leaves the Bitnami pod user and group to OpenShift when forced
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: force
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts: &bitnamiNoUserAsserts
+      - notExists:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.initContainers[0].securityContext.runAsGroup
+      - notExists:
+          path: spec.template.spec.initContainers[1].securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.initContainers[1].securityContext.runAsGroup
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsNonRoot
+          value: true
+
+  - it: leaves the Bitnami pod user and group to OpenShift on an OpenShift cluster
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    asserts: *bitnamiNoUserAsserts
+
+  # The init containers set their own user, so they start when the subchart
+  # drops the pod securityContext.
+  - it: keeps the Bitnami init container user without the pod securityContext
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.podSecurityContext.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: *bitnamiInitSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *bitnamiInitSecurityContext
+
+  - it: leaves the Bitnami init container user to OpenShift without the pod securityContext
+    template: charts/mongodb-store/charts/mongodb/templates/replicaset/statefulset.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.podSecurityContext.enabled: false
+    asserts: *bitnamiNoUserAsserts
+
+  - it: leaves the create-mongodb-database Job user and group to OpenShift when forced
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: force
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.validateDeployedCrVersion: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts: &jobOpenShiftAsserts
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: &jobOpenShiftSecurityContext
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *jobOpenShiftSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[2].securityContext
+          value: *jobOpenShiftSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[3].securityContext
+          value: *jobOpenShiftSecurityContext
+
+  - it: leaves the create-mongodb-database Job user and group to OpenShift on an OpenShift cluster
+    template: charts/mongodb-store/templates/jobs.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.validateDeployedCrVersion: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts: *jobOpenShiftAsserts
+
+  - it: keeps user and group 1001 on OpenShift when the adaptation is disabled
+    template: charts/mongodb-store/templates/jobs.yaml
+    capabilities:
+      apiVersions:
+        - security.openshift.io/v1
+    set:
+      global.mongodbStore.enabled: true
+      global.compatibility.openshift.adaptSecurityContext: disabled
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 1001
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsGroup
+          value: 1001
+
+  - it: uses the maintained default image for the Bitnami create-mongodb-database Job
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-mongodb-secret
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[0].command[0]
+          value: sh
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: &jobSecurityContext
+            runAsUser: 1001
+            runAsGroup: 1001
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+  - it: uses the maintained default image for every Percona create-mongodb-database init container
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.validateDeployedCrVersion: true
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.initContainers
+          count: 4
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: create-mongodb-secrets
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[1].name
+          value: validate-client-cert-ca
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[2].name
+          value: wait-for-mongodb-users
+      - equal:
+          path: spec.template.spec.initContainers[2].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[3].name
+          value: validate-deployed-crversion
+      - equal:
+          path: spec.template.spec.initContainers[3].image
+          value: docker.io/alpine/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext
+          value: *jobSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: *jobSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[2].securityContext
+          value: *jobSecurityContext
+      - equal:
+          path: spec.template.spec.initContainers[3].securityContext
+          value: *jobSecurityContext
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: head -c 768 /dev/urandom \| base64 \| tr -d '\\n' \| head -c 1024
+
+  - it: uses a maintained default image with bash and jq for the node-condition cleanup hook
+    template: templates/node-condition-cleanup-hook.yaml
+    set:
+      nodeConditionCleanup.enabled: true
+      nodeConditionCleanup.deprecatedConditions:
+        - OldCondition
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/alpine/k8s:1.37.2
+      - equal:
+          path: spec.template.spec.containers[0].command[0]
+          value: /bin/bash
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: jq -c '\.status\.conditions // \[\]'
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65534
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: ["ALL"]
+
+  - it: lets an operator point the Bitnami helpers at a mirrored image
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.helperImages.kubectl.repository: registry.example.com/mirror/kubectl
+      mongodb-store.mongodb.helperImages.kubectl.tag: "1.37.2"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: registry.example.com/mirror/kubectl:1.37.2
+
+  - it: lets an operator point the Percona helpers at a mirrored image
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.psmdb.helperImages.kubectl.repository: registry.example.com/mirror/kubectl
+      mongodb-store.psmdb.helperImages.kubectl.tag: "1.37.2"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: registry.example.com/mirror/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: registry.example.com/mirror/kubectl:1.37.2
+      - equal:
+          path: spec.template.spec.initContainers[2].image
+          value: registry.example.com/mirror/kubectl:1.37.2
+
+  - it: lets an operator point the node-condition cleanup hook at a mirrored image
+    template: templates/node-condition-cleanup-hook.yaml
+    set:
+      nodeConditionCleanup.enabled: true
+      nodeConditionCleanup.image.repository: registry.example.com/mirror/k8s
+      nodeConditionCleanup.image.tag: "1.37.2"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/k8s:1.37.2

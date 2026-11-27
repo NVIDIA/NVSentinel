@@ -280,3 +280,37 @@ staged upgrade Percona requires.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Whether to leave runAsUser and runAsGroup unset so that OpenShift assigns them
+from the namespace's range, as a template-truthy string. Follows the same
+setting as the vendored Bitnami chart: global.compatibility.openshift.adaptSecurityContext
+is force, or auto (the default) on a cluster with the OpenShift security API.
+*/}}
+{{- define "mongodb-store.adaptSecurityContextForOpenShift" -}}
+{{- $mode := (((.Values.global).compatibility).openshift).adaptSecurityContext | default "auto" -}}
+{{- if or (eq $mode "force") (and (eq $mode "auto") (.Capabilities.APIVersions.Has "security.openshift.io/v1")) -}}true{{- end -}}
+{{- end }}
+
+{{/*
+securityContext for the kubectl helper containers of the create-mongodb-database
+Job. The helper image sets no user, so without this they would run as root.
+1001 is the user the earlier Bitnami kubectl image ran as. On OpenShift the
+user and group are left unset, so the platform assigns them from the
+namespace's range. The scripts write no files, so the root filesystem stays
+read-only.
+*/}}
+{{- define "mongodb-store.kubectlSecurityContext" -}}
+{{- if not (include "mongodb-store.adaptSecurityContextForOpenShift" .) -}}
+runAsUser: 1001
+runAsGroup: 1001
+{{ end -}}
+runAsNonRoot: true
+readOnlyRootFilesystem: true
+allowPrivilegeEscalation: false
+capabilities:
+  drop:
+    - ALL
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
