@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -676,9 +677,9 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 }
 
 // A label write of performRemediation that lands with an unexpected transition still returns an error from the state
-// manager, which must not stop the remediation. An unwritten remediating label stops it before the CR, and an
-// unwritten final label fails the attempt after the CR. The live quarantine is checked before performRemediation, in
-// tryCloseEventOutsideQuarantine.
+// manager, which must not stop the remediation while the live quarantine holds the event. A remediating label written
+// after the quarantine ended stops it before the CR, as does an unwritten remediating label, and an unwritten final
+// label fails the attempt after the CR.
 func TestPerformRemediation_LabelWrites_FailOnlyWhenNotWritten(t *testing.T) {
 	type labelResult struct {
 		modified bool
@@ -690,10 +691,12 @@ func TestPerformRemediation_LabelWrites_FailOnlyWhenNotWritten(t *testing.T) {
 	createErr := errors.New("failed to create maintenance CR")
 
 	tests := []struct {
-		name            string
-		remediating     labelResult
-		final           labelResult
-		createErr       error
+		name        string
+		remediating labelResult
+		final       labelResult
+		createErr   error
+		// quarantineEnded removes the quarantine of the event from the live node.
+		quarantineEnded bool
 		wantFinalLabel  statemanager.NVSentinelStateLabelValue
 		wantErr         error
 		wantLabelCalls  int
@@ -708,6 +711,13 @@ func TestPerformRemediation_LabelWrites_FailOnlyWhenNotWritten(t *testing.T) {
 			wantLabelCalls:  2,
 			wantCRName:      "test-cr-label-error",
 			wantCreateCalls: 1,
+		},
+		{
+			name:            "remediating label written with an unexpected transition after the quarantine ended",
+			remediating:     labelResult{modified: true, err: transitionErr},
+			quarantineEnded: true,
+			wantErr:         transitionErr,
+			wantLabelCalls:  1,
 		},
 		{
 			name:           "remediating label not written",
@@ -770,9 +780,17 @@ func TestPerformRemediation_LabelWrites_FailOnlyWhenNotWritten(t *testing.T) {
 				},
 			}
 
+			// fault-quarantine lists the event under its record key.
+			nodeReader := newMockNodeReader(quarantineAnnotationForTest(t, testAnnotationHealthEvent(
+				"test-id-123", "node1", protos.RecommendedAction_RESTART_BM, "GPU-test")))
+			if tt.quarantineEnded {
+				nodeReader = newMockNodeReader(nil)
+			}
+
 			cfg := ReconcilerConfig{
 				RemediationClient: k8sClient,
 				StateManager:      stateManager,
+				NodeReader:        nodeReader,
 				UpdateMaxRetries:  2,
 				UpdateRetryDelay:  1 * time.Microsecond,
 			}
@@ -1686,7 +1704,8 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 // TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediation checks the live quarantine before an
 // event gets a CR. fault-quarantine lists an event under its record key, also when the producer of the
 // event set its own id. An event whose quarantine ended is closed without remediation in one pass, also when a later
-// quarantine of the node lists another event, and a live node read that fails leaves the event open for a retry.
+// quarantine of the node lists another event, and a live node read that fails leaves the event open for a retry. A
+// finished CR that the new CR replaces keeps its reference unless the event goes on to remediation.
 func TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediation(t *testing.T) {
 	const (
 		nodeName = "test-node"
@@ -1758,13 +1777,21 @@ func TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediati
 			}
 
 			createCalls := 0
+			// A reboot that finished before the event does not cover it, and the new CR would replace it.
+			annotationManager := &MockNodeAnnotationManager{
+				existingCRs:       map[string]string{"restart": "maintenance-cr-old"},
+				existingCRCreated: time.Now().Add(-time.Hour),
+			}
 			mockK8sClient := &MockK8sClient{
 				createMaintenanceResourceFn: func(context.Context, *events.HealthEventData,
 					*common.EquivalenceGroupConfig) (string, error) {
 					createCalls++
 					return "maintenance-cr-new", nil
 				},
-				annotationManagerOverride: &MockNodeAnnotationManager{},
+				annotationManagerOverride: annotationManager,
+				mockStatusChecker: &mockStatusChecker{stateByCR: map[string]crstatus.CRState{
+					"maintenance-cr-old": crstatus.CRStateSucceeded,
+				}},
 			}
 
 			cfg := ReconcilerConfig{
@@ -1835,9 +1862,70 @@ func TestHandleRemediationEvent_EventOutsideLiveQuarantine_ClosedBeforeRemediati
 
 			if tt.wantCR {
 				assert.Equal(t, 1, createCalls, "the event should get a CR")
+				assert.NotContains(t, annotationManager.existingCRs, "restart",
+					"the new CR replaces the finished CR")
 			} else {
 				assert.Zero(t, createCalls, "the event must not get a CR")
+				assert.Equal(t, "maintenance-cr-old", annotationManager.existingCRs["restart"],
+					"an event that is not remediated must keep the finished CR of the other events")
 			}
+		})
+	}
+}
+
+// TestActiveQuarantineContainsEvent_RepeatWithProducerID_MatchesByKeyUnlessOlder checks a report whose producer set an
+// id, as lifecycle-manager does, against a quarantine that lists an earlier report of the same key under that
+// report's record key. A repeat generated at or after the listed report belongs to the quarantine. A report generated
+// before it belongs to an earlier quarantine, and a report without a generation time or of another key does not match.
+func TestActiveQuarantineContainsEvent_RepeatWithProducerID_MatchesByKeyUnlessOlder(t *testing.T) {
+	listedAt := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		generatedAt *timestamppb.Timestamp
+		entityValue string
+		want        bool
+	}{
+		{
+			name:        "repeat generated after the listed report",
+			generatedAt: timestamppb.New(listedAt.Add(time.Minute)),
+			want:        true,
+		},
+		{
+			name:        "repeat generated with the listed report",
+			generatedAt: timestamppb.New(listedAt),
+			want:        true,
+		},
+		{
+			name:        "report of an earlier quarantine",
+			generatedAt: timestamppb.New(listedAt.Add(-time.Minute)),
+		},
+		{
+			name: "report without a generation time",
+		},
+		{
+			name:        "later report of another key",
+			generatedAt: timestamppb.New(listedAt.Add(time.Minute)),
+			entityValue: "GPU-other",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			listed := testAnnotationHealthEvent("listed-record", "node1", protos.RecommendedAction_RESTART_BM, "GPU-test")
+			listed.GeneratedTimestamp = timestamppb.New(listedAt)
+
+			entityValue := "GPU-test"
+			if tt.entityValue != "" {
+				entityValue = tt.entityValue
+			}
+
+			incoming := testAnnotationHealthEvent("producer-uuid", "node1", protos.RecommendedAction_RESTART_BM, entityValue)
+			incoming.GeneratedTimestamp = tt.generatedAt
+
+			got, err := activeQuarantineContainsEvent(quarantineAnnotationForTest(t, listed), incoming, "repeat-record")
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
