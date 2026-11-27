@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Janitor Provider is the CSP-specific backend that executes node operations (reboot, terminate) on cloud infrastructure. The Janitor connects to the Janitor Provider over gRPC with TLS and ServiceAccount token authentication. This document covers all Helm configuration options for system administrators.
+The Janitor Provider is the CSP-specific backend that does node operations (reboot, terminate) on cloud infrastructure. The Janitor connects to the Janitor Provider over gRPC with TLS and ServiceAccount token authentication. This document gives all the Helm configuration options for system administrators.
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-Controls whether the janitor-provider module is deployed in the cluster.
+Controls whether the Helm chart deploys the Janitor Provider module in the cluster.
 
 ```yaml
 global:
@@ -34,7 +34,7 @@ janitor-provider:
 
 ### Resources
 
-Defines CPU and memory resource requests and limits for the janitor-provider pod. No defaults are set; configure for production use.
+Defines CPU and memory resource requests and limits for the janitor-provider pod. The chart sets no defaults. Configure these values for production use.
 
 ```yaml
 janitor-provider:
@@ -43,7 +43,7 @@ janitor-provider:
 
 ## TLS
 
-The Janitor Provider serves gRPC over TLS. The certificate is issued and renewed by cert-manager, which is a required dependency.
+The Janitor Provider serves gRPC over TLS. cert-manager issues and renews the certificate, and is a required dependency.
 
 ```yaml
 janitor-provider:
@@ -55,16 +55,20 @@ janitor-provider:
 ```
 
 ### enabled
-When `true`, the gRPC server requires TLS. Must match `janitor.config.cspProvider.tls.enabled`.
+
+When `true`, the gRPC server requires TLS. This value must match `janitor.config.cspProvider.tls.enabled`.
 
 ### certDir
-Path inside the container where the TLS certificate and key are mounted.
+
+Path inside the container at which the TLS certificate and key are mounted.
 
 ### issuerName
-Name of the cert-manager ClusterIssuer used to issue the gRPC server certificate.
+
+Name of the cert-manager Issuer that issues the gRPC server certificate.
 
 ### secretName
-Name of the Kubernetes Secret where the issued certificate is stored. When empty, the chart generates a name automatically.
+
+Name of the Kubernetes Secret that stores the issued certificate. If it is empty, the chart generates a name automatically.
 
 ## Authentication
 
@@ -77,24 +81,26 @@ janitor-provider:
 ```
 
 ### enabled
-When `true`, the Janitor Provider validates the ServiceAccount token presented by the Janitor on every gRPC call.
+
+When `true`, the Janitor Provider validates the ServiceAccount token that the Janitor sends on every gRPC call.
 
 ### audiences
-List of accepted token audiences. Must include the value set in `janitor.config.cspProvider.auth.audience`.
+
+List of accepted token audiences. This list must include the value of `janitor.config.cspProvider.auth.audience`.
 
 ## Cloud Provider Selection
 
 ```yaml
 janitor-provider:
   csp:
-    provider: "kind"  # Options: kind, kwok, aws, gcp, azure, oci, nebius, lambda, akamai, generic, label
+    provider: "kind"  # Options: kind, aws, gcp, azure, oci, nebius, lambda, akamai, generic, label
 ```
 
-Only one provider is active at a time. `kind` and `kwok` are for development only; they simulate reboots without contacting any cloud API.
+Only one provider is active at a time. `kind` is for development only. It simulates reboots and does not contact a cloud API.
 
 ## AWS
 
-Uses IRSA (IAM Roles for Service Accounts) for authentication. The cluster must have OIDC federation configured, and the IAM role must trust the Janitor Provider's Kubernetes ServiceAccount.
+This provider uses IRSA (IAM Roles for Service Accounts) for authentication. The cluster must have OIDC federation configured. The IAM role must trust the Kubernetes ServiceAccount of the Janitor Provider.
 
 ```yaml
 janitor-provider:
@@ -107,17 +113,20 @@ janitor-provider:
 ```
 
 ### region
-AWS region where the EC2 instances are running (e.g. `us-west-2`).
+
+AWS region in which the EC2 instances run, for example `us-west-2`.
 
 ### accountId
-12-digit AWS account ID hosting the EKS cluster.
+
+12-digit ID of the AWS account that hosts the EKS cluster.
 
 ### iamRoleName
-Name of the IAM role used for IRSA. The role must include `ec2:RebootInstances` and `ec2:TerminateInstances` permissions. See [CSP Health Monitor IAM Setup](../csp-health-monitor-iam.md) for the general Workload Identity pattern; apply the same approach for the Janitor Provider ServiceAccount.
+
+Name of the IAM role for IRSA. The role must include the `ec2:RebootInstances` and `ec2:TerminateInstances` permissions. For the general Workload Identity pattern, see [CSP Health Monitor IAM Setup](../csp-health-monitor-iam.md). Apply the same approach to the Janitor Provider ServiceAccount.
 
 ## GCP
 
-Uses Workload Identity to authenticate the Janitor Provider's Kubernetes ServiceAccount as a GCP Service Account.
+This provider uses Workload Identity to authenticate the Kubernetes ServiceAccount of the Janitor Provider as a GCP Service Account.
 
 ```yaml
 janitor-provider:
@@ -130,17 +139,20 @@ janitor-provider:
 ```
 
 ### project
-GCP project ID where the GKE cluster and Compute Engine instances reside.
+
+ID of the GCP project that contains the GKE cluster and the Compute Engine instances.
 
 ### zone
-GCP zone of the instances (e.g. `us-central1-a`).
+
+GCP zone of the instances, for example `us-central1-a`.
 
 ### serviceAccount
-GCP Service Account name, without the `@project.iam.gserviceaccount.com` suffix. The SA must have `compute.instances.reset` and `compute.instances.stop` permissions. See [CSP Health Monitor IAM Setup](../csp-health-monitor-iam.md) for the Workload Identity binding pattern.
+
+GCP Service Account name, without the `@project.iam.gserviceaccount.com` suffix. The SA must have the `compute.instances.reset` and `compute.instances.stop` permissions. For the Workload Identity binding pattern, see [CSP Health Monitor IAM Setup](../csp-health-monitor-iam.md).
 
 ## Azure
 
-Uses Azure Workload Identity to authenticate the Janitor Provider's Kubernetes ServiceAccount as a Managed Identity.
+This provider uses Azure Workload Identity to authenticate the Kubernetes ServiceAccount of the Janitor Provider as a Managed Identity.
 
 ```yaml
 janitor-provider:
@@ -154,22 +166,26 @@ janitor-provider:
 ```
 
 ### subscriptionId
-Azure subscription ID containing the AKS cluster and VM resources.
+
+ID of the Azure subscription that contains the AKS cluster and the VM resources.
 
 ### resourceGroup
-Azure resource group where the VM Scale Set or individual VMs are managed.
+
+Azure resource group in which the VM Scale Set or the individual VMs are managed.
 
 ### location
-Azure region of the resources (e.g. `eastus`).
+
+Azure region of the resources, for example `eastus`.
 
 ### clientId
-Client ID of the Managed Identity used for Workload Identity authentication. The identity must have `Microsoft.Compute/virtualMachines/restart/action` and `Microsoft.Compute/virtualMachines/delete/action` permissions on the relevant resource group.
+
+Client ID of the Managed Identity for Workload Identity authentication. The identity must have the `Microsoft.Compute/virtualMachines/restart/action` and `Microsoft.Compute/virtualMachines/delete/action` permissions on the relevant resource group.
 
 ## OCI
 
-Uses OCI Workload Identity or a credentials file for authentication.
+This provider uses OCI Workload Identity or a credentials file for authentication.
 
-OCI maps all `RebootNode` resources to the `RESET` action. `RESET` powers off the instance immediately without waiting for the operating system. Drain workloads before you create the resource because an immediate power-off can cause data corruption.
+OCI maps all `RebootNode` resources to the `RESET` action. `RESET` powers off the instance immediately, and does not wait for the operating system. Drain the workloads before you create the resource. An immediate power-off can cause data corruption.
 
 ```yaml
 janitor-provider:
@@ -184,23 +200,28 @@ janitor-provider:
 ```
 
 ### region
-OCI region identifier (e.g. `us-phoenix-1`).
+
+OCI region identifier, for example `us-phoenix-1`.
 
 ### compartment
-OCID of the OCI compartment containing the compute instances.
+
+OCID of the OCI compartment that contains the compute instances.
 
 ### credentialsFile
-Path to an OCI credentials file inside the container. Leave empty to use Workload Identity (recommended for production).
+
+Path to an OCI credentials file inside the container. To use Workload Identity (recommended for production), keep it empty.
 
 ### profile
-Profile name within the credentials file. Defaults to `DEFAULT`. Ignored when `credentialsFile` is empty.
+
+Profile name in the credentials file. The default is `DEFAULT`. The provider ignores this value when `credentialsFile` is empty.
 
 ### principalId
-OCI principal OCID used for Workload Identity. Required when `credentialsFile` is empty.
+
+OCI principal OCID for Workload Identity. This value is required when `credentialsFile` is empty.
 
 ## Nebius
 
-For Nebius Managed Kubernetes (MK8s) clusters. The provider uses the official [Nebius Go SDK](https://github.com/nebius/gosdk) and authenticates with a service account key or an IAM token. The identity needs the `compute.instances.stop` and `compute.instances.start` permissions.
+This provider is for Nebius Managed Kubernetes (MK8s) clusters. It uses the official Nebius Go SDK, and authenticates with a service account key or an IAM token. The identity needs the `compute.instances.stop` and `compute.instances.start` permissions.
 
 ```yaml
 janitor-provider:
@@ -210,19 +231,23 @@ janitor-provider:
       serviceAccountKeySecret: "nebius-sa-credentials"
 ```
 
-Configure exactly one credential. Prefer a service account key: IAM tokens expire and need a manual refresh, so they suit testing rather than production.
+Configure exactly one credential. Prefer a service account key. IAM tokens expire and need a manual refresh. Thus, they suit testing, not production.
 
 ### serviceAccountKeySecret
-Secret holding the service account key file under the key `sa-credentials.json`. The chart mounts it at `/etc/nebius` and sets `NEBIUS_SA_KEY_FILE` for you. This is the recommended production option.
+
+Secret that holds the service account key file under the key `sa-credentials.json`. The chart mounts it at `/etc/nebius` and sets `NEBIUS_SA_KEY_FILE` for you. This is the recommended production option.
 
 ### serviceAccountKeyFile
-Path to a service account key file already present inside the container, in the JSON format the Nebius SDK documents. Passed as `NEBIUS_SA_KEY_FILE`. Use this when you mount the credential yourself.
+
+Path to a service account key file that is already present inside the container. The file uses the JSON format that the Nebius SDK documents. The chart passes the path as `NEBIUS_SA_KEY_FILE`. If you mount the credential yourself, use this option.
 
 ### iamToken
-A Nebius IAM token supplied directly, passed as `NEBIUS_IAM_TOKEN`. Obtain one with `nebius iam get-access-token`. For testing only — the token expires and remediation stops working when it does.
+
+A Nebius IAM token that you supply directly. The chart passes it as `NEBIUS_IAM_TOKEN`. To get a token, use `nebius iam get-access-token`. Use this option for testing only. The token expires, and then remediation stops working.
 
 ### iamTokenSecretRef
-Secret holding an IAM token, as an alternative to writing the token into Helm values. Keeps the token out of your values file, but it still expires.
+
+Secret that holds an IAM token. Use it instead of writing the token into Helm values. It keeps the token out of your values file, but the token still expires.
 
 ```yaml
 janitor-provider:
@@ -235,9 +260,9 @@ janitor-provider:
 
 ## Lambda
 
-Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart) and terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
+Reboot maps to the Lambda power-cycle operation (a host-level power cycle, not a guest restart). Terminate maps to the Lambda terminate operation. Nodes must carry `spec.providerID` in the form `lambda://<instanceID>`.
 
-Authenticate either with a static API key or with workload identity. Workload identity is preferred: no Lambda credential is stored in the cluster, and the token it uses is short-lived and rotated automatically.
+Authenticate with a static API key or with workload identity. Workload identity is the preferred option. With workload identity, the cluster stores no Lambda credential, and the token that it uses is short-lived and rotates automatically.
 
 ```yaml
 janitor-provider:
@@ -250,14 +275,20 @@ janitor-provider:
 ```
 
 ### apiEndpoint
-Optional. Overrides the base URL of the Lambda Cloud API, passed as `LAMBDA_API_ENDPOINT`. Defaults to `https://cloud.lambda.ai` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host is checked against a fixed allowlist built into the provider, so an unapproved host fails at startup rather than on the first remediation.
+
+Optional. Overrides the base URL of the Lambda Cloud API. The chart passes it as `LAMBDA_API_ENDPOINT`. If it is not set, the default is `https://cloud.lambda.ai`.
+
+The URL must use https, and must not carry userinfo, a query string, or a fragment. The provider checks the host against a fixed allowlist built into the provider. Thus, an unapproved host fails at startup, not on the first remediation.
 
 ### apiKeySecretRef
-Secret holding the Lambda API key, injected as `LAMBDA_API_KEY`. `name` is required when `csp.provider` is `lambda`, unless `workloadIdentity.identityLRN` is set; the install fails without one of the two. `key` defaults to `LAMBDA_API_KEY`. The same Secret can be shared with the CSP Health Monitor, which reads the key the same way. The key needs permission to power cycle and terminate instances.
+
+Secret that holds the Lambda API key. The chart injects the key as `LAMBDA_API_KEY`. If `csp.provider` is `lambda`, `name` is required, unless you set `workloadIdentity.identityLRN`. The install fails without one of the two. `key` defaults to `LAMBDA_API_KEY`.
+
+You can share the same Secret with the CSP Health Monitor, which reads the key in the same way. The key needs permission to power cycle and terminate instances.
 
 ### workloadIdentity.identityLRN
 
-The service identity to assume, in the form `lrn:iam:identity:<id>`. Setting it annotates the janitor-provider ServiceAccount with `lambda.ai/identity-lrn`. The pod is then given a short-lived Kubernetes token, which the provider exchanges for a Lambda API key and refreshes before it expires — so no Lambda credential is stored in the cluster.
+The service identity to assume, in the form `lrn:iam:identity:<id>`. If you set it, the chart annotates the janitor-provider ServiceAccount with `lambda.ai/identity-lrn`. The pod then gets a short-lived Kubernetes token. The provider exchanges this token for a Lambda API key, and refreshes the key before it expires. Thus, the cluster stores no Lambda credential.
 
 ```yaml
 janitor-provider:
@@ -268,13 +299,17 @@ janitor-provider:
         identityLRN: "lrn:iam:identity:3cd2d107c6a347eeb0ef9498820d637d"
 ```
 
-When set, `apiKeySecretRef` is not required and no `LAMBDA_API_KEY` is placed in the pod. If both are configured, workload identity wins and the static key is ignored; the provider logs which one it selected at startup (`authMode`).
+If you set it, `apiKeySecretRef` is not required, and the chart puts no `LAMBDA_API_KEY` in the pod. If you configure both, workload identity wins, and the provider ignores the static key. At startup, the provider logs the credential that it selected (`authMode`).
 
-On the Lambda side, the identity must exist, hold permission to power cycle and terminate instances, and trust this cluster's ServiceAccount.
+On the Lambda side, the identity must meet these requirements:
+
+- It must exist.
+- It must hold permission to power cycle and terminate instances.
+- It must trust the ServiceAccount of this cluster.
 
 #### Setting up the identity
 
-Run once per cluster, with an admin API key. `$WS` is the workspace the cluster's instances belong to.
+Run this script one time for each cluster, with an admin API key. `$WS` is the workspace that the instances of the cluster belong to.
 
 ```bash
 # Stop at the first failed call: a half-applied setup prints an identityLRN
@@ -334,21 +369,21 @@ lambda_curl "https://cloud.lambda.ai/api/v1/oidc-providers" \
 echo "identityLRN: lrn:iam:identity:$SID"
 ```
 
-The printed LRN is what goes in the chart value above.
+Use the printed LRN as the Helm value above.
 
 | Built-in role | Grants | Needed for |
 | --- | --- | --- |
-| `instance-reader` | `compute:instance:read` | Reading instance state before and after a reboot |
+| `instance-reader` | `compute:instance:read` | Reading the instance state before and after a reboot |
 | `instance-power-cycle` | `compute:instance:power-cycle` | The reboot itself |
-| `instance-terminate` | `compute:instance:terminate` | Terminating a node the remediation policy replaces rather than reboots |
+| `instance-terminate` | `compute:instance:terminate` | Terminating a node that the remediation policy replaces instead of rebooting it |
 
-All three are workspace-scoped, so the identity can only act on instances in `$WS`.
+All three roles are workspace-scoped. Thus, the identity can act only on instances in `$WS`.
 
-Drop `instance-terminate` from the loop if your remediation policy only ever reboots — the roles are additive, so granting just the two leaves terminate unauthorized.
+If your remediation policy only reboots and never terminates, remove `instance-terminate` from the loop. The roles are additive. Thus, if you grant only the other two roles, terminate stays unauthorized.
 
 #### Verifying
 
-The identity is attached when the pod is created, so it only appears on pods created *after* the annotation lands. Restart the deployment if you added it to a running install.
+A pod gets the identity only when Kubernetes creates the pod. Thus, only pods that Kubernetes creates *after* the annotation lands have the identity. If you added the annotation to a running install, restart the deployment.
 
 ```bash
 (
@@ -373,17 +408,27 @@ The identity is attached when the pod is created, so it only appears on pods cre
 )
 ```
 
-Expect `authMode=workload-identity`. If it says `api-key`, the pod never received an identity — check that the annotation is on the ServiceAccount and that the pod was created after it landed.
+Expect `authMode=workload-identity`. If it shows `api-key`, the pod never received an identity. Check that the annotation is on the ServiceAccount. Also check that Kubernetes created the pod after the annotation landed.
 
-Failures in the exchange itself surface on the first remediation, not at startup, because the token is minted lazily. When the exchange endpoint rejects the token it returns `401` with no detail by design, so an unauthenticated caller cannot probe for which identities exist; that means a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
+Failures in the exchange itself appear on the first remediation, not at startup. The reason is that the provider mints the token only when it first needs it. When the exchange endpoint rejects the token, it returns `401` with no detail. This behavior is intentional, so that an unauthenticated caller cannot probe for the identities that exist. Thus, a missing trust, a wrong identity LRN and a disabled account all look identical from the client. Check the trust and the identity LRN first.
 
 ## Akamai
 
-Reboot maps to the Linode reboot operation. Terminate recycles the node through LKE when the instance belongs to an LKE cluster, which deletes it and provisions a replacement so the node pool keeps its size, and deletes the instance directly otherwise. Nodes must carry `spec.providerID` in the form `linode://<instanceID>`, which the Linode cloud controller manager sets on LKE nodes.
+Reboot maps to the Linode reboot operation. Terminate does one of these actions:
 
-**Warning:** a terminate replaces the node, so everything on the node's own disk is lost. This includes `hostPath` and `emptyDir` volumes and local PersistentVolumes. Move any data you need off the node before you let the janitor terminate it.
+- If the instance belongs to an LKE cluster, terminate recycles the node through LKE. The recycle deletes the node and provisions a replacement, so the node pool keeps its size.
+- Otherwise, terminate deletes the instance directly.
 
-Authenticate with a static API token. A reboot is reported complete only when both conditions hold: the instance reports `running`, and the kubelet's `bootID` differs from the one recorded before the reboot. The `bootID` check is the one that matters, because the instance can still read `running` for a while after the API accepts the request.
+Nodes must carry `spec.providerID` in the form `linode://<instanceID>`. The Linode cloud controller manager sets this value on LKE nodes.
+
+**Warning:** Before you let the Janitor terminate a node, move any data that you need off the node. A terminate replaces the node, so you lose everything on the disk of the node. This includes `hostPath` and `emptyDir` volumes and local PersistentVolumes.
+
+Authenticate with a static API token. The provider reports a reboot as complete only when both of these conditions are true:
+
+- The instance reports `running`.
+- The `bootID` of the kubelet is different from the one that the provider recorded before the reboot.
+
+The `bootID` check is the important one. The instance can still show `running` for some time after the API accepts the request.
 
 ```yaml
 global:
@@ -402,16 +447,46 @@ janitor-provider:
 ```
 
 ### apiEndpoint
-Optional. Overrides the base URL of the Akamai Cloud API, passed as `AKAMAI_API_ENDPOINT`. Defaults to `https://api.linode.com/v4` when unset. Must be https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com` and the path must be `/v4`, so any other host or path fails at startup rather than on the first remediation.
+
+Optional. Overrides the base URL of the Akamai Cloud API. The chart passes it as `AKAMAI_API_ENDPOINT`. If it is not set, the default is `https://api.linode.com/v4`.
+
+The URL must use https, and must not carry userinfo, a query string, or a fragment. The host must be `api.linode.com`, and the path must be `/v4`. Thus, any other host or path fails at startup, not on the first remediation.
 
 ### apiTokenSecretRef
-Secret holding the Akamai Cloud API token, injected as `LINODE_TOKEN`, the variable the Linode CLI and SDKs read. `name` is required when `csp.provider` is `akamai`; the install fails without it. `key` defaults to `LINODE_TOKEN`. The token needs the `linodes:read_write` scope to reboot and delete instances and the `lke:read_write` scope to recycle LKE nodes. A recycle also reads the instance, so `lke:read_write` alone is not enough: the token needs a `linodes` scope as well, and `linodes:read_write` covers it. A restricted identity that Akamai limits by permission needs `view_linode`, because the provider reads the instance before every reboot, delete and recycle and again while it waits for a reboot to finish, and then `reboot_linode` for reboots, `delete_linode` to delete an instance that is not an LKE node, and the `lkecluster_admin` role to recycle LKE nodes. The scopes were checked against the live API. The permission and role names come from the Akamai API reference and were not tested. The pod reads the token from its environment when it starts, so after you rotate the Secret, restart the janitor-provider pods, for example with `kubectl rollout restart deployment/janitor-provider -n nvsentinel`. The CSP Health Monitor reads the same variable but only lists maintenance events, so give it its own read-only token rather than sharing this one.
+
+Secret that holds the Akamai Cloud API token. The chart injects the token as `LINODE_TOKEN`, the variable that the Linode CLI and SDKs read. If `csp.provider` is `akamai`, `name` is required, and the install fails without it. `key` defaults to `LINODE_TOKEN`.
+
+The token needs these scopes:
+
+- The `linodes:read_write` scope, to reboot and delete instances.
+- The `lke:read_write` scope, to recycle LKE nodes.
+
+A recycle also reads the instance. Thus, `lke:read_write` alone is not enough: the token also needs a `linodes` scope, and `linodes:read_write` covers it.
+
+A restricted identity that Akamai limits by permission needs these permissions:
+
+- `view_linode`. The provider reads the instance before every reboot, delete and recycle. It reads the instance again while it waits for a reboot to finish.
+- `reboot_linode`, for reboots.
+- `delete_linode`, to delete an instance that is not an LKE node.
+- The `lkecluster_admin` role, to recycle LKE nodes.
+
+The pod reads the token from its environment when it starts. Thus, after you rotate the Secret, restart the janitor-provider pods, for example with `kubectl rollout restart deployment/janitor-provider -n nvsentinel`.
+
+The CSP Health Monitor reads the same variable, but it only lists maintenance events. Thus, give the CSP Health Monitor its own read-only token. Do not share this token with it.
 
 ## Generic / Bare-Metal
 
-The `generic` provider spawns a privileged Kubernetes Job on the target node that runs `chroot /host reboot` to reboot the node. Use this for bare-metal clusters, on-premises deployments, or any environment not covered by the cloud provider backends.
+The `generic` provider creates a privileged Kubernetes Job on the target node. The Job runs `chroot /host reboot` to reboot the node. Use this provider for bare-metal clusters, on-premises deployments, or any environment that the cloud provider backends do not cover.
 
-The provider records the node boot ID when it creates the Job and passes it to the container in the `PRE_REBOOT_BOOT_ID` environment variable. Before any other action, the container compares this value with `/proc/sys/kernel/random/boot_id`. If the values are different, the node has already rebooted, so the container exits without a reboot and without a syslog entry. This check stops a second reboot when the kubelet starts the same pod again after the node boots. If the container cannot read either boot ID, it exits with an error and does not reboot the node.
+When the provider creates the Job, it records the boot ID of the node. It passes this boot ID to the container in the `PRE_REBOOT_BOOT_ID` environment variable.
+
+Before any other action, the container compares this value with `/proc/sys/kernel/random/boot_id`. If the values are different, the node has already rebooted. Then the container exits without a reboot and without a syslog entry. This check prevents a second reboot when the kubelet starts the same pod again after the node boots. If the container cannot read either boot ID, it exits with an error and does not reboot the node.
+
+The generic provider also bounds when the Job may start a reboot. Janitor sends the attempt's start time plus its reboot timeout as an absolute deadline. The provider rejects an expired request and sets the Job's active deadline. If the boot ID still matches, the container checks the absolute deadline before logging or rebooting. A reboot that already started can finish independently of the readiness timer.
+
+Keep the clocks on the nodes that run Janitor, the Janitor Provider, and the reboot Jobs synchronized to a common time source. The container compares `REBOOT_DEADLINE_UNIX_SECONDS` with the target node's wall clock. A clock that lags Janitor's can allow a late reboot if the pod is still runnable. A clock that is ahead can reject a reboot before the attempt expires. The Job's active deadline limits its runtime from Job start. The container check relies on synchronized clocks to enforce Janitor's absolute cutoff.
+
+For callers that omit the deadline, the generic provider uses 30 minutes from receipt. Upgrade both Janitor and janitor-provider to apply the configured Janitor timeout end to end.
 
 ```yaml
 janitor-provider:
@@ -428,31 +503,47 @@ janitor-provider:
 ```
 
 ### rebootImage
-Container image used by the reboot Job. Must include `sh`, `cat` and `chroot`. Every reboot method runs through `sh -c`, because the boot ID check needs a shell. If the image has no `sh`, the container does not start and the node does not reboot.
+
+Container image for the reboot Job. The image must include `sh`, `cat`, `date` and `chroot`. Every reboot method runs through `sh -c`, because the boot ID check needs a shell. If the image has no `sh`, the container does not start, and the node does not reboot.
 
 ### useSysrqReboot
+
 When `false` (default), the Job runs `chroot /host reboot` to trigger a clean OS shutdown and restart.
 
-When `true`, the Job writes `b` to `/proc/sysrq-trigger`, triggering an immediate kernel reboot via the Linux Magic SysRq interface. Use this only when `chroot /host reboot` is unavailable — for example, when the node OS has a read-only root filesystem or a custom OS image that does not expose a reboot binary at the standard path.
+When `true`, the Job writes `b` to `/proc/sysrq-trigger`. This triggers an immediate kernel reboot through the Linux Magic SysRq interface. If `chroot /host reboot` is not available, use this setting. For example, the reboot command is not available in these cases:
+
+- The node OS has a read-only root filesystem.
+- The node has a custom OS image that does not expose a reboot binary at the standard path.
+
+In other cases, do not use this setting.
 
 ### rebootJobNamespace
-Kubernetes namespace where the reboot Job is created. Defaults to the janitor-provider namespace when empty.
+
+Kubernetes namespace in which the provider creates the reboot Job. If it is empty, the default is the janitor-provider namespace.
 
 ### rebootJobTTLSeconds
-Time in seconds after Job completion before Kubernetes deletes the Job and its pod. Defaults to `3600`.
+
+Time in seconds after the Job completes, before Kubernetes deletes the Job and its pod. The default is `3600`.
 
 ### imagePullSecrets
-Name of an image pull secret to attach to the reboot Job, if `rebootImage` is pulled from a private registry.
+
+Name of an image pull secret to attach to the reboot Job. If the cluster pulls `rebootImage` from a private registry, set this value.
 
 ### writeSyslog
-When `true`, the Job writes an attribution entry to the node's syslog via `logger` before executing the reboot command. Defaults to `false`.
+
+When `true`, the Job writes an attribution entry to the syslog of the node with `logger`, before it runs the reboot command. The default is `false`.
 
 ### rebootJobPriorityClassName
-Name of the PriorityClass set on the reboot Job's pod. Defaults to empty, which sets no priority class. The kubelet rejects a pod without a critical priority on a node that reports `DiskPressure`, so the reboot never runs and the attempt fails. Set this to `system-node-critical` or `system-cluster-critical` to let the kubelet admit the pod on such a node. Only these two built-in classes are critical: a PriorityClass that you create cannot have a value that high. The class must exist in the cluster, and some clusters limit which namespaces can use the `system-` classes with a ResourceQuota. If the class does not exist or the namespace cannot use it, the Job creates no pod and the reboot attempt ends when the reboot timeout expires.
+
+Name of the PriorityClass that the provider sets on the pod of the reboot Job. The default is empty, which sets no priority class.
+
+The kubelet rejects a pod without a critical priority on a node that reports `DiskPressure`. Then the reboot never runs, and the attempt fails. To let the kubelet admit the pod on such a node, set this value to `system-node-critical` or `system-cluster-critical`. Only these two built-in classes are critical: a PriorityClass that you create cannot have a value that high.
+
+The class must exist in the cluster. Some clusters use a ResourceQuota to limit the namespaces that can use the `system-` classes. If the class does not exist or the namespace cannot use it, the Job creates no pod. Then the reboot attempt ends when the reboot timeout expires.
 
 ## Label provider
 
-Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label. The node is considered ready once the reboot label is removed and the node's boot ID has changed.
+This provider requests reboot and terminate through labels on the Node. An external controller that runs on the Kubernetes control plane can watch those labels and do the required action. After the reboot completes, that controller **MUST** remove the reboot label. The provider considers the node ready when the controller has removed the reboot label and the boot ID of the node has changed.
 
 ```yaml
 janitor-provider:
@@ -464,7 +555,9 @@ janitor-provider:
 ```
 
 ### rebootKey
-Node label spec used to request a reboot, in `key=value` form so reboot and terminate can use different values. Defaults to `nke.nvidia.com/reboot=requested-by-nvsentinel`.
+
+Node label spec that requests a reboot. It uses the `key=value` form, so reboot and terminate can use different values. The default is `nke.nvidia.com/reboot=requested-by-nvsentinel`.
 
 ### terminateKey
-Node label spec used to request termination, in `key=value` form. Defaults to `nke.nvidia.com/terminate=requested-by-nvsentinel`.
+
+Node label spec that requests termination, in `key=value` form. The default is `nke.nvidia.com/terminate=requested-by-nvsentinel`.

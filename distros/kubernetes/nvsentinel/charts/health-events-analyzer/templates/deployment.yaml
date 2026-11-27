@@ -41,6 +41,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with ((.Values.global).seLinuxOptions) }}
+      securityContext:
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       serviceAccountName: {{ include "health-events-analyzer.fullname" . }}
       {{- if and .Values.clientCertMountPath $pgClientCert }}
       initContainers:

@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Log level for the metadata-collector (debug, info, warn or error). Defaults to info; any other value falls back to info.
+# This chart runs two DaemonSets: nvidia-metadata-collector, the NVIDIA discovery that writes
+# gpu_metadata.json, and pod-device-mapper, which writes the dgxc.nvidia.com/devices annotation that partial
+# drains read. Unless a comment says otherwise, a value applies to both.
+
+# Log level (debug, info, warn or error). Defaults to info; any other value falls back to info.
 logLevel: info
 
+# Image of the NVIDIA discovery. The pod device mapper uses podMapper.image.
 image:
   repository: ghcr.io/nvidia/nvsentinel/metadata-collector
   pullPolicy: IfNotPresent
@@ -22,6 +27,7 @@ image:
 
 podAnnotations: {}
 
+# Resources of the NVIDIA discovery, and of the pod device mapper when podMapper.resources is empty.
 resources: 
   limits:
     cpu: 500m
@@ -30,7 +36,7 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-# Runtime class name for the pod. The default "nvidia" is rendered on the
+# Runtime class name of the NVIDIA discovery pod. The default "nvidia" is rendered on the
 # DaemonSet. Set runtimeClassName: "" to omit the field (CRI-O, and NRI-mode
 # clusters with no matching RuntimeClass). On GPU Operator NRI-mode clusters,
 # prefer nriPlugin below; with a host-installed driver you can instead mount
@@ -43,7 +49,7 @@ resources:
 runtimeClassName: "nvidia"
 
 # GPU Operator NRI plugin mode (GPU Operator cdi.nriPluginEnabled: true). That
-# mode has no "nvidia" RuntimeClass. When enabled, the DaemonSet omits
+# mode has no "nvidia" RuntimeClass. When enabled, the discovery DaemonSet omits
 # runtimeClassName and requests a management CDI device from the Container
 # Toolkit's NRI plugin with the pod annotation
 # nvidia.cdi.k8s.io/container.metadata-collector. This works with both the
@@ -60,13 +66,13 @@ nriPlugin:
   enabled: false
   cdiDevice: management.nvidia.com/gpu=all
 
-# Extra environment variables for the metadata-collector container (optional).
+# Extra environment variables for the NVIDIA discovery container (optional).
 # extraEnv:
 #   - name: LD_LIBRARY_PATH
 #     value: /usr/local/nvidia/lib
 extraEnv: []
 
-# Additional volume mounts for metadata-collector (optional).
+# Additional volume mounts for the NVIDIA discovery (optional).
 # Use with additionalHostVolumes to mount host driver libraries when
 # RuntimeClass-based injection is unavailable (NRI-mode clusters).
 # additionalVolumeMounts:
@@ -75,7 +81,7 @@ extraEnv: []
 #     readOnly: true
 additionalVolumeMounts: []
 
-# Additional host volumes for metadata-collector (optional).
+# Additional host volumes for the NVIDIA discovery (optional).
 # additionalHostVolumes:
 #   - name: nvidia-driver-libs
 #     hostPath:
@@ -87,8 +93,9 @@ additionalHostVolumes: []
 # resolves the node's primary IP, which works whether kubelet binds to
 # 0.0.0.0 or to the node IP specifically.
 #
-# To fall back to the application default (localhost), set:
-#   kubeletHost: {}
+# The mapper runs on the pod network, where localhost is the pod itself, so
+# kubeletHost: {} and a loopback value (localhost, 127.0.0.1, ::1) also give
+# the node IP.
 #
 # A static value also works:
 #   kubeletHost:
@@ -101,26 +108,41 @@ kubeletHost:
 # Pod priority for this component. Overridden by the matching global when that is set.
 priorityClassName: ""
 
-# Prometheus metrics endpoint. Chart-local rather than global.metricsPort because this
-# DaemonSet is hostNetwork, so the port binds on the node and can collide with a host service
-# (kube-vip also uses 2112). Set enabled: false to run with no endpoint at all.
+# Prometheus metrics endpoints. enabled applies to both DaemonSets. port applies only to the
+# NVIDIA discovery, which runs on the host network, so its port binds on the node and can collide
+# with a host service (kube-vip also uses 2112). The pod device mapper runs on the pod network and
+# uses global.metricsPort, which the namespace NetworkPolicy allows.
 metrics:
   # Unquoted boolean only; a quoted "false" is truthy and the render refuses it.
   enabled: true
-  # Move it if the node already uses 2112, e.g. 2113 under kube-vip.
-  port: 2112
+  # Keep this distinct from the GPU health monitor's default port (2112)
+  # when it also uses host networking, such as in external-hostengine mode.
+  port: 2113
 
 podMapper:
-  # Runs the pod device mapper, which writes the dgxc.nvidia.com/devices annotation that partial
-  # drains need. Set false only where the mapper cannot work, for example when the kubelet reports
-  # pods that the collector cannot see through the Kubernetes API. The GPU metadata file is still
-  # written, and partial drains then fail.
+  # Runs the pod-device-mapper DaemonSet, which writes the dgxc.nvidia.com/devices annotation that
+  # partial drains need. Set false only where the mapper cannot work, for example when the kubelet
+  # reports pods that the mapper cannot see through the Kubernetes API. The GPU metadata file is
+  # still written, and partial drains then wait. The value is compared as a string, so a quoted
+  # "false" also turns the mapper off.
   enabled: true
   # Consecutive failed poll cycles tolerated before the container exits non-zero. The poll
   # period is 30s, so the default rides out 5 minutes of failures, enough to outlast a
-  # credential rotation or a kubelet restart while still failing loudly if the collector is
+  # credential rotation or a kubelet restart while still failing loudly if the mapper is
   # genuinely broken. Minimum 1, which restores exiting on the first failure.
   maxConsecutiveFailures: 10
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/pod-device-mapper
+    pullPolicy: IfNotPresent
+    # Defaults to global.image.tag, then to the chart appVersion.
+    tag: ""
+  # Resources of the mapper. When empty, the mapper uses resources.
+  resources: {}
+  # Nodes that run the mapper, together with global.nodeSelector or nodeSelector. The mapper does
+  # not need the GPU driver. To record other devices, select the nodes that have them. Helm adds
+  # your labels to this default, so set nvidia.com/gpu.present: null to remove it.
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
 
 # DaemonSet rolling update strategy.
 # type: RollingUpdate or OnDelete. rollingUpdate is only rendered for RollingUpdate.

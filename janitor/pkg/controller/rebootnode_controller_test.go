@@ -25,18 +25,23 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 )
 
 func TestRebootNodeReconciler_getRebootTimeout(t *testing.T) {
@@ -104,6 +109,106 @@ func Test_isTransientGRPCError(t *testing.T) {
 			}
 		})
 	}
+}
+
+type rebootRequestRecorder struct {
+	cspv1alpha1.CSPProviderServiceClient
+	request *cspv1alpha1.SendRebootSignalRequest
+	sends   int
+}
+
+func (c *rebootRequestRecorder) SendRebootSignal(
+	_ context.Context, request *cspv1alpha1.SendRebootSignalRequest, _ ...grpc.CallOption,
+) (*cspv1alpha1.SendRebootSignalResponse, error) {
+	c.request = request
+	c.sends++
+	return &cspv1alpha1.SendRebootSignalResponse{RequestId: "fixture-boot-id"}, nil
+}
+
+func TestSendRebootSignal_UsesAttemptStartForDeadline(t *testing.T) {
+	const timeout = 8 * time.Minute
+	start := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 123456789, time.UTC))
+	reconciler := &RebootNodeReconciler{Config: &config.RebootNodeControllerConfig{Timeout: timeout}}
+	csp := &rebootRequestRecorder{}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}
+	reboot := &janitordgxcnvidiacomv1alpha1.RebootNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "reboot-1"},
+		Status:     janitordgxcnvidiacomv1alpha1.RebootNodeStatus{StartTime: &start},
+	}
+
+	reconciler.sendRebootSignalAndSetCondition(t.Context(), csp, reboot, node)
+	require.NotNil(t, csp.request)
+	deadline := csp.request.GetExecutionDeadline()
+	require.NoError(t, deadline.CheckValid())
+	assert.Equal(t, start.Add(timeout), deadline.AsTime())
+}
+
+func TestRebootNodeReconcile_PersistsStartBeforeDispatch(t *testing.T) {
+	const timeout = 8 * time.Minute
+
+	ctx := t.Context()
+	s := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, janitordgxcnvidiacomv1alpha1.AddToScheme(s))
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}
+	reboot := &janitordgxcnvidiacomv1alpha1.RebootNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "reboot-1"},
+		Spec:       janitordgxcnvidiacomv1alpha1.RebootNodeSpec{NodeName: node.Name},
+	}
+	writeErr := errors.New("status write failed")
+	failWrite := 1
+	writes := 0
+	kube := fake.NewClientBuilder().WithScheme(s).WithObjects(node, reboot).
+		WithStatusSubresource(reboot).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subresource string,
+				obj client.Object, opts ...client.SubResourceUpdateOption,
+			) error {
+				writes++
+				if writes == failWrite {
+					return writeErr
+				}
+
+				return c.SubResource(subresource).Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	csp := &rebootRequestRecorder{}
+	reconciler := &RebootNodeReconciler{
+		Client:   kube,
+		Config:   &config.RebootNodeControllerConfig{Timeout: timeout, ManualMode: new(false)},
+		NodeLock: &mockNodeLock{},
+		dialProviderFunc: func(context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
+			return csp, func() {}, nil
+		},
+	}
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(reboot)}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.ErrorIs(t, err, writeErr)
+	require.Zero(t, csp.sends, "the initial status write must succeed before dispatch")
+
+	failWrite = 3
+	_, err = reconciler.Reconcile(ctx, req)
+	require.ErrorIs(t, err, writeErr)
+	require.Equal(t, 1, csp.sends)
+
+	var stored janitordgxcnvidiacomv1alpha1.RebootNode
+	require.NoError(t, kube.Get(ctx, req.NamespacedName, &stored))
+	require.NotNil(t, stored.Status.StartTime)
+	assert.False(t, stored.IsRebootInProgress(), "the dispatch outcome did not persist")
+	deadline := csp.request.GetExecutionDeadline().AsTime()
+	assert.Equal(t, stored.Status.StartTime.Add(timeout).UTC(), deadline)
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, 2, csp.sends)
+	assert.Equal(t, deadline, csp.request.GetExecutionDeadline().AsTime())
+
+	require.NoError(t, kube.Get(ctx, req.NamespacedName, &stored))
+	assert.True(t, stored.IsRebootInProgress())
+	assert.Equal(t, deadline, stored.Status.StartTime.Add(timeout).UTC())
 }
 
 var _ = Describe("RebootNode Controller", func() {
@@ -191,7 +296,7 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify conditions are properly set
-			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(2))
+			Expect(updatedRebootNode.Status.Conditions).To(HaveLen(3))
 
 			// Check SignalSent condition
 			signalSentCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent)
@@ -204,6 +309,11 @@ var _ = Describe("RebootNode Controller", func() {
 			nodeReadyCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
 			Expect(nodeReadyCondition).NotTo(BeNil())
 			Expect(nodeReadyCondition.Status).To(Equal(metav1.ConditionUnknown))
+
+			// Check RebootCompleted condition (should be Unknown initially)
+			rebootCompletedCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionRebootCompleted)
+			Expect(rebootCompletedCondition).NotTo(BeNil())
+			Expect(rebootCompletedCondition.Status).To(Equal(metav1.ConditionUnknown))
 
 			// Verify StartTime is set
 			Expect(updatedRebootNode.Status.StartTime).NotTo(BeNil())
@@ -547,6 +657,53 @@ var _ = Describe("RebootNode Controller", func() {
 
 			// NOW IsRebootInProgress should return TRUE
 			Expect(freshRebootNode.IsRebootInProgress()).To(BeTrue())
+		})
+	})
+
+	Context("when the node must be out of service", func() {
+		BeforeEach(func() {
+			reconciler.Config.RequireNodeOutOfService = new(true)
+		})
+
+		reconcileOnce := func() *metav1.Condition {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{Name: testRebootNode.Name})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updated)).To(Succeed())
+
+			return findCondition(updated.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent)
+		}
+
+		It("should refuse to reboot a node that is neither cordoned nor quarantined", func() {
+			mockCSP.Server.SetRebootFailure(fmt.Errorf("the reboot signal must not be sent"))
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionFalse))
+			Expect(signalSent.Reason).To(Equal("NodeInService"))
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+		})
+
+		It("should reboot a cordoned node", func() {
+			testNode.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, testNode)).To(Succeed())
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should reboot a node that NVSentinel quarantined without a cordon", func() {
+			testNode.Annotations = map[string]string{"quarantineHealthEvent": `[{"nodeName":"n"}]`}
+			Expect(k8sClient.Update(ctx, testNode)).To(Succeed())
+
+			signalSent := reconcileOnce()
+			Expect(signalSent).NotTo(BeNil())
+			Expect(signalSent.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 

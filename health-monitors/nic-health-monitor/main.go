@@ -168,7 +168,7 @@ func run() error {
 	// that every late publish draws on (see defaultPublishDrain).
 	nicMonitor.ArmPublishDrain(ctx)
 
-	return runServerAndLoops(ctx, rc, nicMonitor)
+	return runServerAndLoops(ctx, rc, nicMonitor, stateManager)
 }
 
 // dialPlatformConnector routes the dial through the shared healthpub
@@ -317,7 +317,7 @@ func loadConfig(path string) (*config.Config, error) {
 }
 
 // loadClassifier wraps topology.LoadFromMetadata with an actionable
-// error that points operators at the metadata-collector DaemonSet.
+// error that points operators at the nvidia-metadata-collector DaemonSet.
 //
 // When the explicit NIC inclusion override is active, missing/invalid
 // metadata degrades to an empty classifier instead of a fatal error:
@@ -339,13 +339,15 @@ func loadClassifier(reader sysfs.Reader, cfg *config.Config) (*topology.Classifi
 	}
 
 	return nil, fmt.Errorf("NIC monitor cannot start without GPU metadata at %s: %w "+
-		"(hint: ensure the metadata-collector DaemonSet is running and has "+
+		"(hint: ensure the nvidia-metadata-collector DaemonSet is running and has "+
 		"written nic_topology)", *metadataPath, err)
 }
 
-// runServerAndLoops starts the metrics server alongside the state
-// polling loop under an errgroup.
-func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor) error {
+// runServerAndLoops runs the metrics server and polling loops, then flushes
+// committed counter state on graceful shutdown.
+func runServerAndLoops(
+	ctx context.Context, rc *runtimeConfig, nicMonitor *monitor.NICHealthMonitor, stateManager *statefile.Manager,
+) error {
 	// Health checker reports unhealthy if the state polling loop has not
 	// completed an iteration within 3x the state polling interval. The
 	// counter loop deliberately does not mark it: at its 1s cadence it
@@ -385,7 +387,17 @@ func runServerAndLoops(ctx context.Context, rc *runtimeConfig, nicMonitor *monit
 		return nicMonitor.RunPollStallWatchdog(gCtx)
 	})
 
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	if errors.Is(ctx.Err(), context.Canceled) {
+		if err := stateManager.FlushPendingCounterState(); err != nil {
+			slog.Warn("Failed to flush pending counter state on shutdown", "error", err)
+		}
+	}
+
+	return nil
 }
 
 // buildChecks instantiates the enabled checks.

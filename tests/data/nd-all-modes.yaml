@@ -37,3 +37,13 @@ data:
       name = "delete-timeout-test"
       mode = "DeleteAfterTimeout"
 
+    [partialRemediationEntityTypes.GPU_UUID]
+      scopedActions = ["COMPONENT_RESET"]
+
+      [[partialRemediationEntityTypes.GPU_UUID.devices]]
+        resourceNames = ["nvidia.com/gpu", "nvidia.com/pgpu"]
+
+      [[partialRemediationEntityTypes.GPU_UUID.devices]]
+        driver = "gpu.nvidia.com"
+        deviceClasses = ["gpu.nvidia.com"]
+        entityValueAttribute = "uuid"

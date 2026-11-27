@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
@@ -99,13 +100,14 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 	require.NoError(t, err)
 
 	tomlConfig := config.TomlConfig{
-		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
-		SystemNamespaces:          "kube-*",
-		DeleteAfterTimeoutMinutes: 5,
-		NotReadyTimeoutMinutes:    2,
-		DrainGPUPods:              false,
-		UserNamespaces:            userNamespaces,
-		PartialDrainEnabled:       partialDrainEnabled,
+		EvictionTimeoutInSeconds:      config.Duration{Duration: 30 * time.Second},
+		SystemNamespaces:              "kube-*",
+		DeleteAfterTimeoutMinutes:     5,
+		NotReadyTimeoutMinutes:        2,
+		DrainGPUPods:                  false,
+		UserNamespaces:                userNamespaces,
+		PartialDrainEnabled:           partialDrainEnabled,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 	}
 
 	informersInstance, err := informers.NewInformers(
@@ -113,9 +115,10 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		1*time.Minute,
 		new(2),
 		false,
+		tomlConfig.PartialRemediationEntityTypes,
 		dryRun,
 		tomlConfig.SystemNamespaces,
-		nil,
+		informers.NodeFields(nil),
 	)
 	require.NoError(t, err)
 	go func() { _ = informersInstance.Run(ctx) }()
@@ -777,14 +780,14 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 			}
 
 			if tc.enabled {
-				entity, _ := drain.PartialDrainEntity(tc.event, true)
+				entity, _ := drain.PartialDrainEntity(tc.event, true, modeltest.GPUEntityTypes())
 				assertEntity(t, entity)
 			}
 
 			// Assert both return values of the exported wrapper. Checking only the scope
 			// would let a regression in the entity it returns pass, since that is the
 			// value callers outside the package act on.
-			gotScope, gotEntity := DrainScopeFor(tc.event, tc.enabled)
+			gotScope, gotEntity := DrainScopeFor(tc.event, tc.enabled, modeltest.GPUEntityTypes())
 			assert.Equal(t, tc.wantScope, gotScope)
 			assertEntity(t, gotEntity)
 		})
@@ -796,7 +799,7 @@ func TestDrainScopeFor_VaryingEventShapes_ReturnsEntityAndMatchingScope(t *testi
 func TestPartialDrainEntity_NoUsableEntity_ReturnsError(t *testing.T) {
 	entity, err := drain.PartialDrainEntity(
 		healthEvent(protos.RecommendedAction_COMPONENT_RESET,
-			&protos.Entity{EntityType: "NIC", EntityValue: "eth0"}), true)
+			&protos.Entity{EntityType: "NIC", EntityValue: "eth0"}), true, modeltest.GPUEntityTypes())
 
 	require.Error(t, err)
 	assert.Nil(t, entity)
@@ -804,7 +807,7 @@ func TestPartialDrainEntity_NoUsableEntity_ReturnsError(t *testing.T) {
 
 func TestPartialDrainEntity_UsableGPUEntity_ReturnsEntity(t *testing.T) {
 	entity, err := drain.PartialDrainEntity(
-		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), true)
+		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), true, modeltest.GPUEntityTypes())
 
 	require.NoError(t, err)
 	require.NotNil(t, entity)
@@ -814,7 +817,7 @@ func TestPartialDrainEntity_UsableGPUEntity_ReturnsEntity(t *testing.T) {
 // A non-candidate event returns no entity and no error, so full drain proceeds normally.
 func TestPartialDrainEntity_PartialDrainDisabled_ReturnsNilWithoutError(t *testing.T) {
 	entity, err := drain.PartialDrainEntity(
-		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), false)
+		healthEvent(protos.RecommendedAction_COMPONENT_RESET, gpuEntity("GPU-abc")), false, modeltest.GPUEntityTypes())
 
 	require.NoError(t, err)
 	assert.Nil(t, entity)

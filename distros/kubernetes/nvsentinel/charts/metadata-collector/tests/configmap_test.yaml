@@ -1,0 +1,85 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The umbrella chart sets global.partialRemediationEntityTypes. Rendered on its own, this chart has no
+# default, so each test sets it.
+suite: pod device mapper configuration
+templates:
+  - templates/configmap.yaml
+  - templates/pod-device-mapper-daemonset.yaml
+set:
+  global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+tests:
+  - it: fails without global.partialRemediationEntityTypes
+    template: templates/configmap.yaml
+    asserts:
+      - failedTemplate:
+          errorMessage: global.partialRemediationEntityTypes is missing. The chart default holds the GPU_UUID entry. An upgrade with --reuse-values keeps the values of the previous chart, which has no such key, so upgrade with --reset-then-reuse-values.
+  - it: renders the entity types into config.toml
+    template: templates/configmap.yaml
+    set:
+      global.partialRemediationEntityTypes:
+        GPU_UUID:
+          devices:
+            - resourceNames: ["nvidia.com/gpu"]
+            - driver: gpu.nvidia.com
+              deviceClasses: ["gpu.nvidia.com"]
+              entityValueAttribute: uuid
+          scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[partialRemediationEntityTypes\.GPU_UUID\.devices\]\]'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'entityValueAttribute = .uuid.'
+  - it: passes the configuration to the mapper and mounts it
+    template: templates/pod-device-mapper-daemonset.yaml
+    set:
+      global.partialRemediationEntityTypes: {}
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config=/etc/config/config.toml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /etc/config
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config
+            configMap:
+              name: pod-device-mapper
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+  - it: renders no configuration when the pod device mapper is disabled
+    set:
+      podMapper.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/configmap.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/pod-device-mapper-daemonset.yaml
+  - it: renders no configuration when podMapper.enabled is a quoted "false"
+    set:
+      podMapper.enabled: "false"
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/configmap.yaml

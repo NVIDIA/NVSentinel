@@ -344,9 +344,15 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		return ctx
 	})
-	feature.Assess("Partial drain failure from GPU UUID missing", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Partial drain is retried if the GPU UUID is missing", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
+
+		// The evaluator returns an error for an event without its scoped entity, and the queue retries it, so a fix
+		// to the configuration lets the drain continue.
+		evaluateErrors := map[string]string{"error_type": "evaluate_event_error", "node": testCtx.NodeName}
+		errorsBefore, err := helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors)
+		require.NoError(t, err, "the baseline needs a successful scrape of every node-drainer replica")
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("119").
@@ -355,9 +361,23 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 
 		helpers.SendHealthEvent(ctx, t, event)
 
-		t.Log("Phase 1: Wait for node to have drain-failed label")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey,
-			string(statemanager.DrainFailedLabelValue))
+		t.Log("Phase 1: Wait for node-drainer to evaluate the event and retry it")
+		require.Eventually(t, func() bool {
+			errors, err := helpers.NodeDrainerMetric(ctx, t, c, "node_drainer_processing_errors_total", evaluateErrors)
+			if err != nil {
+				t.Logf("retrying the scrape: %v", err)
+
+				return false
+			}
+
+			return errors >= errorsBefore+2
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
+
+		t.Log("Phase 2: The node does not have the drain-failed label")
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		require.NotEqual(t, string(statemanager.DrainFailedLabelValue),
+			node.Labels[statemanager.NVSentinelStateLabelKey])
 
 		return ctx
 	})

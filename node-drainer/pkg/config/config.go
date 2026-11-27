@@ -15,16 +15,24 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/ruleset"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 )
+
+// ErrPartialRemediationEntityTypesMissing means the configuration has no partialRemediationEntityTypes key.
+// The Helm chart always renders it from global.partialRemediationEntityTypes, which holds the default.
+var ErrPartialRemediationEntityTypesMissing = errors.New(
+	"partialRemediationEntityTypes is missing; set global.partialRemediationEntityTypes in the Helm values")
 
 type EvictMode string
 
@@ -69,10 +77,17 @@ type TomlConfig struct {
 	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
 	PodDrainPolicies       []PodDrainPolicy  `toml:"podDrainPolicies"`
 	CustomDrain            CustomDrainConfig `toml:"customDrain"`
-	PartialDrainEnabled    bool              `toml:"partialDrainEnabled"`
+	// RuleSets selects nodes whose drain stops. Startup validates the list and
+	// then rejects it while the drain decision does not use it yet.
+	RuleSets            []DrainRuleSet `toml:"ruleSets"`
+	PartialDrainEnabled bool           `toml:"partialDrainEnabled"`
 	// Registers node_drainer_partial_drains_total, which labels partial drains with the
 	// entity they targeted. Off by default because entity_value is a GPU UUID.
 	PartialDrainEntityMetricEnabled bool `toml:"partialDrainEntityMetricEnabled"`
+	// PartialRemediationEntityTypes lists the entity types that get partial drains, their devices and
+	// their scoped actions. The chart renders it from global.partialRemediationEntityTypes, which holds
+	// the default. Loading fails without the key; an empty table configures no entity type.
+	PartialRemediationEntityTypes model.PartialRemediationEntityTypes `toml:"partialRemediationEntityTypes"`
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {
@@ -96,20 +111,24 @@ func (d *Duration) UnmarshalTOML(text any) error {
 
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
-	if _, err := toml.DecodeFile(path, &config); err != nil {
+
+	md, err := toml.DecodeFile(path, &config)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
-	return validateAndSetDefaults(&config)
+	return validateAndSetDefaults(&config, md)
 }
 
 func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 	var config TomlConfig
-	if _, err := toml.Decode(configString, &config); err != nil {
+
+	md, err := toml.Decode(configString, &config)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode TOML config string: %w", err)
 	}
 
-	return validateAndSetDefaults(&config)
+	return validateAndSetDefaults(&config, md)
 }
 
 // validateCustomDrainScope makes sure exactly one drain path owns every node.
@@ -180,7 +199,11 @@ func validateCustomDrainConfig(config *TomlConfig) error {
 }
 
 // validateAndSetDefaults validates drain policies and fills in omitted timeouts.
-func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+func validateAndSetDefaults(config *TomlConfig, md toml.MetaData) (*TomlConfig, error) {
+	if err := validateRuleSetConfig(md, config.RuleSets); err != nil {
+		return nil, err
+	}
+
 	if len(config.UserNamespaces) > 0 && len(config.PodDrainPolicies) > 0 {
 		return nil, fmt.Errorf("cannot use both userNamespaces and podDrainPolicies configuration")
 	}
@@ -193,12 +216,45 @@ func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
 		return nil, err
 	}
 
+	if config.PartialRemediationEntityTypes == nil {
+		return nil, ErrPartialRemediationEntityTypesMissing
+	}
+
+	if err := config.PartialRemediationEntityTypes.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid partialRemediationEntityTypes: %w", err)
+	}
+
+	if err := setTimeoutDefaults(config); err != nil {
+		return nil, err
+	}
+
+	// The checks above accept a valid list. The drain decision does not read it yet,
+	// so a configured list fails startup instead of being ignored.
+	if len(config.RuleSets) > 0 {
+		return nil, ErrRuleSetsNotSupported
+	}
+
+	return config, nil
+}
+
+// validateRuleSetConfig rejects a ruleSets key this config does not decode, such as
+// remediation or a misspelled field, and checks the decoded rule sets. Both checks
+// always run, so one startup reports every problem.
+func validateRuleSetConfig(md toml.MetaData, ruleSets []DrainRuleSet) error {
+	return errors.Join(
+		ruleset.CheckUndecoded(md, drainOutcomeKey),
+		validateRuleSets(ruleSets),
+	)
+}
+
+// setTimeoutDefaults fills the timeout fields that the config left at zero.
+func setTimeoutDefaults(config *TomlConfig) error {
 	if config.DeleteAfterTimeoutMinutes == 0 {
 		config.DeleteAfterTimeoutMinutes = 60 // Default: 60 minutes
 	}
 
 	if config.DeleteAfterTimeoutMinutes <= 0 {
-		return nil, fmt.Errorf("deleteAfterTimeout must be a positive integer")
+		return fmt.Errorf("deleteAfterTimeout must be a positive integer")
 	}
 
 	if config.NotReadyTimeoutMinutes == 0 {
@@ -206,10 +262,10 @@ func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
 	}
 
 	if config.NotReadyTimeoutMinutes <= 0 {
-		return nil, fmt.Errorf("notReadyTimeoutMinutes must be a positive integer")
+		return fmt.Errorf("notReadyTimeoutMinutes must be a positive integer")
 	}
 
-	return config, nil
+	return nil
 }
 
 type ReconcilerConfig struct {

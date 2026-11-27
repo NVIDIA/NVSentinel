@@ -16,9 +16,15 @@ global:
   dryRun: false
   image:
     tag: "main"
+  # Shell image for the small init containers that fix file ownership and
+  # permissions: nic-health-monitor's state directory (chown -R as root with
+  # only CHOWN and a read-only root filesystem), the audit log directory
+  # (chown/chmod as root) and the PostgreSQL client certificate copy (sh, cp,
+  # chmod, ls as a non-root user). Any multi-arch image with a POSIX shell and
+  # those tools works; busybox applets are enough.
   initContainerImage:
-    repository: docker.io/bitnamilegacy/os-shell
-    tag: "12-debian-12-r30"
+    repository: public.ecr.aws/docker/library/alpine
+    tag: "3.24.4"
     pullPolicy: IfNotPresent
   metricsPort: 2112
   # IPv4 bind address for the GPU health monitor metrics server. Set to "::"
@@ -263,13 +269,37 @@ global:
   # the nvidia RuntimeClass.
   gpuDraEnabled: false
 
+  # Entity types that get partial drains when node-drainer.partialDrainEnabled is
+  # true. Each key is an entity type of health events. devices lists how pods get
+  # a device of that type: a device-plugin entry with resourceNames, or a DRA
+  # entry with driver, deviceClasses and entityValueAttribute (the ResourceSlice
+  # attribute whose value health events report). scopedActions lists the actions,
+  # built-in or custom, that repair one device of the type; node-drainer drains
+  # only the pods that use that device for them. An action can be scoped to only
+  # one entity type. Add a device type under another key. To stop partial drains
+  # for GPUs, set GPU_UUID.scopedActions to []; a null value does not remove the
+  # default from subcharts. See docs/configuration/node-drainer.md#partial-drain.
+  partialRemediationEntityTypes:
+    GPU_UUID:
+      devices:
+        - resourceNames: ["nvidia.com/gpu", "nvidia.com/pgpu"]
+        - driver: gpu.nvidia.com
+          deviceClasses: ["gpu.nvidia.com"]
+          entityValueAttribute: uuid
+      scopedActions: ["COMPONENT_RESET"]
+
   # SELinux options for the pods that share host directories without running
   # privileged: platform-connectors, syslog-health-monitor and
-  # nic-health-monitor. Privileged pods already run as spc_t.
+  # nic-health-monitor; the modules that publish through the platform-connector
+  # socket (csp-health-monitor, health-events-analyzer,
+  # kubernetes-object-monitor, lifecycle-manager, nvcre-certification-monitor,
+  # slurm-drain-monitor); and, when auditLogging is enabled, the modules that
+  # write audit logs to the node. Privileged pods already run as spc_t.
   # On SELinux-enforcing nodes with RKE2 SELinux support (the default for RKE2
   # RPM installs on SLES 16 and RHEL), container_t is denied the shared host
-  # paths (/var/run/nvsentinel, the NIC monitor state directories), so the
-  # platform-connector socket is never created and no monitor can publish.
+  # paths (/var/run/nvsentinel, /var/log/nvsentinel, the NIC monitor state
+  # directories), so the platform-connector socket is never created or cannot
+  # be reached, and the audit log directory cannot be prepared.
   # Set {type: spc_t} on those nodes. Empty (default) renders nothing.
   seLinuxOptions: {}
 
@@ -552,6 +582,8 @@ platformConnector:
     enabled: false
 
   k8sConnector:
+    # Controls node-condition and Kubernetes Event writes for both connector roles.
+    # When false, their roles omit nodes/status and events permissions.
     enabled: true
     # Retry each failed Kubernetes write in place; completed writes are not repeated.
     # Zero or omission selects 25 retries per write. Negative values are invalid.

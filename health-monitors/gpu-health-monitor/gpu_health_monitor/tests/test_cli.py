@@ -23,7 +23,14 @@ from click import Parameter
 from click.testing import CliRunner, Result
 
 from gpu_health_monitor import cli as cli_module
-from gpu_health_monitor.cli import _parse_min_consecutive_polls, cli
+import click
+import configparser
+
+from gpu_health_monitor.cli import UptimeLimitConfig, _parse_min_consecutive_polls, _parse_uptime_limit, cli
+
+# int.from_bytes(sha256(b"test-node").digest()[:8], "big") / 2**64, the share of
+# StaggerHours by which the node "test-node" reboots early.
+TEST_NODE_STAGGER_FRACTION = 0.3366570593403023
 
 
 class TestParseMinConsecutivePolls:
@@ -80,7 +87,7 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     token_path = str(tmp_path / "token") if custom_settings else ""
     state_file.write_text("test-boot-id")
     mapping_file.write_text("DCGM_FR_NVLINK_DOWN,CONTACT_SUPPORT\n")
-    dcgm_options = "ProbeDeadlineSeconds=23\nProbeStoreOnly=false\n" if custom_settings else ""
+    dcgm_options = "ProbeDeadlineSeconds=23\nProbeStoreOnly=false\nNvswitchStoreOnly=false\n" if custom_settings else ""
     config_text = (
         "[logging]\n[dcgm]\nPollIntervalSeconds=17\n"
         f"{dcgm_options}"
@@ -97,6 +104,8 @@ def test_cli_passes_configuration_to_watcher_and_processor(
             "MinConsecutivePolls=DCGM_FR_NVLINK_DOWN=3\n"
             "ConnectivityFailureEscalationThreshold=9\n"
             "[dcgmconnectivity]\nFailureThreshold=4\nSuccessThreshold=2\n"
+            "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B, 96.00.AF.00.01\nMaxUptimeHours=1512\n"
+            "StaggerHours=72\n"
         )
     config_file.write_text(config_text)
     started: list[cli_module.dcgm.DCGMWatcher] = []
@@ -152,6 +161,14 @@ def test_cli_passes_configuration_to_watcher_and_processor(
     assert watcher._power_brake_enabled is custom_settings
     assert watcher._power_brake_min_consecutive_polls == (4 if custom_settings else 1)
     assert watcher._imex_monitoring_enabled is custom_settings
+    assert watcher._uptime_limit_enabled is custom_settings
+    assert watcher._uptime_limit_vbios_versions == (
+        frozenset({"97.00.82.00.4b", "96.00.af.00.01"}) if custom_settings else frozenset()
+    )
+    # The limit of the node comes from NODE_NAME, so the stagger offset is the one of test-node.
+    assert watcher._uptime_limit_max_uptime_seconds == pytest.approx(
+        (1512 - 72 * TEST_NODE_STAGGER_FRACTION) * 3600 if custom_settings else 0
+    )
     assert watcher._suppress_unbridged_pcie_nvlink_down is custom_settings
     assert watcher._suppressed_error_codes == (
         frozenset({"DCGM_FR_CONTAINED_ERROR"}) if custom_settings else frozenset()
@@ -171,8 +188,9 @@ def test_cli_passes_configuration_to_watcher_and_processor(
         else cli_module.platformconnector_pb2.EXECUTE_REMEDIATION
     )
     assert processor._store_only_checks == frozenset(
-        {"GpuThermalMarginWatch"} if custom_settings else {"GpuDcgmUnresponsive"}
+        {"GpuThermalMarginWatch", "GpuUptimeLimitWatch"} if custom_settings else {"GpuDcgmUnresponsive"}
     )
+    assert processor._nvswitch_store_only is (not custom_settings)
     assert processor._connectivity_failure_escalation_threshold == (9 if custom_settings else 0)
     assert processor._connectivity_failure_threshold == (4 if custom_settings else 1)
     assert processor._connectivity_success_threshold == (2 if custom_settings else 1)
@@ -252,3 +270,82 @@ def test_health_server_defaults_to_ipv4(tmp_path: Path) -> None:
     mock_start.assert_called_once()
     assert mock_start.call_args.args[0] == 2112
     assert mock_start.call_args.kwargs["addr"] == "0.0.0.0"
+
+
+def _uptime_config(body: str) -> configparser.ConfigParser:
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read_string(body)
+    return config
+
+
+class TestParseUptimeLimit:
+    def test_missing_section_disables_the_check(self) -> None:
+        assert _parse_uptime_limit(_uptime_config("[dcgm]\n")) == UptimeLimitConfig()
+
+    def test_disabled_check_is_not_validated(self) -> None:
+        uptime_limit = _parse_uptime_limit(_uptime_config("[uptimelimit]\nEnabled=false\nMaxUptimeHours=0\n"))
+
+        assert uptime_limit.enabled is False
+
+    def test_enabled_check_is_store_only_by_default(self) -> None:
+        uptime_limit = _parse_uptime_limit(
+            _uptime_config(
+                "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B,, 96.00.AF.00.01 \nMaxUptimeHours=1512\n"
+            )
+        )
+
+        assert uptime_limit == UptimeLimitConfig(
+            enabled=True,
+            store_only=True,
+            affected_vbios_versions=frozenset({"97.00.82.00.4B", "96.00.AF.00.01"}),
+            max_uptime_hours=1512.0,
+        )
+
+    def test_enabled_check_without_versions_refuses_to_start(self) -> None:
+        with pytest.raises(click.BadParameter, match="at least one vBIOS version"):
+            _parse_uptime_limit(
+                _uptime_config("[uptimelimit]\nEnabled=true\nAffectedVbiosVersions= , \nMaxUptimeHours=1512\n")
+            )
+
+    @pytest.mark.parametrize("hours", ["0", "-1", "nan", "inf", "-inf"])
+    def test_enabled_check_without_finite_positive_limit_refuses_to_start(self, hours: str) -> None:
+        with pytest.raises(click.BadParameter, match="finite number greater than 0"):
+            _parse_uptime_limit(
+                _uptime_config(
+                    f"[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours={hours}\n"
+                )
+            )
+
+    @pytest.mark.parametrize("stagger", ["0", "71.5", "1511.9"])
+    def test_enabled_check_accepts_a_stagger_below_the_limit(self, stagger: str) -> None:
+        uptime_limit = _parse_uptime_limit(
+            _uptime_config(
+                "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours=1512\n"
+                f"StaggerHours={stagger}\n"
+            )
+        )
+
+        assert uptime_limit.stagger_hours == float(stagger)
+
+    def test_stagger_defaults_to_zero(self) -> None:
+        uptime_limit = _parse_uptime_limit(
+            _uptime_config("[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours=1512\n")
+        )
+
+        assert uptime_limit.stagger_hours == 0.0
+
+    @pytest.mark.parametrize("stagger", ["-1", "-0.5", "nan", "inf", "-inf", "1512", "2000"])
+    def test_enabled_check_with_an_invalid_stagger_refuses_to_start(self, stagger: str) -> None:
+        with pytest.raises(click.BadParameter, match="at least 0 and less than MaxUptimeHours"):
+            _parse_uptime_limit(
+                _uptime_config(
+                    "[uptimelimit]\nEnabled=true\nAffectedVbiosVersions=97.00.82.00.4B\nMaxUptimeHours=1512\n"
+                    f"StaggerHours={stagger}\n"
+                )
+            )
+
+    def test_disabled_check_does_not_validate_the_stagger(self) -> None:
+        uptime_limit = _parse_uptime_limit(_uptime_config("[uptimelimit]\nEnabled=false\nStaggerHours=-1\n"))
+
+        assert uptime_limit.enabled is False

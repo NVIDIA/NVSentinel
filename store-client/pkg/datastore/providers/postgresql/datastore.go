@@ -38,6 +38,7 @@ import (
 // PostgreSQLDataStore implements the DataStore interface for PostgreSQL
 type PostgreSQLDataStore struct {
 	db               *sql.DB
+	cleaner          *changelogCleaner
 	connString       string // Connection string for creating LISTEN connections
 	healthEventStore datastore.HealthEventStore
 	// metricsRegisterer is where change stream metrics are registered; nil means the default
@@ -47,6 +48,16 @@ type PostgreSQLDataStore struct {
 
 // NewPostgreSQLStore creates a new PostgreSQL datastore
 func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (datastore.DataStore, error) {
+	return newPostgreSQLStore(ctx, config, func(connectionString string) (*sql.DB, error) {
+		return otelsql.Open("postgres", connectionString,
+			otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+			otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()))
+	})
+}
+
+func newPostgreSQLStore(
+	ctx context.Context, config datastore.DataStoreConfig, open func(string) (*sql.DB, error),
+) (datastore.DataStore, error) {
 	// Validate configuration
 	if config.Connection.Host == "" {
 		return nil, fmt.Errorf("host is required")
@@ -66,10 +77,7 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 
 	connectionString := buildConnectionString(config.Connection)
 
-	db, err := otelsql.Open("postgres", connectionString,
-		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
-		otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
-	)
+	db, err := open(connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
@@ -104,6 +112,7 @@ func NewPostgreSQLStore(ctx context.Context, config datastore.DataStoreConfig) (
 		metricsRegisterer: config.MetricsRegisterer,
 	}
 	store.healthEventStore = NewPostgreSQLHealthEventStore(db)
+	store.cleaner = startChangelogCleaner(ctx, db, config.Options)
 
 	slog.Info("Successfully connected to PostgreSQL database", "host", config.Connection.Host)
 
@@ -154,7 +163,7 @@ func (p *PostgreSQLDataStore) Ping(ctx context.Context) error {
 
 // Close closes the database connection
 func (p *PostgreSQLDataStore) Close(ctx context.Context) error {
-	return p.db.Close()
+	return p.cleaner.closePool(ctx, p.db)
 }
 
 // Provider returns the provider type
@@ -172,12 +181,18 @@ func (p *PostgreSQLDataStore) GetDB() *sql.DB {
 func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	ctx context.Context, config any,
 ) (datastore.ChangeStreamWatcher, error) {
+	return p.newChangeStreamWatcher(ctx, config, client.ResetResumeTokenOnStartIfConfigured)
+}
+
+func (p *PostgreSQLDataStore) newChangeStreamWatcher(
+	ctx context.Context, config any, reset resetResumeTokenFunc,
+) (datastore.ChangeStreamWatcher, error) {
 	clientName, tableName, pipeline, err := parseWatcherConfig(config)
 	if err != nil {
 		return nil, err
 	}
 
-	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+	resumeControlDecision, err := reset(
 		ctx,
 		p.GetDatabaseClient(),
 		client.TokenConfig{ClientName: clientName},
@@ -199,6 +214,10 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	// Create and return PostgreSQL change stream watcher
 	// Default to hybrid mode for best performance and reliability
 	watcher := NewPostgreSQLChangeStreamWatcher(p.db, clientName, snakeCaseTableName, p.connString, ModeHybrid)
+	if err := watcher.initializeResumePosition(ctx); err != nil {
+		return nil, fmt.Errorf("initialize PostgreSQL watcher position: %w", err)
+	}
+
 	watcher.pipeline = pipeline
 	watcher.pipelineFilter = pipelineFilter
 
@@ -274,7 +293,7 @@ func buildPipelineFilter(pipeline any, tableName, clientName string) *PipelineFi
 // GetDatabaseClient returns a PostgreSQL implementation of client.DatabaseClient
 // This method exists for compatibility with services that type-assert for MongoDB-style operations
 func (p *PostgreSQLDataStore) GetDatabaseClient() client.DatabaseClient {
-	return NewPostgreSQLDatabaseClientWithConnString(p.db, "health_events", p.connString)
+	return &PostgreSQLDatabaseClient{db: p.db, tableName: "health_events", connString: p.connString, borrowed: true}
 }
 
 // CreateChangeStreamWatcher creates a change stream watcher for PostgreSQL
@@ -480,6 +499,8 @@ func createTables(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("failed to create schema: %w", err)
 		}
 	}
+
+	provisionCleanupState(ctx, db)
 
 	for _, timestampColumn := range timestampColumns {
 		if _, err := db.ExecContext(ctx, timestampColumn); err != nil {

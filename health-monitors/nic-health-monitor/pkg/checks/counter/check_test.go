@@ -194,6 +194,62 @@ func counterCfg(override string, counters ...config.CounterConfig) *config.Confi
 	}
 }
 
+func TestCounterCheck_CommitDefersTimestampsAndDiscardPreservesState(t *testing.T) {
+	for _, layer := range []string{testIBLayer, "Ethernet"} {
+		t.Run(layer, func(t *testing.T) {
+			device := &counterStubDevice{numaNode: 0, linkLayer: layer, value: 10}
+			reader := newCounterStubNode().add("mlx5_0", device).reader()
+			classifier := counterClassifier(t, reader, map[string][]string{"mlx5_0": {"PIX"}})
+			mgr, statePath, bootPath := counterStateManagerWithPaths(t)
+			cfg := counterCfg("", deltaCounter(0))
+			strategy := pb.ProcessingStrategy_EXECUTE_REMEDIATION
+
+			var check checks.TransactionalCheck
+			if layer == testIBLayer {
+				check = NewInfiniBandDegradationCheck(testNode, reader, cfg, classifier, strategy, mgr, false)
+			} else {
+				check = NewEthernetDegradationCheck(testNode, reader, cfg, classifier, strategy, mgr, false)
+			}
+
+			const key = "mlx5_0:1:link_downed"
+
+			_, err := check.Prepare()
+			require.NoError(t, err)
+			check.Commit()
+			initial := mgr.CounterSnapshots()[key]
+			require.Equal(t, uint64(10), initial.Value)
+
+			_, err = check.Prepare()
+			require.NoError(t, err)
+			check.Commit()
+			assert.True(t, mgr.CounterSnapshots()[key].Timestamp.After(initial.Timestamp))
+
+			reloaded := statefile.NewManagerWithPaths(statePath, bootPath)
+			require.NoError(t, reloaded.Load())
+			assert.True(t, reloaded.CounterSnapshots()[key].Timestamp.Equal(initial.Timestamp))
+
+			device.value++
+			events, err := check.Prepare()
+			require.NoError(t, err)
+			require.Len(t, events, 1)
+			check.Discard()
+			check.Commit()
+			require.NoError(t, reloaded.Load())
+			assert.Equal(t, initial.Value, reloaded.CounterSnapshots()[key].Value)
+			assert.True(t, reloaded.CounterSnapshots()[key].Timestamp.Equal(initial.Timestamp))
+			assert.Empty(t, reloaded.BreachFlags())
+
+			events, err = check.Prepare()
+			require.NoError(t, err)
+			require.Len(t, events, 1)
+			check.Commit()
+			require.NoError(t, reloaded.Load())
+			assert.Equal(t, device.value, reloaded.CounterSnapshots()[key].Value)
+			assert.True(t, reloaded.BreachFlags()[key].Breached)
+		})
+	}
+}
+
 func TestCounterCheck_TwoCountersOnePort_PartialRecovery(t *testing.T) {
 	// Every counter event carries the counter name as ErrorCode, so
 	// downstream clears conditions per counter. Two counters breached on

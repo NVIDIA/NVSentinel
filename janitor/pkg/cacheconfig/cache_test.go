@@ -57,6 +57,23 @@ func TestBuild_GPUResetEnabled_ScopesPodCache(t *testing.T) {
 	assert.NotNil(t, podCache.Transform)
 }
 
+func TestBuild_ServiceManagerNamespace_ScopesPodCache(t *testing.T) {
+	options, err := Build(&config.Config{
+		GPUReset: config.GPUResetControllerConfig{
+			Enabled: true,
+			ServiceManager: gpuservices.Manager{
+				Name:      "gpu-operator",
+				Namespace: "nvidia-gpu-operator",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	podCache := cacheForObject(t, options, &corev1.Pod{})
+	assert.Len(t, podCache.Namespaces, 1)
+	require.Contains(t, podCache.Namespaces, "nvidia-gpu-operator")
+}
+
 func TestBuild_RegistryManagers_PodCacheKeepsEveryAppPod(t *testing.T) {
 	for name, spec := range gpuservices.Registry {
 		t.Run(name, func(t *testing.T) {
@@ -181,9 +198,10 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 		UID:             types.UID("node-uid"),
 		ResourceVersion: "node-rv",
 		Labels:          map[string]string{"retain": "label"},
-		Annotations:     map[string]string{"drop": "annotation"},
+		Annotations:     map[string]string{"drop": "annotation", "quarantineHealthEvent": `[{"nodeName":"node-a"}]`},
 		Spec: corev1.NodeSpec{
-			ProviderID: "drop-provider",
+			ProviderID:    "drop-provider",
+			Unschedulable: true,
 			Taints: []corev1.Taint{{
 				Key:    "retain",
 				Value:  "taint",
@@ -215,7 +233,9 @@ func TestTransformNodeForCache_RetainsJanitorFieldsOnly(t *testing.T) {
 		UID:             types.UID("node-uid"),
 		ResourceVersion: "node-rv",
 		Labels:          map[string]string{"retain": "label"},
+		Annotations:     map[string]string{"quarantineHealthEvent": `[{"nodeName":"node-a"}]`},
 		Spec: corev1.NodeSpec{
+			Unschedulable: true,
 			Taints: []corev1.Taint{{
 				Key:    "retain",
 				Value:  "taint",
@@ -302,4 +322,29 @@ func cacheForObject(
 	t.Fatalf("cache options do not include %T", object)
 
 	return cache.ByObject{}
+}
+
+func TestNodeOutOfService(t *testing.T) {
+	quarantined := func(value string) *corev1.Node {
+		// The literal key, so that a change of the fault-quarantine key fails this test.
+		return &corev1.Node{Annotations: map[string]string{"quarantineHealthEvent": value}}
+	}
+
+	assert.False(t, NodeOutOfService(&corev1.Node{}))
+	assert.True(t, NodeOutOfService(&corev1.Node{Spec: corev1.NodeSpec{Unschedulable: true}}))
+	assert.True(t, NodeOutOfService(quarantined(`[{"nodeName":"node-a"}]`)))
+	assert.False(t, NodeOutOfService(quarantined("")))
+	assert.False(t, NodeOutOfService(quarantined("[]")))
+	assert.False(t, NodeOutOfService(&corev1.Node{
+		Annotations: map[string]string{"quarantineHealthEventIsCordoned": "true"},
+	}))
+}
+
+func TestTransformNodeForCache_KeepsNoAnnotationsWithoutQuarantine(t *testing.T) {
+	node := &corev1.Node{Name: "node-a", Annotations: map[string]string{"drop": "annotation"}}
+
+	transformed, err := transformNodeForCache(node)
+	require.NoError(t, err)
+	assert.Nil(t, transformed.(*corev1.Node).Annotations)
+	assert.False(t, NodeOutOfService(transformed.(*corev1.Node)))
 }

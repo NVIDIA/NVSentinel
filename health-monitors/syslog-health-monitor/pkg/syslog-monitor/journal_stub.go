@@ -97,6 +97,12 @@ func (j *StubJournal) GetData(field string) (string, error) {
 		return "", fmt.Errorf("invalid current position: %d", j.currentPosition)
 	}
 
+	// An injected line has no boot ID. Returning the line for it would make
+	// the boot-start scan skip every entry as one from an earlier boot.
+	if field == FieldBootID {
+		return "", nil
+	}
+
 	return journal[j.currentPosition], nil
 }
 

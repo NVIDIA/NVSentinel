@@ -58,6 +58,34 @@ func TestRebootNode_IsRebootInProgress(t *testing.T) {
 			expected: false,
 		},
 		{
+			name: "signal sent and reboot not completed under the new name only",
+			conditions: []metav1.Condition{
+				{
+					Type:   RebootNodeConditionSignalSent,
+					Status: metav1.ConditionTrue,
+				},
+				{
+					Type:   RebootNodeConditionRebootCompleted,
+					Status: metav1.ConditionFalse,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "signal sent and reboot completed under the new name only",
+			conditions: []metav1.Condition{
+				{
+					Type:   RebootNodeConditionSignalSent,
+					Status: metav1.ConditionTrue,
+				},
+				{
+					Type:   RebootNodeConditionRebootCompleted,
+					Status: metav1.ConditionTrue,
+				},
+			},
+			expected: false,
+		},
+		{
 			name: "signal not sent",
 			conditions: []metav1.Condition{
 				{
@@ -134,6 +162,7 @@ func TestRebootNode_SetInitialConditions(t *testing.T) {
 
 		hasSignalSent := false
 		hasNodeReady := false
+		hasRebootCompleted := false
 		for _, cond := range rn.Status.Conditions {
 			if cond.Type == RebootNodeConditionSignalSent {
 				hasSignalSent = true
@@ -143,9 +172,14 @@ func TestRebootNode_SetInitialConditions(t *testing.T) {
 				hasNodeReady = true
 				assert.Equal(t, metav1.ConditionUnknown, cond.Status)
 			}
+			if cond.Type == RebootNodeConditionRebootCompleted {
+				hasRebootCompleted = true
+				assert.Equal(t, metav1.ConditionUnknown, cond.Status)
+			}
 		}
 		assert.True(t, hasSignalSent)
 		assert.True(t, hasNodeReady)
+		assert.True(t, hasRebootCompleted)
 	})
 }
 
@@ -249,6 +283,6 @@ func TestRebootNode_StatusFields(t *testing.T) {
 		// Verify all fields are set correctly
 		assert.NotNil(t, rn.Status.StartTime)
 		assert.NotNil(t, rn.Status.CompletionTime)
-		assert.Len(t, rn.Status.Conditions, 2) // SignalSent and NodeReady
+		assert.Len(t, rn.Status.Conditions, 3) // SignalSent, NodeReady, and RebootCompleted
 	})
 }
