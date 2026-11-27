@@ -36,25 +36,187 @@ type NICTopoCollector interface {
 }
 
 // defaultNICTopoCollector runs nvidia-smi and parses the output.
-type defaultNICTopoCollector struct{}
+//
+// runTopo, snapshot and sleep are fields rather than direct calls so
+// tests can drive the retry loop without a real nvidia-smi or sysfs:
+// runTopo fakes the topo command, snapshot fakes the PCI address
+// snapshots, and sleep fakes the settle waits.
+type defaultNICTopoCollector struct {
+	ibClassPath string
+	runTopo     func(ctx context.Context) (string, error)
+	snapshot    func(path string) (map[string]string, error)
+	sleep       func(ctx context.Context, d time.Duration) bool
+}
 
-func (defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
-	output, err := nic.RunTopoCommand(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("run nvidia-smi topo -m: %w", err)
+// maxTopoCollectAttempts bounds the topo runs when an RDMA rename lands
+// while nvidia-smi runs. A rename moves every device name to another
+// device in well under a second, so one retry lands after it in
+// practice; the bound only guards against a name set that never
+// settles, where the matrix is published without PCI addresses —
+// pairing its rows with addresses from a snapshot taken while names
+// were still moving can bind a row to the wrong device for the life
+// of the file.
+const maxTopoCollectAttempts = 3
+
+// snapshotSettleInterval is the wait between the snapshot reads
+// that follow a run whose names moved. After such a run the
+// collector re-reads the snapshot every second until two reads in
+// a row agree, so the retry starts from a name set that has stopped
+// moving; the retry is then accepted on its own two snapshots
+// alone, with no comparison against the earlier run.
+const snapshotSettleInterval = time.Second
+
+// maxSettleSnapshotReads bounds the settle wait after a run whose
+// names moved. A rename moves every device name in well under a
+// second, so two agreeing reads normally come back at once; five
+// reads cover a slower renamer without letting a name set that
+// keeps flapping hold the collection open. Past the bound the
+// matrix is published without PCI addresses.
+const maxSettleSnapshotReads = 5
+
+// sleepContext waits for d unless ctx ends first, reporting whether
+// the full wait elapsed.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (c defaultNICTopoCollector) Collect(ctx context.Context) (*nic.TopoMatrix, error) {
+	for attempt := 1; ; attempt++ {
+		matrix, before, after, err := c.collectOnce(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// Without two readable snapshots there is nothing to check the
+		// run against; publish the matrix without PCI addresses, which
+		// is the behaviour of collectors before this field existed.
+		if before == nil || after == nil {
+			return matrix, nil
+		}
+
+		// A run whose own two snapshots agree is safe to publish:
+		// the names were still while nvidia-smi ran, and consumers
+		// match the rows by address.
+		if !nic.AddressesChangedForNames(before, after, matrix.NICs) {
+			matrix.NICPCIAddresses = nic.AddressesForNames(after, matrix.NICs)
+
+			return matrix, nil
+		}
+
+		if attempt >= maxTopoCollectAttempts {
+			slog.Warn("RDMA device names kept changing while nvidia-smi topo -m ran, "+
+				"publishing the topology without PCI addresses",
+				"attempts", attempt)
+
+			return matrix, nil
+		}
+
+		slog.Warn("RDMA device names changed while nvidia-smi topo -m ran, "+
+			"waiting for the names to settle before collecting the NIC topology again",
+			"attempt", attempt)
+
+		settled, err := c.waitForNamesToSettle(ctx, after, matrix.NICs)
+		if err != nil {
+			return nil, err
+		}
+
+		if !settled {
+			slog.Warn("RDMA device names did not settle, " +
+				"publishing the topology without PCI addresses")
+
+			return matrix, nil
+		}
+	}
+}
+
+// waitForNamesToSettle re-reads the PCI address snapshot every
+// snapshotSettleInterval until two reads in a row agree on the
+// watched names, starting from the last snapshot of the run that saw
+// the names move. It reports whether the names settled. The wait is
+// bounded by maxSettleSnapshotReads reads; a snapshot that cannot be
+// read ends the wait unsettled, because stability cannot be shown
+// without one.
+func (c defaultNICTopoCollector) waitForNamesToSettle(
+	ctx context.Context, last map[string]string, names []string,
+) (bool, error) {
+	for range maxSettleSnapshotReads {
+		if !c.sleep(ctx, snapshotSettleInterval) {
+			return false, ctx.Err()
+		}
+
+		current, err := c.snapshot(c.ibClassPath)
+		if err != nil {
+			slog.Warn("Could not snapshot IB device PCI addresses while waiting for the names to settle, "+
+				"nic_topology_pci_addresses will be empty", "error", err)
+
+			return false, nil
+		}
+
+		if current == nil {
+			return false, nil
+		}
+
+		if !nic.AddressesChangedForNames(last, current, names) {
+			return true, nil
+		}
+
+		last = current
 	}
 
-	matrix, err := nic.ParseTopoMatrix(output)
-	if err != nil {
-		return nil, fmt.Errorf("parse nvidia-smi topo -m output: %w", err)
+	return false, nil
+}
+
+// collectOnce runs nvidia-smi topo -m once, bracketed by PCI address
+// snapshots of the IB devices. A snapshot that cannot be read comes
+// back nil instead of failing the collection.
+func (c defaultNICTopoCollector) collectOnce(
+	ctx context.Context,
+) (matrix *nic.TopoMatrix, before, after map[string]string, err error) {
+	before, snapErr := c.snapshot(c.ibClassPath)
+	if snapErr != nil {
+		slog.Warn("Could not snapshot IB device PCI addresses before nvidia-smi topo -m, "+
+			"nic_topology_pci_addresses will be empty", "error", snapErr)
+
+		before = nil
 	}
 
-	return matrix, nil
+	output, err := c.runTopo(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("run nvidia-smi topo -m: %w", err)
+	}
+
+	matrix, err = nic.ParseTopoMatrix(output)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse nvidia-smi topo -m output: %w", err)
+	}
+
+	after, snapErr = c.snapshot(c.ibClassPath)
+	if snapErr != nil {
+		slog.Warn("Could not snapshot IB device PCI addresses after nvidia-smi topo -m, "+
+			"nic_topology_pci_addresses will be empty", "error", snapErr)
+
+		after = nil
+	}
+
+	return matrix, before, after, nil
 }
 
 // NewDefaultTopoCollector returns the production NICTopoCollector.
 func NewDefaultTopoCollector() NICTopoCollector {
-	return defaultNICTopoCollector{}
+	return defaultNICTopoCollector{
+		ibClassPath: nic.DefaultIBClassPath,
+		runTopo:     nic.RunTopoCommand,
+		snapshot:    nic.SnapshotPCIAddresses,
+		sleep:       sleepContext,
+	}
 }
 
 type nvmlClient interface {
@@ -168,9 +330,27 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		metadata.NICTopology[name] = matrix.Relationships[name]
 	}
 
+	// Publish the PCI address of each topology row alongside the
+	// name-keyed matrix, restricted to rows that were published.
+	// Consumers use it to resolve rows by physical device when a
+	// device name has moved since collection.
+	if len(matrix.NICPCIAddresses) > 0 {
+		addresses := make(map[string]string, len(matrix.NICPCIAddresses))
+		for name, addr := range matrix.NICPCIAddresses {
+			if _, ok := metadata.NICTopology[name]; ok {
+				addresses[name] = addr
+			}
+		}
+
+		if len(addresses) > 0 {
+			metadata.NICTopologyPCIAddresses = addresses
+		}
+	}
+
 	slog.Info("Populated NIC topology matrix",
 		"gpus", len(matrix.GPUs),
 		"nics", len(matrix.NICs),
+		"nics_with_pci_address", len(metadata.NICTopologyPCIAddresses),
 	)
 }
 

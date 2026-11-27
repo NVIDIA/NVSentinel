@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 	"github.com/stretchr/testify/assert"
@@ -184,6 +185,67 @@ func TestCollectPopulatesNICTopology(t *testing.T) {
 	assert.Equal(t, 1, metadata.GPUs[1].NUMANode)
 }
 
+// TestCollectPopulatesNICTopologyPCIAddresses verifies that the PCI
+// addresses collected with the topo matrix are published next to
+// nic_topology, restricted to devices that have a topology row.
+func TestCollectPopulatesNICTopologyPCIAddresses(t *testing.T) {
+	fake := &fakeNVMLClient{
+		deviceCount:   2,
+		driverVersion: "560.35.03",
+	}
+
+	matrix := &nic.TopoMatrix{
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0", "mlx5_1"},
+		GPUNUMANodes: []int{0, 1},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+			"mlx5_1": {"SYS", "PIX"},
+		},
+		NICPCIAddresses: map[string]string{
+			"mlx5_0": "0000:0c:00.0",
+			"mlx5_1": "0000:18:00.0",
+			// No topology row for mlx5_9: it must not be published.
+			"mlx5_9": "0000:86:00.0",
+		},
+	}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{matrix: matrix})
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"mlx5_0": "0000:0c:00.0",
+		"mlx5_1": "0000:18:00.0",
+	}, metadata.NICTopologyPCIAddresses)
+}
+
+// TestCollectWithoutPCIAddressesLeavesFieldEmpty verifies that a topo
+// matrix collected without PCI addresses (for example when sysfs could
+// not be read) leaves nic_topology_pci_addresses absent, so consumers
+// keep the name-keyed behaviour.
+func TestCollectWithoutPCIAddressesLeavesFieldEmpty(t *testing.T) {
+	fake := &fakeNVMLClient{
+		deviceCount:   2,
+		driverVersion: "560.35.03",
+	}
+
+	matrix := &nic.TopoMatrix{
+		GPUs:         []string{"GPU0", "GPU1"},
+		NICs:         []string{"mlx5_0"},
+		GPUNUMANodes: []int{0, 1},
+		Relationships: map[string][]string{
+			"mlx5_0": {"PIX", "SYS"},
+		},
+	}
+
+	collector := NewCollector(fake, &fakeNICTopoCollector{matrix: matrix})
+
+	metadata, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, metadata.NICTopologyPCIAddresses)
+}
+
 // TestCollectTopoFailureLeavesTopologyEmpty verifies the collector does
 // not abort when `nvidia-smi topo -m` fails.
 func TestCollectTopoFailureLeavesTopologyEmpty(t *testing.T) {
@@ -274,3 +336,202 @@ func TestCheckGPUCountMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "1 GPUs")
 }
 
+// topoOutputForRetryLoop is a minimal nvidia-smi topo -m capture: one
+// GPU and two NICs, mlx5_0 and mlx5_1.
+const topoOutputForRetryLoop = "GPU0    mlx5_0  mlx5_1  CPU Affinity\n" +
+	"GPU0     X      NODE    NODE     0-55\n"
+
+// topoFunc is a test double for the topo command: it returns the same
+// output (or error) on every call and counts them.
+type topoFunc struct {
+	output string
+	err    error
+	calls  int
+}
+
+func (f *topoFunc) run(context.Context) (string, error) {
+	f.calls++
+	return f.output, f.err
+}
+
+// snapshotFunc is a test double for the PCI address snapshots: it
+// returns the next map in sequence on each call (before, after and
+// settle reads, in call order) and counts them. A nil entry stands
+// for an unreadable snapshot.
+type snapshotFunc struct {
+	maps  []map[string]string
+	calls int
+}
+
+func (f *snapshotFunc) take(string) (map[string]string, error) {
+	m := f.maps[f.calls]
+	f.calls++
+	return m, nil
+}
+
+// TestDefaultNICTopoCollectorCollect_RetryLoop drives the retry loop
+// with faked topo output, snapshots and sleeps: the settle wait
+// between attempts, the attempt cap and dropping the addresses when
+// the names never settle.
+func TestDefaultNICTopoCollectorCollect_RetryLoop(t *testing.T) {
+	addrA := map[string]string{"mlx5_0": "0000:41:00.0", "mlx5_1": "0000:9a:00.0"}
+	addrB := map[string]string{"mlx5_0": "0000:9a:00.0", "mlx5_1": "0000:41:00.0"}
+	addrC := map[string]string{"mlx5_0": "0000:55:00.0", "mlx5_1": "0000:56:00.0"}
+
+	tests := []struct {
+		name          string
+		topoErr       error
+		snapshots     []map[string]string
+		sleepOK       bool
+		wantTopoCalls int
+		wantSleeps    int
+		wantSnapCalls int
+		wantAddresses map[string]string
+		wantErr       bool
+	}{
+		{
+			name:          "stable first attempt publishes addresses",
+			snapshots:     []map[string]string{addrA, addrA},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    0,
+			wantSnapCalls: 2,
+			wantAddresses: addrA,
+		},
+		{
+			name: "rename during a run waits for the names to settle and retries",
+			// Run 1 sees the names swap mid-run. The first settle
+			// read already matches the run's after snapshot, so
+			// the names have settled, and run 2 is accepted on
+			// its own two snapshots.
+			snapshots:     []map[string]string{addrA, addrB, addrB, addrB, addrB},
+			sleepOK:       true,
+			wantTopoCalls: 2,
+			wantSleeps:    1,
+			wantSnapCalls: 5,
+			wantAddresses: addrB,
+		},
+		{
+			name: "names still moving during the settle wait delay the retry",
+			// The first settle read still differs from the run's
+			// after snapshot; only the second read matches the
+			// one before it. The retry is then accepted on its
+			// own two snapshots — no comparison against the
+			// earlier run decides it.
+			snapshots:     []map[string]string{addrA, addrB, addrC, addrC, addrC, addrC},
+			sleepOK:       true,
+			wantTopoCalls: 2,
+			wantSleeps:    2,
+			wantSnapCalls: 6,
+			wantAddresses: addrC,
+		},
+		{
+			name: "names that never settle drop the addresses",
+			// Every settle read differs from the one before it,
+			// so the bounded wait ends without two reads in a
+			// row agreeing and no retry is attempted.
+			snapshots:     []map[string]string{addrA, addrB, addrC, addrA, addrC, addrA, addrC},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    5,
+			wantSnapCalls: 7,
+			wantAddresses: nil,
+		},
+		{
+			name: "unstable runs up to the cap drop the addresses",
+			// Each run settles during the wait but sees the
+			// names move again while nvidia-smi runs, so the
+			// topo attempt cap ends the collection without
+			// addresses.
+			snapshots:     []map[string]string{addrA, addrB, addrB, addrB, addrA, addrA, addrA, addrB},
+			sleepOK:       true,
+			wantTopoCalls: 3,
+			wantSleeps:    2,
+			wantSnapCalls: 8,
+			wantAddresses: nil,
+		},
+		{
+			name:          "topo error aborts the collection",
+			topoErr:       fmt.Errorf("nvidia-smi not available"),
+			snapshots:     []map[string]string{addrA, addrA},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    0,
+			wantErr:       true,
+		},
+		{
+			name:          "unreadable snapshots publish without addresses",
+			snapshots:     []map[string]string{nil, nil},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    0,
+			wantSnapCalls: 2,
+			wantAddresses: nil,
+		},
+		{
+			name: "unreadable settle read publishes without addresses",
+			// Stability cannot be shown without a readable
+			// snapshot, so the wait ends and the matrix goes
+			// out without addresses.
+			snapshots:     []map[string]string{addrA, addrB, nil},
+			sleepOK:       true,
+			wantTopoCalls: 1,
+			wantSleeps:    1,
+			wantSnapCalls: 3,
+			wantAddresses: nil,
+		},
+		{
+			name:          "cancelled sleep aborts the collection",
+			snapshots:     []map[string]string{addrA, addrB},
+			sleepOK:       false,
+			wantTopoCalls: 1,
+			wantSleeps:    1,
+			wantErr:       true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			topo := &topoFunc{output: topoOutputForRetryLoop, err: tc.topoErr}
+			snap := &snapshotFunc{maps: tc.snapshots}
+
+			var slept []time.Duration
+
+			c := defaultNICTopoCollector{
+				ibClassPath: "unused",
+				runTopo:     topo.run,
+				snapshot:    snap.take,
+				sleep: func(_ context.Context, d time.Duration) bool {
+					slept = append(slept, d)
+					return tc.sleepOK
+				},
+			}
+
+			ctx := context.Background()
+			if !tc.sleepOK {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			matrix, err := c.Collect(ctx)
+			assert.Equal(t, tc.wantTopoCalls, topo.calls, "topo runs")
+			assert.Equal(t, tc.wantSleeps, len(slept), "settle waits")
+
+			for _, d := range slept {
+				assert.Equal(t, snapshotSettleInterval, d, "settle wait is one second")
+			}
+
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, matrix)
+			assert.Equal(t, []string{"mlx5_0", "mlx5_1"}, matrix.NICs)
+			assert.Equal(t, tc.wantAddresses, matrix.NICPCIAddresses)
+			assert.Equal(t, tc.wantSnapCalls, snap.calls, "snapshot reads")
+		})
+	}
+}

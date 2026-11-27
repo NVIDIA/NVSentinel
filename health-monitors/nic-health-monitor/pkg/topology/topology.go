@@ -65,6 +65,22 @@ type Classifier struct {
 	// device name. Each slice has one entry per GPU in `gpus[]` order.
 	topology map[string][]string
 
+	// topologyByPCI is the same matrix keyed by PCI address, built
+	// from the file's nic_topology_pci_addresses map. IB device names
+	// can be renamed after the collector writes the file, and the old
+	// name then belongs to a different device, so classify prefers
+	// this index whenever the file carries it. Empty for files written
+	// by older collectors, which keep the name-keyed behaviour.
+	topologyByPCI map[string][]string
+
+	// topologyPCIAddresses is the file's name → PCI address map with
+	// the addresses normalised, kept next to topologyByPCI so a lookup
+	// can tell "the file recorded no address for this name" apart from
+	// "the file recorded a different address for this name". In the
+	// second case the name has moved to another device since
+	// collection, and the name-keyed row belongs to that other device.
+	topologyPCIAddresses map[string]string
+
 	// defaultRouteDevice is the IB device name (e.g., "mlx5_8") whose
 	// associated net interface carries the host's default IP route. If
 	// non-empty, classify() treats it as Management. Resolved once at
@@ -82,6 +98,15 @@ type Classifier struct {
 	// so repeated lookups do not re-read sysfs. Populated lazily on first
 	// access.
 	cachedRoles map[string]Role
+	// cachedRoleAddresses records the PCI address each cached role was
+	// classified under, keyed by device name like cachedRoles. A rename
+	// can hand a name to a different device while the monitor runs;
+	// RoleOf compares the recorded address with the device's current
+	// one and classifies again when they differ, so a cached role is
+	// never served for a device it was not derived from. Entries exist
+	// only when the metadata file carries PCI addresses — without them
+	// classification is name-keyed and the cache needs no validation.
+	cachedRoleAddresses map[string]string
 	// cachedCards stores the PCI "bus:device" card grouping for each IB
 	// device (e.g., "0000:47:00" for both "mlx5_3" and "mlx5_4" on a
 	// dual-port card).
@@ -119,11 +144,19 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 	}
 
 	c := &Classifier{
-		reader:      reader,
-		gpuNUMASet:  make(map[int]struct{}),
-		topology:    meta.NICTopology,
-		cachedRoles: make(map[string]Role),
-		cachedCards: make(map[string]string),
+		reader:              reader,
+		gpuNUMASet:          make(map[int]struct{}),
+		topology:            meta.NICTopology,
+		cachedRoles:         make(map[string]Role),
+		cachedRoleAddresses: make(map[string]string),
+		cachedCards:         make(map[string]string),
+	}
+
+	c.topologyByPCI = buildPCIIndex(meta.NICTopology, meta.NICTopologyPCIAddresses)
+
+	c.topologyPCIAddresses = make(map[string]string, len(meta.NICTopologyPCIAddresses))
+	for name, addr := range meta.NICTopologyPCIAddresses {
+		c.topologyPCIAddresses[name] = normalizePCIAddress(addr)
 	}
 
 	c.populateGPUNUMASet(meta.GPUs)
@@ -146,6 +179,7 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 		"gpu_count", len(meta.GPUs),
 		"gpu_numa_nodes", formatIntSet(c.gpuNUMASet),
 		"nic_topology_entries", len(c.topology),
+		"nic_topology_pci_entries", len(c.topologyByPCI),
 		"default_route_device", c.defaultRouteDevice,
 	)
 
@@ -164,11 +198,12 @@ func LoadFromMetadata(metadataPath string, reader sysfs.Reader, procNetRoutePath
 // the contract there ("no silent fallback").
 func NewOverrideClassifier(reader sysfs.Reader, procNetRoutePath ...string) *Classifier {
 	c := &Classifier{
-		reader:      reader,
-		gpuNUMASet:  make(map[int]struct{}),
-		topology:    map[string][]string{},
-		cachedRoles: make(map[string]Role),
-		cachedCards: make(map[string]string),
+		reader:              reader,
+		gpuNUMASet:          make(map[int]struct{}),
+		topology:            map[string][]string{},
+		cachedRoles:         make(map[string]Role),
+		cachedRoleAddresses: make(map[string]string),
+		cachedCards:         make(map[string]string),
 	}
 
 	routePath := DefaultProcNetRoutePath
@@ -198,6 +233,67 @@ func (c *Classifier) populateGPUNUMASet(gpus []model.GPUInfo) {
 	}
 }
 
+// buildPCIIndex inverts the file's name → PCI address map into a
+// PCI address → topology row index. Names with no row in the topology
+// matrix, and rows with no recorded address, do not appear in the
+// index; lookups for those devices keep the name-keyed behaviour.
+func buildPCIIndex(topology map[string][]string, pciAddresses map[string]string) map[string][]string {
+	byPCI := make(map[string][]string, len(pciAddresses))
+	for name, addr := range pciAddresses {
+		if levels, ok := topology[name]; ok {
+			byPCI[normalizePCIAddress(addr)] = levels
+		}
+	}
+
+	return byPCI
+}
+
+// normalizePCIAddress canonicalises a PCI address for comparison.
+// The collector and this monitor both read PCI_SLOT_NAME from the
+// same uevent file, but neither side depends on its exact casing.
+func normalizePCIAddress(addr string) string {
+	return strings.ToLower(strings.TrimSpace(addr))
+}
+
+// topologyLevelsFor returns the topology row for a device. When the
+// metadata file recorded PCI addresses for its rows, the row is
+// resolved through the device's own PCI address, so a rename after
+// collection cannot hand the device another device's row. The
+// name-keyed row is the fallback for files written by older
+// collectors, for devices the collector did not record, and for
+// sysfs read failures — in each case the behaviour is the one the
+// monitor had before PCI addresses were published.
+//
+// One case is not a fallback: the file recorded a PCI address for
+// this name and the device now holding the name sits at a different
+// address. The name has moved since collection, so the name-keyed
+// row belongs to the device that used to hold it. Returning that row
+// would classify this device by another device's topology, and
+// RoleOf would cache the wrong role under the name. The lookup
+// reports no row instead, and classify uses the NUMA default.
+func (c *Classifier) topologyLevelsFor(device string) []string {
+	if len(c.topologyByPCI) == 0 {
+		return c.topology[device]
+	}
+
+	addr, err := c.reader.ReadPCIAddress(device)
+	if err != nil {
+		return c.topology[device]
+	}
+
+	addr = normalizePCIAddress(addr)
+
+	if levels, ok := c.topologyByPCI[addr]; ok {
+		return levels
+	}
+
+	if recorded, ok := c.topologyPCIAddresses[device]; ok && recorded != addr {
+		return nil
+	}
+
+	return c.topology[device]
+}
+
 // IsManagementNIC returns true when the device should be excluded from
 // monitoring entirely (management role).
 func (c *Classifier) IsManagementNIC(device string) bool {
@@ -206,9 +302,19 @@ func (c *Classifier) IsManagementNIC(device string) bool {
 
 // RoleOf returns the classification for a device, caching the result.
 // Safe for concurrent use by the state and counter polling loops.
+//
+// The cache is keyed by device name, but a rename can hand a name to a
+// different device while the monitor runs. When the metadata file
+// carries PCI addresses, RoleOf records the address each cached role
+// was classified under and compares it with the device's current
+// address on every call. A mismatch means the name moved: the cached
+// role belongs to the device that used to hold the name, so the entry
+// is dropped and the device is classified again, as at startup.
 func (c *Classifier) RoleOf(device string) Role {
+	addr, tracked := c.roleAddress(device)
+
 	c.mu.RLock()
-	role, ok := c.cachedRoles[device]
+	role, ok := c.cachedRole(device, addr, tracked)
 	c.mu.RUnlock()
 
 	if ok {
@@ -220,14 +326,55 @@ func (c *Classifier) RoleOf(device string) Role {
 
 	// Another goroutine may have classified the device while we waited
 	// for the write lock.
-	if role, ok := c.cachedRoles[device]; ok {
+	if role, ok := c.cachedRole(device, addr, tracked); ok {
 		return role
 	}
 
 	role = c.classify(device)
 	c.cachedRoles[device] = role
 
+	if tracked {
+		c.cachedRoleAddresses[device] = addr
+	} else {
+		delete(c.cachedRoleAddresses, device)
+	}
+
 	return role
+}
+
+// cachedRole returns the cached role for a device when one exists and
+// still belongs to the device now holding the name. A cached role
+// stops belonging when the device's PCI address moved after the role
+// was cached. The caller holds c.mu.
+func (c *Classifier) cachedRole(device, addr string, tracked bool) (Role, bool) {
+	role, ok := c.cachedRoles[device]
+	if !ok {
+		return role, false
+	}
+
+	if tracked && c.cachedRoleAddresses[device] != addr {
+		return role, false
+	}
+
+	return role, true
+}
+
+// roleAddress returns the device's current PCI address for role-cache
+// validation. tracked is false when the metadata file carries no PCI
+// addresses — classification is then name-keyed and the cache needs
+// no validation — or when the address cannot be read, in which case
+// the cached role is served rather than dropped on a read failure.
+func (c *Classifier) roleAddress(device string) (addr string, tracked bool) {
+	if len(c.topologyByPCI) == 0 {
+		return "", false
+	}
+
+	addr, err := c.reader.ReadPCIAddress(device)
+	if err != nil {
+		return "", false
+	}
+
+	return normalizePCIAddress(addr), true
 }
 
 // LogClassificationSummary logs a single INFO line summarising how all
@@ -272,7 +419,7 @@ func (c *Classifier) classify(device string) Role {
 
 	numaOnGPUSocket := c.nicOnGPUNUMA(device)
 
-	levels := c.topology[device]
+	levels := c.topologyLevelsFor(device)
 	hasCompute, hasStorage, allSYS := summarizeLevels(levels)
 
 	switch {
@@ -283,12 +430,25 @@ func (c *Classifier) classify(device string) Role {
 	case allSYS:
 		return c.classifyNonCompute(device, numaOnGPUSocket, true)
 	default:
-		if numaOnGPUSocket {
-			return RoleStorage
-		}
+		return c.defaultRole(device, numaOnGPUSocket)
+	}
+}
 
+// defaultRole handles the no-levels case: the NUMA default. A BlueField
+// DPU without a usable row is excluded, whether the row was rejected
+// as stale or the device never had one — the check is about the
+// device, not its row, so a DPU cannot land on the storage default
+// through an accident of which names the file recorded.
+func (c *Classifier) defaultRole(device string, numaOnGPUSocket bool) Role {
+	if numaOnGPUSocket && c.isBlueFieldDPU(device) {
 		return RoleManagement
 	}
+
+	if numaOnGPUSocket {
+		return RoleStorage
+	}
+
+	return RoleManagement
 }
 
 // classifyNonCompute handles the shared logic for NICs that have NODE
@@ -334,7 +494,8 @@ func (c *Classifier) nicOnGPUNUMA(device string) bool {
 }
 
 // isBlueFieldDPU returns true if the NIC's HCA type matches a known
-// BlueField DPU. Only consulted in the all-SYS branch.
+// BlueField DPU. Consulted where the topology row cannot place the
+// device: the all-SYS branch and the no-row default.
 func (c *Classifier) isBlueFieldDPU(device string) bool {
 	hcaType, err := c.reader.ReadIBDeviceField(device, "hca_type")
 	if err != nil {

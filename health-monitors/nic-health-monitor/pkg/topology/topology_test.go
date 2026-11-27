@@ -697,3 +697,287 @@ func TestClassifier_ConcurrentUseFromBothPollingLoops(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestClassify_RenamedRDMADevices_UsesPCIAddressRow reproduces
+// issue #2521: the collector wrote the file with boot-time RDMA names,
+// then a cloud agent renamed the devices. The device now called
+// mlx5_7 is the physical card at 0000:9a:00.0, whose own row (recorded
+// under its boot-time name mlx5_10) is NODE to the GPUs. The row stored
+// under mlx5_7 belongs to 0000:41:00.0, which is now called mlx5_4.
+// Classification must follow the physical device, not the name.
+func TestClassify_RenamedRDMADevices_UsesPCIAddressRow(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names 0000:9a:00.0 and mlx5_4
+	// now names 0000:41:00.0.
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1, "mlx5_4": 0},
+		map[string]string{"mlx5_7": "0000:9a:00.0", "mlx5_4": "0000:41:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// 0000:9a:00.0 keeps its own NODE row: storage, not the compute
+	// role the stale mlx5_7 row would give it.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	// 0000:41:00.0 keeps its own PXB row even though its current name
+	// has no row in the file at all.
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_4"))
+}
+
+// TestClassify_NoPCIAddressesInFile_KeepsNameKeyedBehaviour is the
+// control for the rename fix: a file written by an older collector has
+// no nic_topology_pci_addresses, and classification must behave
+// exactly as it did before the field existed.
+func TestClassify_NoPCIAddressesInFile_KeepsNameKeyedBehaviour(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_7":  {"PXB", "SYS"},
+			"mlx5_10": {"NODE", "NODE"},
+		},
+	})
+
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1, "mlx5_4": 0},
+		map[string]string{"mlx5_7": "0000:9a:00.0", "mlx5_4": "0000:41:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// Name-keyed lookup, as before: mlx5_7 gets the mlx5_7 row, and a
+	// device with no row falls back to the NUMA default.
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_4"))
+}
+
+// TestClassify_NameMovedToUnrecordedDevice_SkipsNameKeyedRow covers
+// the gap next to the rename fix: the file recorded a PCI address
+// for mlx5_7, but the device now holding that name sits at an address
+// the file does not record under any name, so the PCI index misses.
+// The name-keyed mlx5_7 row belongs to the device that held the name
+// at collection time; using it would classify this device by that
+// device's PXB row. The lookup must report no row instead, and
+// classification falls back to the NUMA default.
+func TestClassify_NameMovedToUnrecordedDevice_SkipsNameKeyedRow(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names a third device at
+	// 0000:55:00.0, which the file records under no name. It sits on
+	// GPU NUMA node 1, so the NUMA default classifies it as storage.
+	reader := readerForTest(
+		map[string]int{"mlx5_7": 1},
+		map[string]string{"mlx5_7": "0000:55:00.0"},
+	)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+}
+
+// TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded covers
+// the BlueField side of the rejected-row path: the stale rows here
+// are all-SYS, so before the row was rejected a BlueField DPU reached
+// the DPU exclusion through the all-SYS branch and came out as
+// management. Rejecting the row must not turn the same DPU into a
+// storage NIC. An ordinary NIC on the same path keeps the NUMA
+// default (storage).
+func TestClassify_RenamedBlueFieldDPU_RejectedRowStaysExcluded(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_7":  {"SYS", "SYS"},
+			"mlx5_8":  {"SYS", "SYS"},
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_8":  "0000:42:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// The post-rename world: mlx5_7 now names a BlueField-3 DPU at
+	// 0000:55:00.0 and mlx5_8 a ConnectX-7 at 0000:56:00.0. The file
+	// records neither address, so both name-keyed rows are rejected.
+	// Both devices sit on GPU NUMA node 1.
+	reader := &sysfs.MockReader{
+		ReadIBDeviceNUMAFunc: func(device string) (int, error) {
+			return 1, nil
+		},
+		ReadPCIAddressFunc: func(device string) (string, error) {
+			switch device {
+			case "mlx5_7":
+				return "0000:55:00.0", nil
+			case "mlx5_8":
+				return "0000:56:00.0", nil
+			default:
+				return "", nil
+			}
+		},
+		ReadIBDeviceFieldFunc: func(device, field string) (string, error) {
+			if field != "hca_type" {
+				return "", nil
+			}
+
+			switch device {
+			case "mlx5_7":
+				return "MT41692", nil
+			case "mlx5_8":
+				return "MT4129", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleManagement, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
+}
+
+// TestRoleOf_DeviceRenamedAfterCaching_ReclassifiesFromPCIAddress
+// covers the runtime half of issue #2521: in the other rename tests
+// the rename had already happened when the monitor started, so the
+// first classification was fresh. Here both devices are classified
+// and cached under their boot-time names first, and the names swap
+// while the monitor runs. RoleOf must not serve the role cached under
+// a name for the device that now holds it — each name classifies
+// again from the row of the PCI address behind it, as at startup.
+func TestRoleOf_DeviceRenamedAfterCaching_ReclassifiesFromPCIAddress(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			// Boot-time mlx5_7 = 0000:41:00.0, PXB to GPU 0: compute.
+			"mlx5_7": {"PXB", "SYS"},
+			// Boot-time mlx5_10 = 0000:9a:00.0, NODE to both GPUs.
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_7":  "0000:41:00.0",
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	nicNUMA := map[string]int{"mlx5_7": 0, "mlx5_10": 1}
+	pciAddr := map[string]string{"mlx5_7": "0000:41:00.0", "mlx5_10": "0000:9a:00.0"}
+
+	reader := readerForTest(nicNUMA, pciAddr)
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	// Prime the cache under the boot-time names.
+	require.Equal(t, RoleCompute, c.RoleOf("mlx5_7"))
+	require.Equal(t, RoleStorage, c.RoleOf("mlx5_10"))
+
+	// The rename lands while the monitor runs: the two devices swap
+	// names, NUMA nodes included — sysfs answers by current name.
+	nicNUMA["mlx5_7"], nicNUMA["mlx5_10"] = 1, 0
+	pciAddr["mlx5_7"], pciAddr["mlx5_10"] = "0000:9a:00.0", "0000:41:00.0"
+
+	// mlx5_7 now names the NODE device and mlx5_10 the PXB device.
+	// The roles cached under the names belong to the other device and
+	// must not be served.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_10"))
+
+	// The fresh roles are cached under the new addresses: a repeat
+	// lookup with no further rename returns the same roles.
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleCompute, c.RoleOf("mlx5_10"))
+}
+
+// TestClassify_BlueFieldWithoutRowExcluded covers the rowless side of
+// the rejected-row exclusion: a BlueField DPU that never had a row in
+// the file is excluded just like one whose stale row was rejected.
+// The exclusion is about the device, not its row, so whether the file
+// happened to record the name for another device must not change the
+// role. An ordinary NIC on the same path keeps the NUMA default.
+func TestClassify_BlueFieldWithoutRowExcluded(t *testing.T) {
+	path := writeMetadata(t, &model.GPUMetadata{
+		GPUs: []model.GPUInfo{
+			{PCIAddress: "0000:0f:00.0", NUMANode: 0},
+			{PCIAddress: "0000:15:00.0", NUMANode: 1},
+		},
+		NICTopology: map[string][]string{
+			"mlx5_10": {"NODE", "NODE"},
+		},
+		NICTopologyPCIAddresses: map[string]string{
+			"mlx5_10": "0000:9a:00.0",
+		},
+	})
+
+	// Neither mlx5_7 (BlueField-3) nor mlx5_8 (ConnectX-7) has a row
+	// in the file, and the file records neither name. Both sit on GPU
+	// NUMA node 1.
+	reader := &sysfs.MockReader{
+		ReadIBDeviceNUMAFunc: func(device string) (int, error) {
+			return 1, nil
+		},
+		ReadIBDeviceFieldFunc: func(device, field string) (string, error) {
+			if field != "hca_type" {
+				return "", nil
+			}
+
+			switch device {
+			case "mlx5_7":
+				return "MT41692", nil
+			case "mlx5_8":
+				return "MT4129", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	c, err := LoadFromMetadata(path, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, RoleManagement, c.RoleOf("mlx5_7"))
+	assert.Equal(t, RoleStorage, c.RoleOf("mlx5_8"))
+}
