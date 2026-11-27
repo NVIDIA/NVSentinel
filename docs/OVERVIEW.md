@@ -66,7 +66,7 @@ NVSentinel is designed to work with any GPU that the NVIDIA GPU Operator support
 
 ```bash
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.32.0 \
+  --version v1.33.0 \
   --namespace nvsentinel \
   --create-namespace
 ```

@@ -144,7 +144,7 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 // metadata.NICTopology. Failures degrade to an empty map rather than
 // aborting the collector — other consumers of gpu_metadata.json still
 // receive the NVML-derived fields.
-func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPUMetadata, nvmlCount int) {
+func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPUMetadata, deviceCount int) {
 	matrix, err := c.nicTopo.Collect(ctx)
 	if err != nil {
 		slog.Warn("Failed to collect NIC topology matrix, nic_topology will be empty",
@@ -158,7 +158,7 @@ func (c *Collector) populateNICTopology(ctx context.Context, metadata *model.GPU
 		return
 	}
 
-	columns, err := alignTopologyToGPUs(matrix, metadata, nvmlCount)
+	columns, err := alignTopologyToGPUs(matrix, metadata, deviceCount)
 	if err != nil {
 		slog.Warn("Dropping nic_topology and gpu numa_node to avoid misaligned data",
 			"error", err,
@@ -243,7 +243,7 @@ func topoColumnsByGPUID(matrix *nic.TopoMatrix) (map[int]int, error) {
 // reports but whose identity could not be read, so the NIC relationships stay
 // valid when one GPU has fallen off the bus. Anything else means the matrix
 // and NVML disagree, and the caller drops the topology.
-func alignTopologyToGPUs(matrix *nic.TopoMatrix, metadata *model.GPUMetadata, nvmlCount int) (map[int]int, error) {
+func alignTopologyToGPUs(matrix *nic.TopoMatrix, metadata *model.GPUMetadata, deviceCount int) (map[int]int, error) {
 	columns, err := topoColumnsByGPUID(matrix)
 	if err != nil {
 		return nil, err
@@ -259,7 +259,7 @@ func alignTopologyToGPUs(matrix *nic.TopoMatrix, metadata *model.GPUMetadata, nv
 	}
 
 	for id := range columns {
-		if _, ok := collected[id]; !ok && (id < 0 || id >= nvmlCount) {
+		if _, ok := collected[id]; !ok && (id < 0 || id >= deviceCount) {
 			return nil, fmt.Errorf("topo matrix column GPU%d is not a GPU NVML reports", id)
 		}
 	}

@@ -277,32 +277,32 @@ func TestAlignTopologyToGPUs(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		labels    []string
-		collected *model.GPUMetadata
-		nvmlCount int
-		want      map[int]int
-		wantErr   string
+		name        string
+		labels      []string
+		collected   *model.GPUMetadata
+		deviceCount int
+		want        map[int]int
+		wantErr     string
 	}{
-		{name: "full match", labels: []string{"GPU0", "GPU1"}, collected: gpus(0, 1), nvmlCount: 2,
+		{name: "full match", labels: []string{"GPU0", "GPU1"}, collected: gpus(0, 1), deviceCount: 2,
 			want: map[int]int{0: 0, 1: 1}},
 		{name: "column for a skipped GPU is kept", labels: []string{"GPU0", "GPU1", "GPU2", "GPU3"},
-			collected: gpus(0, 2, 3), nvmlCount: 4, want: map[int]int{0: 0, 1: 1, 2: 2, 3: 3}},
+			collected: gpus(0, 2, 3), deviceCount: 4, want: map[int]int{0: 0, 1: 1, 2: 2, 3: 3}},
 		{name: "equal counts but different labels", labels: []string{"GPU0", "GPU1", "GPU2"},
-			collected: gpus(0, 2, 3), nvmlCount: 4, wantErr: "no column for GPU3"},
-		{name: "column NVML does not report", labels: []string{"GPU0", "GPU1"}, collected: gpus(0), nvmlCount: 1,
+			collected: gpus(0, 2, 3), deviceCount: 4, wantErr: "no column for GPU3"},
+		{name: "column NVML does not report", labels: []string{"GPU0", "GPU1"}, collected: gpus(0), deviceCount: 1,
 			wantErr: "not a GPU NVML reports"},
-		{name: "collected GPU missing from matrix", labels: []string{"GPU0"}, collected: gpus(0, 1), nvmlCount: 2,
+		{name: "collected GPU missing from matrix", labels: []string{"GPU0"}, collected: gpus(0, 1), deviceCount: 2,
 			wantErr: "no column for GPU1"},
-		{name: "malformed label", labels: []string{"GPU0", "NIC1"}, collected: gpus(0), nvmlCount: 2,
+		{name: "malformed label", labels: []string{"GPU0", "NIC1"}, collected: gpus(0), deviceCount: 2,
 			wantErr: "not of the form GPU<n>"},
-		{name: "duplicate label", labels: []string{"GPU0", "GPU0"}, collected: gpus(0), nvmlCount: 2,
+		{name: "duplicate label", labels: []string{"GPU0", "GPU0"}, collected: gpus(0), deviceCount: 2,
 			wantErr: "more than once"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := alignTopologyToGPUs(&nic.TopoMatrix{GPUs: tc.labels}, tc.collected, tc.nvmlCount)
+			got, err := alignTopologyToGPUs(&nic.TopoMatrix{GPUs: tc.labels}, tc.collected, tc.deviceCount)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)

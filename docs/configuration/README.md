@@ -22,18 +22,19 @@ This value sets the shell image for the helper init containers that NVSentinel m
 
 - `fix-audit-log-permissions` sets the ownership of the audit log directory.
 - `fix-cert-permissions` copies the PostgreSQL client certificates with the permissions that the client needs.
+- `fix-state-permissions` hands the NIC health monitor's state directory to UID 65532.
 
-A module runs these init containers only when [audit logging](../audit-logging.md) is enabled or when a client certificate is mounted.
+A module runs the first two init containers only when [audit logging](../audit-logging.md) is enabled or when a client certificate is mounted. The NIC health monitor always runs `fix-state-permissions`.
 
 ```yaml
 global:
   initContainerImage:
-    repository: docker.io/bitnamilegacy/os-shell
-    tag: "12-debian-12-r30"
+    repository: public.ecr.aws/docker/library/alpine
+    tag: "3.24.4"
     pullPolicy: IfNotPresent
 ```
 
-If you mirror images into a private registry, change this value.
+If you mirror images into a private registry, change this value. A replacement image needs a POSIX `sh` with `chown`, `chmod`, `cp` and `ls` (busybox applets are enough), and images for every node architecture you run. `fix-state-permissions` runs with a read-only root filesystem and only the `CHOWN` capability.
 
 ### Dry Run Mode
 
@@ -250,14 +251,20 @@ global:
 
 ### SELinux
 
-This value sets the SELinux options for the pods that share host directories and do not run privileged: platform-connectors, syslog-health-monitor and nic-health-monitor. Privileged pods already run as `spc_t`.
+This value sets the SELinux options for the pods that share host directories and do not run privileged:
+
+- platform-connectors, syslog-health-monitor and nic-health-monitor.
+- The modules that publish through the platform-connector socket: csp-health-monitor, health-events-analyzer, kubernetes-object-monitor, lifecycle-manager, nvcre-certification-monitor and slurm-drain-monitor.
+- When `global.auditLogging.enabled` is `true`, the modules that write audit logs to `/var/log/nvsentinel` on the node: fault-quarantine, fault-remediation, janitor, janitor-provider, labeler, node-drainer and the platform-connector Deployment.
+
+Privileged pods already run as `spc_t`.
 
 ```yaml
 global:
   seLinuxOptions: {}   # default: nothing rendered
 ```
 
-On some SELinux-enforcing nodes, the container runtime applies SELinux labels. On those nodes, these pods run as `container_t`, and SELinux denies them access to the shared host paths. Then platform-connectors cannot create `/var/run/nvsentinel.sock`, so no monitor can publish health events. This applies to RKE2 with SELinux support. The RPM install of RKE2 enables this support by default on SUSE Linux Enterprise Server 16 and RHEL. On those nodes, set:
+On some SELinux-enforcing nodes, the container runtime applies SELinux labels. On those nodes, these pods run as `container_t`, and SELinux denies them access to the shared host paths. Then platform-connectors cannot create `/var/run/nvsentinel.sock`, the modules cannot reach it, and the audit log directory cannot be prepared, so no monitor can publish health events. The denial for the socket clients is a `dontaudit` rule, so it does not appear in the audit log. This applies to RKE2 with SELinux support. The RPM install of RKE2 enables this support by default on SUSE Linux Enterprise Server 16 and RHEL. On those nodes, set:
 
 ```yaml
 global:
@@ -315,7 +322,7 @@ global:
 
 ### Kubelet Root Directory
 
-This value is the kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path that the metadata collector reads. See [Kubelet Root Directory](./metadata-collector.md#kubelet-root-directory).
+This value is the kubelet `--root-dir`. The chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path that the pod device mapper reads. See [Kubelet Root Directory](./pod-device-mapper.md#kubelet-root-directory).
 
 ```yaml
 global:

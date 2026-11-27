@@ -15,11 +15,13 @@
 suite: mongodb metrics exporter
 templates:
   - charts/mongodb/templates/replicaset/statefulset.yaml
+  - charts/psmdb-db/templates/cluster.yaml
 release:
   name: nvsentinel
   namespace: othns
 tests:
   - it: connects the exporter to the member in the release namespace with TLS
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
     asserts:
       - matchRegex:
           path: spec.template.spec.containers[?(@.name == "metrics")].args[0]
@@ -29,6 +31,7 @@ tests:
           pattern: '\.nvsentinel\.svc'
 
   - it: connects the exporter to the member in the release namespace without TLS
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
     set:
       mongodb.tls.enabled: false
     asserts:
@@ -38,3 +41,22 @@ tests:
       - notMatchRegex:
           path: spec.template.spec.containers[?(@.name == "metrics")].args[0]
           pattern: '\.nvsentinel\.svc'
+
+  # mongod has a CA file and doesn't allow connections without a certificate,
+  # so the Percona sidecar must present a client cert or every connection is
+  # rejected (#2488).
+  - it: Percona exporter presents the member certificate from the ssl volume
+    template: charts/psmdb-db/templates/cluster.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+    asserts:
+      - contains:
+          path: spec.replsets[0].sidecars[?(@.name == "mongodb-exporter")].volumeMounts
+          content:
+            name: ssl
+            mountPath: /etc/mongodb-ssl
+            readOnly: true
+      - matchRegex:
+          path: spec.replsets[0].sidecars[?(@.name == "mongodb-exporter")].env[?(@.name == "MONGODB_URI")].value
+          pattern: 'tls=true&.*tlsCertificateFile=/etc/mongodb-ssl/tls\.crt&tlsPrivateKeyFile=/etc/mongodb-ssl/tls\.key'

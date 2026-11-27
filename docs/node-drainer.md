@@ -155,8 +155,8 @@ Node Drainer automatically resumes drain operations after restarts. It queries t
 
 ### Partial Drain Functionality
 
-For GPU faults that a GPU reset can remediate, Node Drainer drains only the selected pods that use the unhealthy GPU. For faults that need a node reboot, it drains all eligible pods on the node. The configured namespace rules or pod policies select these pods.
+For faults whose action repairs one device, such as a GPU reset, Node Drainer drains only the pods that use the unhealthy device. `global.partialRemediationEntityTypes` lists these actions and the devices they cover. By default, it covers `COMPONENT_RESET` for NVIDIA GPUs. For faults that need a node reboot, it drains all eligible pods on the node. The configured namespace rules or pod policies select these pods. See [Partial Drain](configuration/node-drainer.md#partial-drain).
 
 ### GPU-Only Draining
 
-If you set `drainGPUPods: true`, Node Drainer evicts only the workloads that request GPU resources. To detect GPU resources, it uses device annotations from the Metadata Collector. The Metadata Collector tracks GPU allocation across the cluster. Node Drainer also drains a pod without the annotation if a DRA ResourceClaim requests the `gpu.nvidia.com` DeviceClass for it. Default is `false`.
+If you set `drainGPUPods: true`, Node Drainer evicts only the workloads that request GPU resources. To detect GPU resources, it uses device annotations from the Metadata Collector. The Metadata Collector tracks GPU allocation across the cluster. Node Drainer also drains a pod without the annotation if it requests a device listed in `global.partialRemediationEntityTypes`, for example through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. Default is `false`.

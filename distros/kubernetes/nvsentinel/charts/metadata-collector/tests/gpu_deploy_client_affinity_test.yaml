@@ -20,6 +20,7 @@ templates:
   - templates/daemonset.yaml
 set:
   global.metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+  global.partialRemediationEntityTypes: {}
 tests:
   - it: requires gpu.deploy.client to be true or absent by default
     asserts:
