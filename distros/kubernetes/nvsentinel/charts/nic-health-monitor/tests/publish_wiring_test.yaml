@@ -23,8 +23,8 @@ set:
   global.platformConnectorAuth.tokenMountPath: /var/run/secrets/nvsentinel/platform-connector
   global.platformConnectorAuth.tokenExpirationSeconds: 3600
   global.metricsPort: 2112
-  global.initContainerImage.repository: docker.io/bitnamilegacy/os-shell
-  global.initContainerImage.tag: "12-debian-12-r30"
+  global.initContainerImage.repository: public.ecr.aws/docker/library/alpine
+  global.initContainerImage.tag: "3.24.4"
   global.initContainerImage.pullPolicy: IfNotPresent
 tests:
   # publishTo defaults to socket: no HEALTH_PUBLISH_* env, CA volume or

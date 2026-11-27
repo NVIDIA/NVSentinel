@@ -15,6 +15,8 @@
 suite: clusterrole
 templates:
   - templates/clusterrole.yaml
+set:
+  global.partialRemediationEntityTypes: {}
 tests:
   - it: must grant fine-grained and legacy kubelet pod access
     asserts:
@@ -39,3 +41,65 @@ tests:
               - pods
             verbs:
               - patch
+  - it: must not list ResourceSlices without a DRA entry
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups:
+              - resource.k8s.io
+  - it: must list ResourceSlices when an entity type has a DRA entry
+    set:
+      global.partialRemediationEntityTypes:
+        GPU_UUID:
+          devices:
+            - resourceNames: ["nvidia.com/gpu"]
+            - driver: gpu.nvidia.com
+              deviceClasses: ["gpu.nvidia.com"]
+              entityValueAttribute: uuid
+          scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - resource.k8s.io
+            resources:
+              - resourceslices
+            verbs:
+              - list
+  - it: must not list ResourceSlices when the pod device mapper is disabled
+    set:
+      podMapper.enabled: false
+      global.partialRemediationEntityTypes:
+        GPU_UUID:
+          devices:
+            - driver: gpu.nvidia.com
+              deviceClasses: ["gpu.nvidia.com"]
+              entityValueAttribute: uuid
+          scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups:
+              - resource.k8s.io
+  - it: must not list ResourceSlices when podMapper.enabled is a quoted "false"
+    set:
+      podMapper.enabled: "false"
+      global.partialRemediationEntityTypes:
+        GPU_UUID:
+          devices:
+            - driver: gpu.nvidia.com
+              deviceClasses: ["gpu.nvidia.com"]
+              entityValueAttribute: uuid
+          scopedActions: ["COMPONENT_RESET"]
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups:
+              - resource.k8s.io

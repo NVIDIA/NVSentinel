@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/drain"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -88,6 +89,7 @@ func TestGetGroupConfigForEvent(t *testing.T) {
 			expectError: false,
 			expectedGroupConfig: &EquivalenceGroupConfig{
 				EffectiveEquivalenceGroup:    "reset-GPU-123",
+				ImpactedEntityScope:          "GPU_UUID",
 				ImpactedEntityScopeValue:     "GPU-123",
 				SupersedingEquivalenceGroups: []string{"restart"},
 			},
@@ -240,7 +242,7 @@ func TestGetGroupConfigForEvent_PartialDrain_SelectsSameEntity(t *testing.T) {
 				NodeName: "node-a", RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 				EntitiesImpacted: tt.entities,
 			}
-			entity, drainErr := drain.PartialDrainEntity(event, true)
+			entity, drainErr := drain.PartialDrainEntity(event, true, modeltest.GPUEntityTypes())
 			group, remediationErr := GetGroupConfigForEvent(actions, event)
 			if tt.want == "" {
 				require.Error(t, drainErr)

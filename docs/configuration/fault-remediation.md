@@ -160,9 +160,20 @@ Defines additional equivalence groups that are equivalent for deduplication. For
 
 #### impactedEntityScope
 
-For the COMPONENT_RESET action, define the impacted entity scope, so that each entity has a unique equivalence group. To make this unique group, fault-remediation appends the value of the impacted entity to the equivalence group name. For example, each GPU that needs a reset is in its own equivalence group, with a name such as reset-`{GPU_UUID}`.
+Set the impacted entity scope for an action that repairs one device, such as a GPU reset. Only `COMPONENT_RESET` and custom actions can have it. The value is an entity type in [`global.partialRemediationEntityTypes`](node-drainer.md#partial-drain), such as `GPU_UUID`. fault-remediation fails to start if the entity type is not there.
 
-fault-remediation selects the first impacted entity of `impactedEntityScope` with a non-empty value, in health event order. This value names both the equivalence group and the device in the maintenance CR. If no such entity exists, fault-remediation creates no maintenance CR and retries the health event with backoff. It logs the error and increments `fault_remediation_processing_errors_total` with `error_type="impacted_entity_selection_error"`. The retries continue while the event still needs remediation; an event that is already remediated, has no recommended action, or whose quarantine has ended is acknowledged instead. A persistent count for one node means its monitor published an event without a usable entity. Check the monitor's event, then let the node recover through a healthy event or remediate it manually.
+Each entity then has its own equivalence group: fault-remediation appends the value of the impacted entity to the equivalence group name. For example, each GPU that needs a reset is in its own equivalence group, with a name such as reset-`{GPU_UUID}`. The template gets the value as the impacted entity, so the CR acts on that device only.
+
+#### Partial drains
+
+When partial drains are on, node-drainer evicts only the pods that use one device for each action in `scopedActions`. The repair must then act on that device only. A reboot, for example, would stop the pods that were not drained.
+
+- The chart fails the install or upgrade if a scoped action has no `maintenance.actions` entry, or if its entry does not set `impactedEntityScope` to the entity type that lists the action. For example, with partial drains on, map `COMPONENT_RESET` to a `GPUReset` with `impactedEntityScope: GPU_UUID`, not to the default `RebootNode`.
+- At run time, fault-remediation compares the action with the drain that node-drainer recorded on the event. If the drain was partial and the action acts on the full node or on another device, fault-remediation creates no CR. It logs both scopes, increments `fault_remediation_processing_errors_total` with `error_type="drain_scope_mismatch"`, and retries the event with backoff. Fix the configuration of the action, and the next retry continues.
+
+A full drain followed by a repair of one device is allowed. Events drained by a version that did not record the drain are not checked.
+
+fault-remediation selects the first impacted entity of `impactedEntityScope` with a non-empty value, in health event order. This value names both the equivalence group and the device in the maintenance CR. If no such entity exists, fault-remediation creates no maintenance CR and retries the health event with backoff. It logs the error and increments `fault_remediation_processing_errors_total` with `error_type="impacted_entity_selection_error"`. The retries continue while the event still needs remediation; an event that is already remediated, has no recommended action, or whose quarantine has ended is acknowledged instead. If fault-remediation cannot read the node to check its quarantine, it retries the event and counts `error_type="quarantine_state_check_error"` instead. While such an event is retried, a healthy event for another device on the node does not set `remediation-failed` for it. A persistent count for one node means its monitor published an event without a usable entity. Check the monitor's event, then let the node recover through a healthy event or remediate it manually.
 
 For a partial GPU drain, set `impactedEntityScope` to `GPU_UUID`. node-drainer uses the same selection rule for `GPU_UUID`, so the drain and the reset target the same GPU.
 

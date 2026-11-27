@@ -270,11 +270,18 @@ func (r *FaultRemediationReconciler) trySkipFinishedEvent(
 	}
 
 	// The event's own record can still read Quarantined after fault-quarantine recovered the
-	// node, so also check the live quarantine. A failed check falls through to a retry.
+	// node, so also check the live quarantine. A failed check is retried and counted as its own
+	// error, not as an entity selection failure.
 	active, checkErr := r.nodeHasActiveQuarantine(ctx, healthEventWithStatus.HealthEvent)
+	if checkErr != nil {
+		metrics.ProcessingErrors.WithLabelValues("quarantine_state_check_error", nodeName).Inc()
+		tracing.RecordError(tracing.SpanFromContext(ctx), checkErr)
 
-	quarantineEnded := checkErr == nil && !active
-	if !quarantineEnded {
+		return ctrl.Result{}, fmt.Errorf("checking quarantine of node %s for event %s: %w", nodeName,
+			healthEventWithStatus.ID, checkErr), true
+	}
+
+	if active {
 		return ctrl.Result{}, nil, false
 	}
 
@@ -826,12 +833,18 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 }
 
 // partialRecoveryGroupConfig returns the event's remediation group config and whether the action
-// is supported. A nil config with a non-NONE action means the action is unsupported.
+// is supported. A nil config with a non-NONE action means the action is unsupported. An event
+// without its scoped entity is supported with a nil config: handleRemediationEvent retries it
+// rather than failing it, so it must not force the remediation-failed label either.
 func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
 	healthEvent *protos.HealthEvent,
 ) (*common.EquivalenceGroupConfig, bool) {
 	groupConfig, lookupErr := common.GetGroupConfigForEvent(
 		r.Config.RemediationClient.GetConfig().RemediationActions, healthEvent)
+	if errors.Is(lookupErr, eventutil.ErrNoImpactedEntity) {
+		return nil, true
+	}
+
 	if lookupErr != nil || unsupportedRemediationAction(healthEvent, groupConfig) {
 		return nil, false
 	}
@@ -1060,6 +1073,32 @@ func (r *FaultRemediationReconciler) eventResolvedInStore(
 	return false, nil
 }
 
+// handleGroupConfigError handles an event whose equivalence group cannot be built, which happens
+// when it has no entity of its scoped type. A finished event needs no entity. Retrying it would
+// never stop, so apply the checks that do not depend on the group before retrying the event.
+func (r *FaultRemediationReconciler) handleGroupConfigError(
+	ctx context.Context,
+	groupErr error,
+	healthEventWithStatus *events.HealthEventDoc,
+	eventWithToken datastore.EventWithToken,
+	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error) {
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+
+	if res, err, done := r.trySkipFinishedEvent(ctx, healthEventWithStatus, eventWithToken, watcherInstance,
+		healthEventStore, nodeName); done {
+		return res, err
+	}
+
+	metrics.ProcessingErrors.WithLabelValues("impacted_entity_selection_error", nodeName).Inc()
+	slog.ErrorContext(ctx, "Error selecting impacted entity for remediation, retrying event",
+		"error", groupErr, "event", healthEventWithStatus.ID, "node", nodeName)
+	tracing.RecordError(tracing.SpanFromContext(ctx), groupErr)
+
+	return ctrl.Result{}, fmt.Errorf("getting group config for event %s: %w", healthEventWithStatus.ID, groupErr)
+}
+
 // handleRemediationEvent processes remediation for quarantined nodes
 func (r *FaultRemediationReconciler) handleRemediationEvent(
 	ctx context.Context,
@@ -1081,19 +1120,8 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
 		healthEvent)
 	if err != nil {
-		// A finished event needs no entity. Retrying it would never stop, so apply the
-		// checks that do not depend on the group before treating the failure as retryable.
-		if res, skipErr, done := r.trySkipFinishedEvent(ctx, healthEventWithStatus, eventWithToken, watcherInstance,
-			healthEventStore, nodeName); done {
-			return res, skipErr
-		}
-
-		metrics.ProcessingErrors.WithLabelValues("impacted_entity_selection_error", nodeName).Inc()
-		slog.ErrorContext(ctx, "Error selecting impacted entity for remediation, retrying event",
-			"error", err, "event", healthEventWithStatus.ID, "node", nodeName)
-		tracing.RecordError(span, err)
-
-		return ctrl.Result{}, fmt.Errorf("getting group config for event %s: %w", healthEventWithStatus.ID, err)
+		return r.handleGroupConfigError(ctx, err, healthEventWithStatus, eventWithToken, watcherInstance,
+			healthEventStore)
 	}
 
 	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance,
@@ -1114,6 +1142,13 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	// session that is already over.
 	res, err, done = r.trySkipResolvedEvent(ctx, healthEventStore, eventWithToken, watcherInstance,
 		healthEvent, healthEventWithStatus.ID)
+	if done {
+		return res, err
+	}
+
+	// A partial drain evicted only the pods of one device. Do not run an action that stops other pods.
+	res, err, done = r.tryRejectUncoveredEvent(ctx, span, healthEventWithStatus, groupConfig, eventWithToken,
+		watcherInstance, healthEventStore)
 	if done {
 		return res, err
 	}

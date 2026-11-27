@@ -37,9 +37,9 @@ languages:
 # Build & Package Management
 build_tools:
   # renovate: datasource=pypi depName=poetry depType=build_tools
-  poetry: '2.5.1'
+  poetry: '2.5.2'
   # renovate: datasource=pypi depName=poetry-plugin-export depType=build_tools
-  poetry_plugin_export: '1.10.1'
+  poetry_plugin_export: '1.10.2'
 
 # Go Development Tools
 go_tools:
@@ -52,13 +52,13 @@ go_tools:
   # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest depType=go_tools
   setup_envtest: 'v0.25.3'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
-  goimports: 'v0.52.0'
+  goimports: 'v0.53.0'
   # renovate: datasource=go depName=golang.org/x/tools depType=go_tools
-  deadcode: 'v0.52.0'
+  deadcode: 'v0.53.0'
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
   # renovate: datasource=go depName=golang.org/x/vuln depType=go_tools
-  govulncheck: 'v1.9.0'
+  govulncheck: 'v1.10.0'
   # renovate: datasource=github-releases depName=google/go-licenses depType=go_tools
   go_licenses: 'v2.0.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
@@ -73,7 +73,7 @@ protobuf:
   # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
   protoc_gen_go_grpc: 'v1.6.2'
   # renovate: datasource=pypi depName=grpcio-tools depType=protobuf
-  grpcio_tools: '1.85.1'
+  grpcio_tools: '1.85.3'
   # CRD/Protoc-gen-crd
   # renovate: datasource=github-tags depName=yandex/protoc-gen-crd depType=protobuf
   protoc_gen_crd: 'v1.1.0'
@@ -99,7 +99,7 @@ container_tools:
   cosign: 'v3.1.4'
   # Used by .github/actions/security-scan and scripts/openvex/scan.sh, so both report the same findings.
   # renovate: datasource=github-releases depName=anchore/grype depType=container_tools
-  grype: 'v0.121.3'
+  grype: 'v0.122.1'
 
 # Testing & E2E Tools
 testing_tools:
@@ -123,7 +123,7 @@ cluster:
   # renovate: datasource=helm depName=kube-prometheus-stack depType=cluster
   prometheus_operator: '92.22.0'
   # renovate: datasource=helm depName=gpu-operator depType=cluster
-  gpu_operator: 'v26.7.2'
+  gpu_operator: 'v26.7.3'
   # renovate: datasource=helm depName=cert-manager depType=cluster
   cert_manager: '1.21.3'
   # renovate: datasource=helm depName=policy-controller depType=cluster

@@ -1,0 +1,384 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: deployment selinux options
+release:
+  namespace: nvsentinel
+templates:
+  - charts/csp-health-monitor/templates/deployment.yaml
+  - charts/csp-health-monitor/templates/configmap.yaml
+  - charts/health-events-analyzer/templates/deployment.yaml
+  - charts/health-events-analyzer/templates/configmap.yaml
+  - charts/kubernetes-object-monitor/templates/deployment.yaml
+  - charts/kubernetes-object-monitor/templates/configmap.yaml
+  - charts/lifecycle-manager/templates/deployment.yaml
+  - charts/lifecycle-manager/templates/configmap-templates.yaml
+  - charts/lifecycle-manager/templates/configmap.yaml
+  - charts/nvcre-certification-monitor/templates/deployment.yaml
+  - charts/nvcre-certification-monitor/templates/configmap.yaml
+  - charts/slurm-drain-monitor/templates/deployment.yaml
+  - charts/slurm-drain-monitor/templates/configmap.yaml
+  - charts/fault-quarantine/templates/deployment.yaml
+  - charts/fault-quarantine/templates/configmap.yaml
+  - charts/fault-remediation/templates/deployment.yaml
+  - charts/fault-remediation/templates/configmap.yaml
+  - charts/janitor-provider/templates/deployment.yaml
+  - charts/janitor/templates/deployment.yaml
+  - charts/janitor/templates/configmap.yaml
+  - charts/labeler/templates/deployment.yaml
+  - charts/labeler/templates/configmap.yaml
+  - charts/node-drainer/templates/deployment.yaml
+  - charts/node-drainer/templates/configmap.yaml
+tests:
+  - it: csp-health-monitor must not set a pod securityContext by default
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    set:
+      global.cspHealthMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: csp-health-monitor must set pod SELinux options from global.seLinuxOptions
+    template: charts/csp-health-monitor/templates/deployment.yaml
+    set:
+      global.cspHealthMonitor.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: health-events-analyzer must not set a pod securityContext by default
+    template: charts/health-events-analyzer/templates/deployment.yaml
+    set:
+      global.healthEventsAnalyzer.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: health-events-analyzer must set pod SELinux options from global.seLinuxOptions
+    template: charts/health-events-analyzer/templates/deployment.yaml
+    set:
+      global.healthEventsAnalyzer.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: kubernetes-object-monitor must not set a pod securityContext by default
+    template: charts/kubernetes-object-monitor/templates/deployment.yaml
+    set:
+      global.kubernetesObjectMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: kubernetes-object-monitor must set pod SELinux options from global.seLinuxOptions
+    template: charts/kubernetes-object-monitor/templates/deployment.yaml
+    set:
+      global.kubernetesObjectMonitor.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: lifecycle-manager must not set a pod securityContext by default
+    template: charts/lifecycle-manager/templates/deployment.yaml
+    set:
+      global.lifecycleManager.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: lifecycle-manager must set pod SELinux options from global.seLinuxOptions
+    template: charts/lifecycle-manager/templates/deployment.yaml
+    set:
+      global.lifecycleManager.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: nvcre-certification-monitor must not set a pod securityContext by default
+    template: charts/nvcre-certification-monitor/templates/deployment.yaml
+    set:
+      global.nvcreCertificationMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: nvcre-certification-monitor must set pod SELinux options from global.seLinuxOptions
+    template: charts/nvcre-certification-monitor/templates/deployment.yaml
+    set:
+      global.nvcreCertificationMonitor.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: slurm-drain-monitor must not set a pod securityContext by default
+    template: charts/slurm-drain-monitor/templates/deployment.yaml
+    set:
+      global.slurmDrainMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: slurm-drain-monitor must set pod SELinux options from global.seLinuxOptions
+    template: charts/slurm-drain-monitor/templates/deployment.yaml
+    set:
+      global.slurmDrainMonitor.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seLinuxOptions:
+              type: spc_t
+
+  - it: fault-quarantine must not set SELinux options without audit logging
+    template: charts/fault-quarantine/templates/deployment.yaml
+    set:
+      global.faultQuarantine.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: fault-quarantine must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/fault-quarantine/templates/deployment.yaml
+    set:
+      global.faultQuarantine.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: fault-quarantine must add SELinux options next to the audit-logging fsGroup
+    template: charts/fault-quarantine/templates/deployment.yaml
+    set:
+      global.faultQuarantine.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t
+
+  - it: fault-remediation must not set SELinux options without audit logging
+    template: charts/fault-remediation/templates/deployment.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: fault-remediation must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/fault-remediation/templates/deployment.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: fault-remediation must add SELinux options next to the audit-logging fsGroup
+    template: charts/fault-remediation/templates/deployment.yaml
+    set:
+      global.faultRemediation.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t
+
+  - it: janitor-provider must not set SELinux options without audit logging
+    template: charts/janitor-provider/templates/deployment.yaml
+    set:
+      global.janitorProvider.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: janitor-provider must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/janitor-provider/templates/deployment.yaml
+    set:
+      global.janitorProvider.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: janitor-provider must add SELinux options next to the audit-logging fsGroup
+    template: charts/janitor-provider/templates/deployment.yaml
+    set:
+      global.janitorProvider.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t
+
+  - it: janitor must not set SELinux options without audit logging
+    template: charts/janitor/templates/deployment.yaml
+    set:
+      global.janitor.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: janitor must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/janitor/templates/deployment.yaml
+    set:
+      global.janitor.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: janitor must add SELinux options next to the audit-logging fsGroup
+    template: charts/janitor/templates/deployment.yaml
+    set:
+      global.janitor.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t
+
+  - it: labeler must not set SELinux options without audit logging
+    template: charts/labeler/templates/deployment.yaml
+    set:
+      global.labeler.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: labeler must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/labeler/templates/deployment.yaml
+    set:
+      global.labeler.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: labeler must add SELinux options next to the audit-logging fsGroup
+    template: charts/labeler/templates/deployment.yaml
+    set:
+      global.labeler.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t
+
+  - it: node-drainer must not set SELinux options without audit logging
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext
+
+  - it: node-drainer must keep the audit-logging fsGroup alone when SELinux options are unset
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.auditLogging.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+
+  - it: node-drainer must add SELinux options next to the audit-logging fsGroup
+    template: charts/node-drainer/templates/deployment.yaml
+    set:
+      global.nodeDrainer.enabled: true
+      global.auditLogging.enabled: true
+      global.seLinuxOptions:
+        type: spc_t
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 65532
+            seLinuxOptions:
+              type: spc_t

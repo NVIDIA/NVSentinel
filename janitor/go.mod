@@ -8,6 +8,7 @@ require (
 	github.com/nvidia/nvsentinel/api v0.0.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/fault-quarantine v0.0.0
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.25.0
@@ -69,7 +70,6 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.32.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -131,5 +131,7 @@ replace github.com/nvidia/nvsentinel/store-client => ../store-client
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
 replace github.com/nvidia/nvsentinel/commons => ../commons
+
+replace github.com/nvidia/nvsentinel/fault-quarantine => ../fault-quarantine
 
 replace github.com/nvidia/nvsentinel/api => ../api

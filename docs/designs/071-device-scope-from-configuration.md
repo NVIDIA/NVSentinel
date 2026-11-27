@@ -121,7 +121,7 @@ The chart renders `global.partialRemediationEntityTypes` into the configuration 
 | fault-quarantine | None | Post-remediation validation uses the drain scope that node-drainer recorded on the event (`DrainDecision.scope`). An event drained before v1.31.0 has no drain decision, and validation works for it as today |
 | fault-remediation | `scopedActions` | `impactedEntityScope` must name a configured entity type. The [scope check](#scope-check) |
 
-If a component's configuration has no `partialRemediationEntityTypes` key, the code uses a built-in `GPU_UUID` entry with today's values. `global.partialDrainEnabled` stays the switch that turns partial drains off. The built-in entry is removed when NVIDIA-specific code moves out of the core into an NVIDIA plugin ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)), and the plugin chart then sets it.
+The chart default holds a `GPU_UUID` entry with today's values, and it is the only copy of the default. A component fails to start if its configuration has no `partialRemediationEntityTypes` key. `global.partialDrainEnabled` stays the switch that turns partial drains off. The `GPU_UUID` entry moves to the NVIDIA plugin chart when NVIDIA-specific code moves out of the core ([ADR-070](070-vendor-neutral-core.md#phase-4-move-vendor-code)).
 
 ### Partial drain decision
 

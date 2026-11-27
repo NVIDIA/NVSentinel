@@ -20,7 +20,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 )
@@ -36,7 +38,10 @@ func TestEvaluateEventWithDatabase_NoValidScopedEntity_RetriesWithoutDraining(t 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluator, err := NewNodeDrainEvaluator(config.TomlConfig{PartialDrainEnabled: true}, nil, nil)
+			evaluator, err := NewNodeDrainEvaluator(config.TomlConfig{
+				PartialDrainEnabled:           true,
+				PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
+			}, nil, nil)
 			require.NoError(t, err)
 			event := model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -52,6 +57,7 @@ func TestEvaluateEventWithDatabase_NoValidScopedEntity_RetriesWithoutDraining(t 
 				// Nil collaborators ensure that no drain, datastore write, or decision recording starts.
 				result, err := evaluator.EvaluateEventWithDatabase(context.Background(), event, nil, nil, nil)
 				require.ErrorContains(t, err, "no supported entities for a partial drain found")
+				require.ErrorIs(t, err, eventutil.ErrNoImpactedEntity)
 				require.Nil(t, result)
 				require.Nil(t, event.HealthEventStatus.DrainDecision)
 				require.Equal(t, string(model.StatusInProgress), event.HealthEventStatus.UserPodsEvictionStatus.Status)

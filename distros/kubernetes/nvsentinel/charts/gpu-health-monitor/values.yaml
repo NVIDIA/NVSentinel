@@ -59,6 +59,11 @@ dcgm:
   # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
   # Set to false only after validating embedded-mode detections on your fleet.
   probeStoreOnly: true
+  # Dry-run for NVSwitch health events. While true every event whose entity is
+  # an NVSwitch is persisted/exported but kept out of remediation, whichever
+  # DCGM watch reported it. Set to false to give NVSwitch events the same
+  # processing strategy as GPU events from the same check.
+  nvswitchStoreOnly: true
 
 # DCGM connection lifecycle configuration
 dcgmConnectivity:
@@ -110,6 +115,36 @@ dcgmFieldsMonitoring:
   # asserted for one poll can be a load transient; a sustained assertion is the
   # actionable case. 1 fails on first observation.
   gpuPowerBrakeMinConsecutivePolls: 3
+
+# GpuUptimeLimitWatch: reboot a node before a known uptime-limited defect.
+# Some GPU firmware defects fail at a fixed node uptime. For example, a vBIOS
+# defect makes NVLink fail after more than 60 days of uptime.
+# When this check is enabled, each GPU that runs a listed vBIOS version
+# fails after the node uptime is more than maxUptimeHours. The failure recommends
+# RESTART_BM, so NVSentinel quarantines, drains and reboots the node before the defect.
+# Off by default so existing deployments see no change in behaviour.
+uptimeLimit:
+  # Enables the check. If true, list at least one vBIOS version and set
+  # maxUptimeHours, otherwise the chart does not render.
+  enabled: false
+  # Dry-run for GpuUptimeLimitWatch. When true, this check's
+  # events are emitted with processingStrategy=STORE_ONLY
+  storeOnly: true
+  # vBIOS versions, exactly as nvidia-smi reports them, quoted. YAML can read an
+  # unquoted version as a number, so the chart refuses non-string entries.
+  # The match ignores case. Example: ["97.00.82.00.4B"]
+  affectedVbiosVersions: []
+  # Maximum node uptime in hours for a node with an affected GPU. Set it below
+  # the uptime at which the defect occurs, with time for a drain. Example: 1440
+  # With --set, use --set-json for a value with a fraction.
+  maxUptimeHours: 0
+  # Spreads the reboots of nodes that booted at the same time, so that they do not
+  # trip the fault-quarantine circuit breaker together. Each node gets a fixed limit
+  # between maxUptimeHours - staggerHours and maxUptimeHours, from a hash of the
+  # node name. 0 gives every node maxUptimeHours. If the check is enabled, it must
+  # be at least 0 and less than maxUptimeHours. Example: 72
+  # With --set, use --set-json for a value with a fraction.
+  staggerHours: 0
 
 # DCGM health check incident suppression
 dcgmHealthCheck:

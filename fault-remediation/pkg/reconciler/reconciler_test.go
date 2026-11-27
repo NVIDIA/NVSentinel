@@ -19,20 +19,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"google.golang.org/protobuf/types/known/wrapperspb"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -57,6 +58,8 @@ type MockK8sClient struct {
 	runLogCollectorJobFn      func(ctx context.Context, nodeName string) (ctrl.Result, error)
 	annotationManagerOverride annotation.NodeAnnotationManagerInterface
 	mockStatusChecker         *mockStatusChecker
+	// configOverride replaces the default configuration that GetConfig returns.
+	configOverride *config.TomlConfig
 }
 
 type MockNodeReader struct {
@@ -150,6 +153,10 @@ func (statusChecker *mockStatusChecker) crState(crName string) crstatus.CRState 
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
+	if m.configOverride != nil {
+		return m.configOverride
+	}
+
 	return &config.TomlConfig{
 		RemediationActions: map[string]config.MaintenanceResource{
 			protos.RecommendedAction_RESTART_BM.String(): {
@@ -3357,4 +3364,113 @@ func TestHandleRemediationEvent_NoValidScopedEntity_RetriesWithoutSideEffects(t 
 			require.Equal(t, before+2, after, "each failed attempt must increment the processing error metric")
 		})
 	}
+}
+
+func TestHandleRemediationEvent_NoValidScopedEntity_QuarantineCheckFailureIsCountedSeparately(t *testing.T) {
+	// The live quarantine cannot be read. The event retries, but the error is the API read,
+	// so it must not be counted as an entity selection failure.
+	doc := &events.HealthEventDoc{
+		ID: "unreadable-node",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				Id: "unreadable-node", NodeName: "node-a",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU_UUID"}},
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	nodeReader := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(context.Context, ctrlclient.WithWatch, ctrlclient.ObjectKey, ctrlclient.Object,
+			...ctrlclient.GetOption) error {
+			return errors.New("api server unavailable")
+		},
+	}).Build()
+	r := NewFaultRemediationReconciler(nil, nil, nil, ReconcilerConfig{
+		RemediationClient: &scopedResetClient{},
+		NodeReader:        nodeReader,
+	}, false)
+	watcher := &MockChangeStreamWatcher{}
+	store := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(context.Context, string, datastore.HealthEventStatus) error {
+			t.Fatal("a failed quarantine check must not write status or a decision")
+			return nil
+		},
+	}
+	selectionBefore := getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a")
+	checkBefore := getCounterVecValue(t, metrics.ProcessingErrors, "quarantine_state_check_error", "node-a")
+
+	result, err := r.handleRemediationEvent(context.Background(), doc,
+		datastore.EventWithToken{ResumeToken: []byte("unreadable-token")}, watcher, store)
+	require.ErrorContains(t, err, "api server unavailable")
+	require.True(t, result.IsZero())
+	_, processed, _, _ := watcher.GetCallCounts()
+	require.Zero(t, processed, "a failed quarantine check must not acknowledge the event")
+	require.Equal(t, selectionBefore,
+		getCounterVecValue(t, metrics.ProcessingErrors, "impacted_entity_selection_error", "node-a"))
+	require.Equal(t, checkBefore+1,
+		getCounterVecValue(t, metrics.ProcessingErrors, "quarantine_state_check_error", "node-a"))
+}
+
+func TestPartialRecoveryDoesNotFailRemediationForEventWithoutScopedEntity(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	recoveryEventID := "event-c"
+	labelUpdateCalled := false
+
+	// The active event has no GPU_UUID value, so handleRemediationEvent retries it. The
+	// recomputed label must not treat it as an unsupported action and set remediation-failed.
+	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_COMPONENT_RESET, "")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		nodeLabels: map[string]string{
+			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: &scopedResetClient{MockK8sClient{annotationManagerOverride: mockAnnotationManager}},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+	}
+
+	mockStore := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+			return []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+				},
+			}, nil
+		},
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, recoveryEventID, id)
+
+			return nil
+		},
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(recoveryEventID, nodeName, protos.RecommendedAction_NONE),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.False(t, labelUpdateCalled, "an event that is retried must not force remediation-failed")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
 }

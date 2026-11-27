@@ -44,6 +44,10 @@ spec:
       {{- if .Values.global.auditLogging.enabled }}
       securityContext:
         fsGroup: 65532
+        {{- with ((.Values.global).seLinuxOptions) }}
+        seLinuxOptions:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- end }}
       {{- if or .Values.global.auditLogging.enabled (and .Values.clientCertMountPath $pgClientCert) }}
       initContainers:

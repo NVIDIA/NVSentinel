@@ -413,3 +413,56 @@ IPv6 section in docs/configuration/README.md.
 {{- end -}}
 {{- $addr -}}
 {{- end -}}
+{{/* Validate GpuUptimeLimitWatch. The rules match the monitor's own checks, so a
+     bad value fails the Helm release rather than the pods. An enabled check needs at
+     least one non-blank vBIOS version and a finite limit greater than 0. */}}
+{{- define "gpu-health-monitor.uptimeLimitMaxUptimeHours" -}}
+{{- $uptimeLimit := .Values.uptimeLimit -}}
+{{- $hours := $uptimeLimit.maxUptimeHours -}}
+{{- if not (or (kindIs "float64" $hours) (kindIs "int" $hours) (kindIs "int64" $hours)) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a number, got %s %#v; with --set, use --set-json for a value with a fraction" (kindOf $hours) $hours) -}}
+{{- end -}}
+{{- $versions := 0 -}}
+{{- $list := $uptimeLimit.affectedVbiosVersions -}}
+{{- if not (kindIs "slice" $list) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.affectedVbiosVersions must be a list, got %s %v" (kindOf $list) $list) -}}
+{{- end -}}
+{{- range $version := $list -}}
+{{- if not (kindIs "string" $version) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.affectedVbiosVersions entries must be quoted strings, got %s %v; for example, an unquoted 97.00 is read as 97" (kindOf $version) $version) -}}
+{{- end -}}
+{{- if contains "," $version -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.affectedVbiosVersions entries must not contain a comma, got %q; list each version as its own entry" $version) -}}
+{{- end -}}
+{{- if trim $version -}}
+{{- $versions = add1 $versions -}}
+{{- end -}}
+{{- end -}}
+{{- if $uptimeLimit.enabled -}}
+{{- $h := float64 $hours -}}
+{{- if or (ne $h $h) (le $h 0.0) (eq $h (mulf $h 2)) -}}
+{{- fail "gpu-health-monitor.uptimeLimit.maxUptimeHours must be a finite number greater than 0 when uptimeLimit.enabled is true" -}}
+{{- end -}}
+{{- if eq $versions 0 -}}
+{{- fail "gpu-health-monitor.uptimeLimit must list at least one non-blank affectedVbiosVersions entry when uptimeLimit.enabled is true" -}}
+{{- end -}}
+{{- end -}}
+{{- $hours -}}
+{{- end }}
+{{/* Validate uptimeLimit.staggerHours and return it. When the check is enabled, the
+     stagger must be a finite number of at least 0 and less than maxUptimeHours, so
+     the limit of every node stays greater than 0. */}}
+{{- define "gpu-health-monitor.uptimeLimitStaggerHours" -}}
+{{- $stagger := .Values.uptimeLimit.staggerHours -}}
+{{- if not (or (kindIs "float64" $stagger) (kindIs "int" $stagger) (kindIs "int64" $stagger)) -}}
+{{- fail (printf "gpu-health-monitor.uptimeLimit.staggerHours must be a number, got %s %#v; with --set, use --set-json for a value with a fraction" (kindOf $stagger) $stagger) -}}
+{{- end -}}
+{{- if .Values.uptimeLimit.enabled -}}
+{{- $h := float64 (include "gpu-health-monitor.uptimeLimitMaxUptimeHours" .) -}}
+{{- $s := float64 $stagger -}}
+{{- if or (ne $s $s) (lt $s 0.0) (ge $s $h) -}}
+{{- fail "gpu-health-monitor.uptimeLimit.staggerHours must be a finite number of at least 0 and less than maxUptimeHours when uptimeLimit.enabled is true" -}}
+{{- end -}}
+{{- end -}}
+{{- $stagger -}}
+{{- end }}
