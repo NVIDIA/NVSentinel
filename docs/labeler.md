@@ -25,15 +25,18 @@ Without the Labeler, you must configure NVSentinel components manually and diffe
 
 ## How It Works
 
-The Labeler runs as a deployment in the cluster:
+The Labeler runs as two Deployments in the cluster. `nvidia-labeler` writes the DCGM and driver labels:
 
 1. Watches DCGM and NVIDIA driver pods with Kubernetes informers.
 2. When pods start on a node, examines the container images to get the versions.
 3. Updates node labels with the detected versions.
-4. Watches node labels to detect the Kata Container runtime.
-5. Optionally evaluates the configured device-count classes, and labels the current and expected GPU or NIC counts.
-6. NVSentinel components read these labels and configure themselves accordingly.
-7. Keeps the labels synchronized continuously as the infrastructure changes.
+
+`labeler` writes the vendor-neutral labels. It does not read pods:
+
+1. Watches node labels to detect the Kata Container runtime.
+2. Optionally evaluates the configured device-count classes, and labels the current and expected GPU or NIC counts.
+
+NVSentinel components read these labels and configure themselves accordingly. Both Deployments keep the labels synchronized continuously as the infrastructure changes.
 
 For example:
 
@@ -85,7 +88,7 @@ This label shows the major version of DCGM that runs on the node.
 
 **Values**: `true` or `false`
 
-This label shows whether the NVIDIA driver is installed on the node. To detect drivers, the Labeler watches for these pods:
+This label shows whether the NVIDIA driver is installed on the node. To detect drivers, `nvidia-labeler` watches for these pods:
 
 - `nvidia-driver-daemonset` pods (GPU Operator managed)
 - `nvidia-driver-installer` pods in `kube-system` (GKE managed)

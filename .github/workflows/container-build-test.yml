@@ -143,6 +143,8 @@ jobs:
             path: .
           - module: labeler
             path: .
+          - module: nvidia-labeler
+            path: .
           - module: node-drainer
             path: .
           - module: fault-remediation

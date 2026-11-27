@@ -47,7 +47,7 @@ When Helm enables audit logging, the chart also mounts a **hostPath** volume at 
 
 **Not audited** by this mechanism: the audit logger records only **write** methods. Read-only calls (for example, GET, list and watch) do not produce audit log lines.
 
-The **modules** that use the audit logger include **fault-quarantine**, **node-drainer**, **fault-remediation**, **platform-connectors**, **janitor** (K8s client), **janitor-provider** (CSP HTTP clients), and **labeler**. The list in your cluster depends on the Helm subcharts that you enable.
+The **modules** that use the audit logger include **fault-quarantine**, **node-drainer**, **fault-remediation**, **platform-connectors**, **janitor** (K8s client), **janitor-provider** (CSP HTTP clients), **labeler**, and **nvidia-labeler**. The list in your cluster depends on the Helm subcharts that you enable.
 
 ## Log file location and format
 

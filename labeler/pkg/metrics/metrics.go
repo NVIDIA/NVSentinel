@@ -19,40 +19,20 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Status constants for metrics
+// Label names and values for metrics
 const (
-	StatusSuccess = "success"
-	StatusFailed  = "failed"
-	ClassLabel    = "class"
+	ClassLabel = "class"
 
 	SkipReasonEvaluationError = "evaluation_error"
 	SkipReasonMissingSource   = "missing_source"
 )
 
 var (
-	// EventsProcessed tracks the total number of pod events processed
-	EventsProcessed = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "labeler_events_processed_total",
-			Help: "Total number of pod events processed.",
-		},
-		[]string{"status"},
-	)
-
 	// NodeUpdateFailures tracks the total number of node update failures during reconciliation
 	NodeUpdateFailures = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "labeler_node_update_failures_total",
 			Help: "Total number of node update failures during reconciliation.",
-		},
-	)
-
-	// EventHandlingDuration tracks the histogram of event handling durations
-	EventHandlingDuration = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "labeler_event_handling_duration_seconds",
-			Help:    "Histogram of event handling durations.",
-			Buckets: prometheus.DefBuckets,
 		},
 	)
 

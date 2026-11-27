@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"syscall"
 
@@ -116,68 +117,72 @@ func run() error {
 type cliOptions struct {
 	kubeconfig                     string
 	metricsPort                    string
-	dcgmAppLabel                   string
-	driverAppLabel                 string
-	gkeInstallerAppLabel           string
 	kataLabel                      string
 	expectedDeviceCountsConfigFile string
-	assumeDCGMAvailable            bool
-	assumeDriverInstalled          bool
-	requireDCGMReadyForBootstrap   bool
 	kubernetesClientRateLimits     kubeclient.RateLimitConfig
 }
 
 func (o cliOptions) initializationParams(expectedDeviceCounts devicecounts.Config) initializer.InitializationParams {
 	return initializer.InitializationParams{
-		KubeconfigPath:               o.kubeconfig,
-		DCGMAppLabel:                 o.dcgmAppLabel,
-		DriverAppLabel:               o.driverAppLabel,
-		GKEInstallerAppLabel:         o.gkeInstallerAppLabel,
-		KataLabel:                    o.kataLabel,
-		AssumeDCGMAvailable:          o.assumeDCGMAvailable,
-		AssumeDriverInstalled:        o.assumeDriverInstalled,
-		RequireDCGMReadyForBootstrap: o.requireDCGMReadyForBootstrap,
-		ExpectedDeviceCounts:         expectedDeviceCounts,
-		KubernetesClientRateLimits:   o.kubernetesClientRateLimits,
+		KubeconfigPath:             o.kubeconfig,
+		KataLabel:                  o.kataLabel,
+		ExpectedDeviceCounts:       expectedDeviceCounts,
+		KubernetesClientRateLimits: o.kubernetesClientRateLimits,
 	}
+}
+
+// These flags moved to nvidia-labeler (ADR-077). The labeler still accepts them, so
+// that a pod spec from an older chart keeps starting, and ignores them.
+var (
+	movedStringFlags = []string{"dcgm-app-label", "driver-app-label", "gke-installer-app-label"}
+	movedBoolFlags   = []string{"assume-dcgm-available", "assume-driver-installed", "require-dcgm-ready-for-bootstrap"}
+)
+
+func registerMovedFlags(fs *flag.FlagSet) {
+	for _, name := range movedStringFlags {
+		fs.String(name, "", "Ignored. Moved to nvidia-labeler.")
+	}
+
+	for _, name := range movedBoolFlags {
+		fs.Bool(name, false, "Ignored. Moved to nvidia-labeler.")
+	}
+}
+
+// ignoredFlags returns the moved flags that were set.
+func ignoredFlags(fs *flag.FlagSet) []string {
+	var ignored []string
+
+	fs.Visit(func(f *flag.Flag) {
+		if slices.Contains(movedStringFlags, f.Name) || slices.Contains(movedBoolFlags, f.Name) {
+			ignored = append(ignored, f.Name)
+		}
+	})
+
+	return ignored
 }
 
 func parseFlags() cliOptions {
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
-	dcgmAppLabel := flag.String("dcgm-app-label", "nvidia-dcgm,nvidia-dcgm-dra",
-		"Comma-separated app label values for DCGM pods")
-	driverAppLabel := flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
-	gkeInstallerAppLabel := flag.String("gke-installer-app-label",
-		"nvidia-driver-installer", "App label value for GKE driver installer pods")
 	kataLabel := flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))
 	expectedDeviceCountsConfigFile := flag.String("expected-device-counts-config-file", "",
 		"Path to a TOML expected-device-count configuration file. Empty disables expected device count labels.")
-	assumeDCGMAvailable := flag.Bool("assume-dcgm-available", false,
-		"Assume DCGM is available when a valid dcgm.version node label exists and no DCGM pod source is found.")
-	assumeDriverInstalled := flag.Bool("assume-driver-installed", false,
-		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
-			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
-			"Use for clusters with host-installed drivers.")
-	requireDCGMReadyForBootstrap := flag.Bool("require-dcgm-ready-for-bootstrap", true,
-		"Require the DCGM pod to be ready before setting the DCGM version label for initial bootstrap.")
 	rateLimits := kubeclient.RegisterRateLimitFlags()
 
+	registerMovedFlags(flag.CommandLine)
 	flag.Parse()
+
+	for _, name := range ignoredFlags(flag.CommandLine) {
+		slog.Warn("Ignoring a flag that moved to nvidia-labeler", "flag", name)
+	}
 
 	return cliOptions{
 		kubeconfig:                     *kubeconfig,
 		metricsPort:                    *metricsPort,
-		dcgmAppLabel:                   *dcgmAppLabel,
-		driverAppLabel:                 *driverAppLabel,
-		gkeInstallerAppLabel:           *gkeInstallerAppLabel,
 		kataLabel:                      *kataLabel,
 		expectedDeviceCountsConfigFile: *expectedDeviceCountsConfigFile,
-		assumeDCGMAvailable:            *assumeDCGMAvailable,
-		assumeDriverInstalled:          *assumeDriverInstalled,
-		requireDCGMReadyForBootstrap:   *requireDCGMReadyForBootstrap,
 		kubernetesClientRateLimits:     *rateLimits,
 	}
 }

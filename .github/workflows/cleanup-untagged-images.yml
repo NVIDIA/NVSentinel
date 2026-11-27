@@ -77,6 +77,7 @@ jobs:
           - nvsentinel-labeler-module
           - nvsentinel/metadata-collector
           - nvsentinel/pod-device-mapper
+          - nvsentinel/nvidia-labeler
           - nvsentinel/log-collector
           - nvsentinel/file-server-cleanup
           - nvsentinel/janitor

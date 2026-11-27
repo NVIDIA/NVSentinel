@@ -16,6 +16,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,7 +29,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/health/schemas"
 	"github.com/aws/aws-sdk-go-v2/service/health/types"
 	"github.com/aws/smithy-go/transport/http/protocol/awsjson"
-	"github.com/hashicorp/go-multierror"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -384,7 +384,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 
 	var mu sync.Mutex
 
-	var errs *multierror.Error
+	var errs []error
 
 	for eventID, event := range eventArnsMap {
 		wg.Add(1)
@@ -410,7 +410,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 
 				mu.Lock()
 
-				errs = multierror.Append(errs, err)
+				errs = append(errs, err)
 
 				mu.Unlock()
 			}
@@ -419,7 +419,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 
 	wg.Wait()
 
-	return errs.ErrorOrNil()
+	return errors.Join(errs...)
 }
 
 func (c *AWSClient) processSingleEntityForEvent(
@@ -511,7 +511,7 @@ func (c *AWSClient) processAWSHealthEvent(
 ) error {
 	slog.Debug("Processing AWS Health event", "arn", eventArn)
 
-	var errs *multierror.Error
+	var errs []error
 
 	desc := c.getEventDescription(ctx, evt)
 	action := c.mapToValidAction(desc)
@@ -532,11 +532,11 @@ func (c *AWSClient) processAWSHealthEvent(
 				"eventArn", eventArn,
 				"error", err)
 
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 		}
 	}
 
-	return errs.ErrorOrNil()
+	return errors.Join(errs...)
 }
 
 func (c *AWSClient) getEventDescription(ctx context.Context, event types.Event) string {

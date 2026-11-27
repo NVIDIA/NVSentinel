@@ -32,6 +32,7 @@ modules:
   - lifecycle-manager
   - metadata-collector
   - node-drainer
+  - nvidia-labeler
   - platform-connectors
   - pod-device-mapper
   - preflight
@@ -64,12 +65,6 @@ allowed:
 # check fails, so a license change is reviewed again. An entry that no module uses fails the
 # check, so the list stays current.
 exceptions:
-  - module: github.com/hashicorp/errwrap
-    reported: MPL-2.0
-    reason: Used unmodified, as a dependency of go-multierror.
-  - module: github.com/hashicorp/go-multierror
-    reported: MPL-2.0
-    reason: Used unmodified by fault-quarantine, node-drainer and health-events-analyzer.
   - module: github.com/hashicorp/golang-lru/v2
     reported: MPL-2.0
     reason: Used unmodified by commons and platform-connectors, and through commons by health-events-analyzer and lifecycle-manager.

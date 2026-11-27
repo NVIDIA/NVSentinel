@@ -72,25 +72,9 @@ spec:
             - "--kata-label"
             - "{{ .Values.kataLabelOverride }}"
             {{- end }}
-            {{- if .Values.assumeDriverInstalled }}
-            - "--assume-driver-installed"
-            {{- end }}
-            {{- if .Values.dcgmAppLabel }}
-            - "--dcgm-app-label={{ .Values.dcgmAppLabel }}"
-            {{- end }}
-            {{- if .Values.driverAppLabel }}
-            - "--driver-app-label={{ .Values.driverAppLabel }}"
-            {{- end }}
-            {{- if .Values.gkeInstallerAppLabel }}
-            - "--gke-installer-app-label={{ .Values.gkeInstallerAppLabel }}"
-            {{- end }}
-            - "--require-dcgm-ready-for-bootstrap={{ .Values.requireDCGMReadyForBootstrap }}"
             {{- if .Values.expectedDeviceCounts.enabled }}
             - "--expected-device-counts-config-file"
             - "/etc/nvsentinel/labeler/expected-device-counts.toml"
-            {{- end }}
-            {{- if eq (include "labeler.assumeDCGMAvailable" .) "true" }}
-            - "--assume-dcgm-available"
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

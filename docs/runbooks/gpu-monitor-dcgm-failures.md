@@ -144,7 +144,7 @@ Every GPU node needs `nvsentinel.dgxc.nvidia.com/dcgm.version` set to `3.x` or `
 
 The mode that you run decides whether a missing label is a bug or an expected setup step:
 
-- **`operator-service`** — labeler sets the label from the version in the GPU Operator DCGM pod image. A missing label means that labeler was not able to read a usable DCGM pod for that node. This is not the same as an absent pod. Do the checks in this order:
+- **`operator-service`** — `nvidia-labeler` sets the label from the version in the GPU Operator DCGM pod image. A missing label means that `nvidia-labeler` was not able to read a usable DCGM pod for that node. This is not the same as an absent pod. Do the checks in this order:
 
   ```bash
   # Is a DCGM pod scheduled on the node, and is it Ready?
@@ -153,13 +153,13 @@ The mode that you run decides whether a missing label is a bug or an expected se
   # Has the node completed DCGM bootstrap?
   kubectl get node {NODE_NAME} -o jsonpath='{.metadata.annotations.nvsentinel\.dgxc\.nvidia\.com/dcgm-bootstrap-completed}{"\n"}'
 
-  kubectl logs -n nvsentinel deployment/labeler | grep -i dcgm
+  kubectl logs -n nvsentinel deployment/nvidia-labeler | grep -i dcgm
   ```
 
-  `requireDCGMReadyForBootstrap` defaults to `true`. Thus, on a node that bootstraps for the first time, labeler does not set the label until the DCGM pod reports Ready. A pod that is stuck in `Running` but is not Ready causes exactly this symptom. After labeler writes the bootstrap annotation, it sets the label regardless of later readiness. See [labeler](../labeler.md).
-- **`external-hostengine` and `embedded-mode`** — there is no DCGM pod. Thus, labeler cannot get the version, and it never creates the label. You must supply the label. See [DCGM Version Node Label](../configuration/gpu-health-monitor.md#dcgm-version-node-label).
+  `requireDCGMReadyForBootstrap` defaults to `true`. Thus, on a node that bootstraps for the first time, `nvidia-labeler` does not set the label until the DCGM pod reports Ready. A pod that is stuck in `Running` but is not Ready causes exactly this symptom. After `nvidia-labeler` writes the bootstrap annotation, it sets the label regardless of later readiness. See [labeler](../labeler.md).
+- **`external-hostengine` and `embedded-mode`** — there is no DCGM pod. Thus, `nvidia-labeler` cannot get the version, and it never creates the label. You must supply the label. See [DCGM Version Node Label](../configuration/gpu-health-monitor.md#dcgm-version-node-label).
 
-Also make sure that the node does not have the opt-out label. Labeler removes its detection labels from a node that has the label `nvsentinel.dgxc.nvidia.com/managed=false`:
+Also make sure that the node does not have the opt-out label. `nvidia-labeler` removes its detection labels from a node that has the label `nvsentinel.dgxc.nvidia.com/managed=false`:
 
 ```bash
 kubectl get node {NODE_NAME} -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep -E "managed|dcgm.version"

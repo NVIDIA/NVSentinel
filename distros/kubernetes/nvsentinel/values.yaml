@@ -289,9 +289,9 @@ global:
       scopedActions: ["COMPONENT_RESET"]
 
   # SELinux options for the pods that share host directories without running
-  # privileged: platform-connectors, syslog-health-monitor and
-  # nic-health-monitor; the modules that publish through the platform-connector
-  # socket (csp-health-monitor, health-events-analyzer,
+  # privileged: platform-connectors, gpu-health-monitor, syslog-health-monitor
+  # and nic-health-monitor; the modules that publish through the
+  # platform-connector socket (csp-health-monitor, health-events-analyzer,
   # kubernetes-object-monitor, lifecycle-manager, nvcre-certification-monitor,
   # slurm-drain-monitor); and, when auditLogging is enabled, the modules that
   # write audit logs to the node. Privileged pods already run as spc_t.

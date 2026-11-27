@@ -51,6 +51,7 @@ GO_MODULES := \
 	health-events-analyzer \
 	fault-quarantine \
 	labeler \
+	nvidia-labeler \
 	node-drainer \
 	fault-remediation \
 	janitor \
@@ -530,6 +531,11 @@ lint-test-commons:
 lint-test-metadata-collector:
 	@echo "Linting and testing metadata-collector..."
 	$(MAKE) -C metadata-collector lint-test
+
+.PHONY: lint-test-nvidia-labeler
+lint-test-nvidia-labeler:
+	@echo "Linting and testing nvidia-labeler..."
+	$(MAKE) -C nvidia-labeler lint-test
 
 .PHONY: lint-test-pod-device-mapper
 lint-test-pod-device-mapper:

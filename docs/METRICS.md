@@ -156,6 +156,8 @@ This document lists all Prometheus metrics that NVSentinel components expose.
 
 ## Labeler Module
 
+The labeler chart runs two Deployments, `labeler` and `nvidia-labeler`. Only `nvidia-labeler` watches pods, so only it reports `labeler_events_processed_total` and `labeler_event_handling_duration_seconds`. Only `labeler` reports the device-count metrics. Both report `labeler_node_update_failures_total` and `labeler_node_labels_skipped_managed_total`.
+
 ### Event Processing Metrics
 
 | Metric Name | Type | Labels | Description |

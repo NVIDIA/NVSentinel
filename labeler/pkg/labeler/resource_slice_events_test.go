@@ -138,7 +138,7 @@ func TestEventReconciliationLearnsPeerCountFromPeerEvent(t *testing.T) {
 	require.Equal(t, "3", reconciledNode.Labels[testDeviceCountExpectedLabel])
 }
 
-func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
+func TestReconcileNodeLabelsRecalculatesKataLabelAfterConflict(t *testing.T) {
 	cachedNodeBeforeConflict := testNodeWithDeviceCountLabels("node-a", "", "")
 	clientset := fake.NewSimpleClientset(cachedNodeBeforeConflict.DeepCopy())
 	labeler := newTestLabelerWithResourceSlices(
@@ -147,7 +147,6 @@ func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
 		[]*corev1.Node{cachedNodeBeforeConflict},
 		testResourceSliceForNode("slice-a", cachedNodeBeforeConflict.Name),
 	)
-	labeler.assumeDriverInstalled = true
 
 	liveNodeBeforeConflict, err := labeler.clientset.CoreV1().Nodes().Get(
 		context.Background(),
@@ -155,7 +154,7 @@ func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
 		metav1.GetOptions{},
 	)
 	require.NoError(t, err)
-	liveNodeBeforeConflict.Labels[gpuPresentLabel] = LabelValueTrue
+	liveNodeBeforeConflict.Labels[KataRuntimeDefaultLabel] = LabelValueTrue
 	_, err = labeler.clientset.CoreV1().Nodes().Update(
 		context.Background(),
 		liveNodeBeforeConflict,
@@ -189,7 +188,7 @@ func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
 		metav1.GetOptions{},
 	)
 	require.NoError(t, err)
-	require.Equal(t, LabelValueTrue, nodeAfterConflictRetry.Labels[DriverInstalledLabel])
+	require.Equal(t, LabelValueTrue, nodeAfterConflictRetry.Labels[KataEnabledLabel])
 }
 
 const (
@@ -210,16 +209,6 @@ func newTestLabelerWithResourceSlices(
 		require.NoError(t, nodeInformer.GetIndexer().Add(node.DeepCopy()))
 	}
 
-	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
-		NodeDCGMIndex:   podNodeIndexerByLabel("app", "nvidia-dcgm"),
-		NodeDriverIndex: podNodeIndexerByLabel("app", "nvidia-driver-daemonset"),
-	})
-	crdDriverInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
-		NodeDriverIndex: podNodeIndexerByLabel(driverComponentLabel, driverComponentValue),
-	})
-	gkeInstallerInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
-		NodeGKEDriverInstallerIndex: podNodeIndexerByLabel("k8s-app", "nvidia-driver-installer"),
-	})
 	resourceSliceInformer := cache.NewSharedIndexInformer(
 		&cache.ListWatch{},
 		&resourcev1.ResourceSlice{},
@@ -237,11 +226,8 @@ func newTestLabelerWithResourceSlices(
 
 	return &Labeler{
 		clientset:             clientset,
-		podInformer:           podInformer,
-		crdDriverInformer:     crdDriverInformer,
 		nodeInformer:          nodeInformer,
 		nodeLister:            listersv1.NewNodeLister(nodeInformer.GetIndexer()),
-		gkeInstallerInformer:  gkeInstallerInformer,
 		resourceSliceInformer: resourceSliceInformer,
 		informersSynced: []cache.InformerSynced{
 			func() bool { return true },
