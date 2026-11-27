@@ -1,0 +1,49 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: Host-network metrics ports in external-hostengine mode
+templates:
+  # The GPU monitor DaemonSets include their ConfigMap for its checksum.
+  - charts/gpu-health-monitor/templates/configmap.yaml
+  - charts/gpu-health-monitor/templates/daemonset-dcgm-3.x.yaml
+  - charts/gpu-health-monitor/templates/daemonset-dcgm-4.x.yaml
+  - charts/metadata-collector/templates/daemonset.yaml
+set:
+  global.dcgm.mode: external-hostengine
+  global.gpuHealthMonitor.enabled: true
+  global.metadataCollector.enabled: true
+tests:
+  - it: uses host-network metrics port 2112 in both GPU health monitor variants
+    templates:
+      - charts/gpu-health-monitor/templates/daemonset-dcgm-3.x.yaml
+      - charts/gpu-health-monitor/templates/daemonset-dcgm-4.x.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].ports[?(@.name == "metrics")].containerPort
+          value: 2112
+
+  - it: uses a different host-network metrics port for the metadata collector
+    template: charts/metadata-collector/templates/daemonset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - exists:
+          path: spec.template.spec.containers[0].ports[?(@.name == "metrics")].containerPort
+      - notEqual:
+          path: spec.template.spec.containers[0].ports[?(@.name == "metrics")].containerPort
+          value: 2112

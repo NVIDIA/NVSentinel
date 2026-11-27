@@ -1,0 +1,64 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: Metadata collector metrics network policy
+release:
+  name: nvsentinel
+templates:
+  - templates/metadata-collector-metrics-networkpolicy.yaml
+set:
+  networkPolicy.enabled: true
+  global.metadataCollector.enabled: true
+tests:
+  - it: allows the default metrics port only on the NVIDIA discovery pods
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels
+          value:
+            app.kubernetes.io/name: nvidia-metadata-collector
+            app.kubernetes.io/instance: nvsentinel
+      - equal:
+          path: spec.ingress[0].ports
+          value:
+            - protocol: TCP
+              port: 2113
+
+  - it: follows an overridden collector metrics port
+    set:
+      metadata-collector.metrics.port: 22441
+    asserts:
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 22441
+
+  - it: does not render when collector metrics are disabled
+    set:
+      metadata-collector.metrics.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: does not render when the collector is disabled
+    set:
+      global.metadataCollector.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: does not render when chart network policies are disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
