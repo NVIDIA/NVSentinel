@@ -378,7 +378,7 @@ def test_connectx_is_not_enabled_or_published(
     group = MagicMock()
     group.GetGpuIds.return_value = [0]
     watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=(group, []))
-    watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+    watcher._get_gpu_identifiers = MagicMock(return_value=({}, {}))
 
     _, gpu_ids, switch_ids, _ = watcher._initialize_dcgm_monitoring(MagicMock())
     group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL & ~0x1000)

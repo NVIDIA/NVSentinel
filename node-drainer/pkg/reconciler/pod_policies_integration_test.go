@@ -28,6 +28,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
@@ -36,11 +37,12 @@ import (
 // podPolicyTestConfig defines overlapping selectors and all three drain modes for API regression tests.
 func podPolicyTestConfig() config.TomlConfig {
 	return config.TomlConfig{
-		EvictionTimeoutInSeconds:  config.Duration{Duration: time.Second},
-		DeleteAfterTimeoutMinutes: 5,
-		NotReadyTimeoutMinutes:    5,
-		SystemNamespaces:          "^system-",
-		PartialDrainEnabled:       true,
+		EvictionTimeoutInSeconds:      config.Duration{Duration: time.Second},
+		DeleteAfterTimeoutMinutes:     5,
+		NotReadyTimeoutMinutes:        5,
+		SystemNamespaces:              "^system-",
+		PartialDrainEnabled:           true,
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 		PodDrainPolicies: []config.PodDrainPolicy{
 			{Name: "protected", Namespace: "workloads", PodSelector: "protected=yes", Mode: config.ModeAllowCompletion},
 			{Name: "replaceable", Namespace: "workloads", PodSelector: "role in (worker,overlap)", Mode: config.ModeImmediateEvict},

@@ -16,6 +16,7 @@ package model
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -37,4 +38,11 @@ type CSPClient interface {
 
 	// SendTerminateSignal sends a termination signal to the node via the CSP
 	SendTerminateSignal(ctx context.Context, node corev1.Node) (TerminateNodeRequestRef, error)
+}
+
+// DeadlineRebootClient can enforce a start deadline for an asynchronous reboot Job.
+type DeadlineRebootClient interface {
+	SendRebootSignalWithDeadline(
+		ctx context.Context, node corev1.Node, crName string, deadline time.Time,
+	) (ResetSignalRequestRef, error)
 }

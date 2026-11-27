@@ -36,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
@@ -196,6 +197,7 @@ func initializeKubeComponents(
 		clientSet,
 		&tomlCfg.NotReadyTimeoutMinutes,
 		tomlCfg.DrainGPUPods,
+		tomlCfg.PartialRemediationEntityTypes,
 		params.DryRun,
 		tomlCfg.SystemNamespaces,
 		nodeFields,
@@ -395,13 +397,15 @@ func initializeKubernetesClient(params InitializationParams) (kubernetes.Interfa
 
 // initializeInformers creates drain informers with an hourly resync and the configured policy label keys.
 func initializeInformers(clientset kubernetes.Interface,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string,
-	nodeFields nodecache.Keys, podLabelKeys ...string) (*informers.Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, entityTypes model.PartialRemediationEntityTypes,
+	dryRun bool, systemNamespaces string, nodeFields nodecache.Keys,
+	podLabelKeys ...string) (*informers.Informers, error) {
 	return informers.NewInformers(
 		clientset,
 		time.Hour,
 		notReadyTimeoutMinutes,
 		drainGPUPods,
+		entityTypes,
 		dryRun,
 		systemNamespaces,
 		nodeFields,

@@ -2,13 +2,15 @@
 
 ## Overview
 
-The Metadata Collector module collects GPU metadata with NVIDIA NVML (Management Library) and writes it to a shared file. Other modules read this file to add GPU serial numbers, UUIDs, and topology information to health events. This component also exposes the pod-to-GPU mapping as an annotation on each pod that requests GPUs. This document describes the main Helm configuration options for system administrators.
+The Metadata Collector module collects GPU metadata with NVIDIA NVML (Management Library) and writes it to a shared file. Other modules read this file to add GPU serial numbers, UUIDs, and topology information to health events. It runs in the `nvidia-metadata-collector` DaemonSet. This document describes the main Helm configuration options for system administrators.
+
+The metadata-collector chart also renders the `pod-device-mapper` DaemonSet, which writes the device annotation on pods that partial drains read. Its values are under `metadata-collector` too. See [Pod Device Mapper Configuration](pod-device-mapper.md).
 
 ## Configuration Reference
 
 ### Module Enable/Disable
 
-This setting enables or disables the deployment of the Metadata Collector in the cluster.
+This setting enables or disables the deployment of the Metadata Collector and the pod device mapper in the cluster.
 
 ```yaml
 global:
@@ -27,7 +29,7 @@ metadata-collector:
 
 ### Resources
 
-Defines the CPU and memory resource requests and limits for the Metadata Collector container.
+Defines the CPU and memory resource requests and limits for the Metadata Collector container. The pod device mapper uses them too, unless `podMapper.resources` is set.
 
 ```yaml
 metadata-collector:
@@ -193,107 +195,3 @@ If the pod is missing on a GPU node, examine the label:
 ```bash
 kubectl get node <node> -L nvidia.com/gpu.deploy.client
 ```
-
-## Kubelet Host
-
-Sets the `KUBELET_HOST` environment variable, which tells the collector where to reach the kubelet `/pods` endpoint.
-
-```yaml
-metadata-collector:
-  kubeletHost:
-    valueFrom:
-      fieldRef:
-        fieldPath: status.hostIP
-```
-
-The default gets the primary IP of the node through the downward API. This works if the kubelet binds to `0.0.0.0` or to the node IP. A static address also works:
-
-```yaml
-metadata-collector:
-  kubeletHost:
-    value: "10.0.0.1"
-```
-
-To leave the variable unset, set `kubeletHost: {}`. The collector then uses `localhost` instead. An explicit `--kubelet-kubeconfig` fully overrides this value.
-
-## Kubelet Root Directory
-
-The collector maps pods to GPUs through the kubelet PodResources socket. Kubelet creates that socket under its `--root-dir`. Thus, the chart mounts `<kubeletRootDir>/pod-resources` from the host at the fixed path that the collector reads. If a distribution runs kubelet from a non-default directory, set this value to the kubelet `--root-dir`. For example, k0s uses `/var/lib/k0s/kubelet`:
-
-```yaml
-global:
-  kubeletRootDir: /var/lib/kubelet   # default
-```
-
-If the value does not match kubelet, one of these occurs:
-
-- The pod stays in `ContainerCreating` with a `FailedMount` event, because the host directory does not exist.
-- The container logs `Pod device mapper failed` with the error `got an error creating Kubelet gRPC client: stat /var/lib/kubelet/pod-resources/kubelet.sock: no such file or directory` and exits, because the host directory exists but kubelet does not use it.
-
-## Pod Mapper Failure Tolerance
-
-The number of consecutive failed poll cycles that the pod mapper tolerates before the container exits with a non-zero code.
-
-```yaml
-metadata-collector:
-  podMapper:
-    maxConsecutiveFailures: 10
-```
-
-The poll period is 30 seconds. Thus, the default tolerates five minutes of failures. This time is long enough to outlast a credential rotation or a kubelet restart. It is also short enough to fail visibly when the collector has a real fault. The minimum is `1`, which exits on the first failed poll. This value sets the `--pod-mapper-max-consecutive-failures` flag that [Startup and failure handling](#startup-and-failure-handling) describes.
-
-## Disabling the Pod Mapper
-
-The pod device mapper writes the `dgxc.nvidia.com/devices` annotation on GPU pods. Partial drains in the node-drainer need that annotation. Disable the mapper only where it cannot work. For example, the mapper cannot work when the pods that the kubelet reports are not the pods that the collector sees through the Kubernetes API.
-
-```yaml
-metadata-collector:
-  podMapper:
-    enabled: false
-```
-
-With the mapper disabled, the collector still writes the GPU metadata file. It then continues to run, but it does not poll the kubelet. Pods get no device annotations. Thus, keep `node-drainer.partialDrainEnabled` set to `false`, because a partial drain fails for a GPU pod without the annotation. Full drains still detect GPU pods from their container limits and DRA claims. This value sets the `--pod-mapper-enabled` flag.
-
-## Host-native authentication
-
-If the collector runs outside a pod, use two explicit kubeconfigs:
-
-```bash
-metadata-collector \
-  --kubeconfig=/etc/nvsentinel/metadata-collector/apiserver.kubeconfig \
-  --kubelet-kubeconfig=/etc/nvsentinel/metadata-collector/kubelet.kubeconfig \
-  --output-path=/var/lib/nvsentinel/gpu_metadata.json
-```
-
-| Flag | Purpose | Default |
-|---|---|---|
-| `--kubeconfig` | Kubernetes API endpoint, trust, and credentials for pod annotation updates | In-cluster configuration |
-| `--kubelet-kubeconfig` | Kubelet HTTPS endpoint, trust, and credentials for `/pods` | `KUBELET_HOST:10250` and the projected ServiceAccount token |
-
-If `KUBELET_HOST` is not set, the default is `localhost`. An explicit kubelet kubeconfig overrides that variable. The collector does not use the API server credentials for the kubelet. It does not load `KUBECONFIG` or a home-directory kubeconfig implicitly.
-
-Explicit configurations must use HTTPS, verify server certificates, and provide credentials. Set the kubelet server to an address in its serving certificate, such as `https://gpu-node.example:10250`. Provide the correct CA and, if needed, `tls-server-name`.
-
-### Credentials and permissions
-
-Provision credentials at node runtime. Keep kubeconfig and credential files accessible only to the service account or root. Kubeconfigs are trusted input, because client-go can run a configured credential plugin.
-
-- The Kubernetes API identity needs `patch` on pods in each workload namespace.
-- The kubelet identity needs permission to read `/pods`. With fine-grained kubelet authorization, use `get` on `nodes/pods`. Other configurations require `get` on `nodes/proxy`, which grants broader access.
-- The process needs access to `/var/lib/kubelet/pod-resources/kubelet.sock`, NVIDIA devices and libraries, and its output directory. The binary always uses that path. If kubelet uses a different `--root-dir`, make the socket available at that path.
-
-Authentication does not grant permissions. Do not assume that the client identity of the kubelet can patch workload pods. This feature creates no credentials or RBAC bindings.
-
-Client-go supports kubeconfig bearer tokens, token files, client certificates, and configured credential providers. Prefer rotating file credentials to embedded long-lived credentials. Token-file reload is periodic, so provision a new token before the old token expires. Restart the collector after changes to kubeconfig settings or CA trust. Client certificate files reload through client-go. Embedded certificate data does not reload.
-
-Certificate authentication requires both a certificate and its private key. You can provide each as a file or as embedded data. A username and password alone do not satisfy the credential requirement.
-
-Without an explicit kubelet kubeconfig, the transport reads the projected ServiceAccount token again on every request, also on retries. Thus, recovery continues to work when that token rotates between attempts. The client does not keep tokens or set authentication headers itself.
-
-### Startup and failure handling
-
-Hardware inventory stays enabled. Pod-to-GPU mapping stays enabled, unless `--pod-mapper-enabled=false` disables it. Refer to [Disabling the Pod Mapper](#disabling-the-pod-mapper). If the mapper is enabled, the kubelet socket must exist and be accessible when the mapper starts.
-
-The 30-second poll period and the `--pod-mapper-max-consecutive-failures` limit also apply. The default limit is 10 failed polls. Persistent authentication, authorization, or socket failures stay errors. The collector does not report them as successful mapping.
-
-A missing kubeconfig or credential file is a configuration error. HTTP 401 indicates rejected credentials. HTTP 403 indicates denied permission. To correct a TLS error, configure the correct CA trust and server identity. Do not disable verification to bypass TLS errors.

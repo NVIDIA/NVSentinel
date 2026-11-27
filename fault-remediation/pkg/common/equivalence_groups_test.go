@@ -86,6 +86,7 @@ func TestGetGroupConfigForEvent(t *testing.T) {
 			expectError: false,
 			expectedGroupConfig: &EquivalenceGroupConfig{
 				EffectiveEquivalenceGroup:    "reset-GPU-123",
+				ImpactedEntityScope:          "GPU_UUID",
 				ImpactedEntityScopeValue:     "GPU-123",
 				SupersedingEquivalenceGroups: []string{"restart"},
 			},

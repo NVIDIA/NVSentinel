@@ -65,6 +65,7 @@ func applyConfigDefaults(config *Config) {
 	applyGlobalDefaults(config)
 	applyTimeoutDefaults(config)
 	applyManualModeDefaults(config)
+	applyRequireNodeOutOfServiceDefaults(config)
 	applyExclusionsDefaults(config)
 	applyCSPProviderHostDefaults(config)
 }
@@ -76,6 +77,10 @@ func applyGlobalDefaults(config *Config) {
 
 	if config.Global.ManualMode == nil {
 		config.Global.ManualMode = new(false)
+	}
+
+	if config.Global.RequireNodeOutOfService == nil {
+		config.Global.RequireNodeOutOfService = new(true)
 	}
 }
 
@@ -104,6 +109,20 @@ func applyManualModeDefaults(config *Config) {
 
 	if config.GPUReset.ManualMode == nil {
 		config.GPUReset.ManualMode = config.Global.ManualMode
+	}
+}
+
+func applyRequireNodeOutOfServiceDefaults(config *Config) {
+	if config.RebootNode.RequireNodeOutOfService == nil {
+		config.RebootNode.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
+	}
+
+	if config.TerminateNode.RequireNodeOutOfService == nil {
+		config.TerminateNode.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
+	}
+
+	if config.GPUReset.RequireNodeOutOfService == nil {
+		config.GPUReset.RequireNodeOutOfService = config.Global.RequireNodeOutOfService
 	}
 }
 

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +42,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor/pkg/cacheconfig"
 	grpcclient "github.com/nvidia/nvsentinel/janitor/pkg/client"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -52,6 +54,7 @@ type cspProviderDialFunc func(ctx context.Context) (cspv1alpha1.CSPProviderServi
 // RebootNodeReconciler reconciles a RebootNode object
 type RebootNodeReconciler struct {
 	client.Client
+	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	Config        *config.RebootNodeControllerConfig
 	NodeLock      distributedlock.NodeLock
@@ -75,6 +78,16 @@ const requeueBackoffForTransientCSPError = 15 * time.Second
 // conditionReasonSucceeded is the reason stamped on conditions that completed
 // successfully.
 const conditionReasonSucceeded = "Succeeded"
+
+// conditionReasonNodeInService is the reason when janitor refuses maintenance on a node that is neither cordoned nor
+// quarantined, for example a request that outlived the quarantine of its node.
+const conditionReasonNodeInService = "NodeInService"
+
+// refuseNodeInService reports whether the node must not get maintenance: the check is required and the node is
+// neither cordoned nor quarantined.
+func refuseNodeInService(required *bool, node *corev1.Node) bool {
+	return required != nil && *required && !cacheconfig.NodeOutOfService(node)
+}
 
 //nolint:lll // kubebuilder RBAC marker must stay on one line
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
@@ -208,11 +221,6 @@ func (r *RebootNodeReconciler) endRebootSession(crKey string) {
 func (r *RebootNodeReconciler) reconcileHelper(
 	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode,
 ) (ctrl.Result, error) {
-	originalRebootNode := rebootNode.DeepCopy()
-
-	rebootNode.SetInitialConditions()
-	rebootNode.SetStartTime()
-
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: rebootNode.Spec.NodeName}, &node); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -241,6 +249,19 @@ func (r *RebootNodeReconciler) reconcileHelper(
 		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
 	}
 	defer cleanup()
+
+	// A failed outcome write can cause another dispatch. Persist the start
+	// before sending the signal so that retry uses the original deadline.
+	if rebootNode.Status.StartTime == nil {
+		rebootNode.SetStartTime()
+
+		if err := r.Status().Update(ctx, rebootNode); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("persisting reboot start time: %w", err))
+		}
+	}
+
+	originalRebootNode := rebootNode.DeepCopy()
+	rebootNode.SetInitialConditions()
 
 	var result ctrl.Result
 
@@ -283,8 +304,14 @@ func (r *RebootNodeReconciler) updateRebootNodeStatusIfChanged(
 
 	var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
 
+	// The informer cache can still hold the resource version from before the start time was written.
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+
 	objectKey := client.ObjectKey{Name: rebootNode.Name, Namespace: rebootNode.Namespace}
-	if err := r.Get(ctx, objectKey, &freshRebootNode); err != nil {
+	if err := reader.Get(ctx, objectKey, &freshRebootNode); err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.Info("Post-reconciliation status update: not found, object assumed deleted", "node", rebootNode.Name)
 
@@ -462,6 +489,20 @@ func (r *RebootNodeReconciler) handleRebootNotStarted(
 		return r.handleManualMode(ctx, rebootNode, node)
 	}
 
+	if refuseNodeInService(r.Config.RequireNodeOutOfService, node) {
+		slog.WarnContext(ctx, "Node is neither cordoned nor quarantined, janitor will not reboot it", "node", node.Name)
+		rebootNode.SetCompletionTime()
+		rebootNode.SetCondition(metav1.Condition{
+			Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
+			Status:             metav1.ConditionFalse,
+			Reason:             conditionReasonNodeInService,
+			Message:            "Node is neither cordoned nor quarantined, refusing to reboot it",
+			LastTransitionTime: metav1.Now(),
+		})
+
+		return ctrl.Result{}
+	}
+
 	return r.sendRebootSignalAndSetCondition(ctx, cspClient, rebootNode, node)
 }
 
@@ -508,8 +549,9 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 	slog.InfoContext(ctx, "Sending reboot signal to node", "node", node.Name)
 
 	rsp, rebootErr := cspClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
-		NodeName: node.Name,
-		CrName:   rebootNode.Name,
+		NodeName:          node.Name,
+		CrName:            rebootNode.Name,
+		ExecutionDeadline: timestamppb.New(rebootNode.Status.StartTime.Add(r.getRebootTimeout())),
 	})
 	if rebootErr == nil {
 		rebootNode.SetCondition(metav1.Condition{
@@ -608,6 +650,9 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.NodeLock = distributedlock.NewNodeLock(
 		mgr.GetClient(), mgr.GetScheme(), r.LockNamespace, metrics.JanitorLockMetrics{},
 	)
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -41,7 +42,8 @@ func TestEquivalenceGroupConfiguration(t *testing.T) {
 
 	// Test config with equivalence groups
 	config := TomlConfig{
-		Template: Template{MountPath: tempDir},
+		Template:                      Template{MountPath: tempDir},
+		PartialRemediationEntityTypes: modeltest.GPUEntityTypes(),
 		RemediationActions: map[string]MaintenanceResource{
 			protos.RecommendedAction_RESTART_BM.String(): {
 				ApiGroup:         "example.io",

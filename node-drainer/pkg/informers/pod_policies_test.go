@@ -25,6 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model/modeltest"
 )
 
 // TestExcludedPodTransform_PodPolicyLabels_PreservesOnlyRequiredKeys
@@ -133,7 +135,8 @@ func TestCheckIfObservedPodsAreEvictedInImmediateMode_RelabelledPods_RejectsStal
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
 	ctx := t.Context()
-	observedInformers, err := NewInformers(client, 0, new(5), false, false, "", NodeFields(nil), "mode")
+	observedInformers, err := NewInformers(client, 0, new(5), false, modeltest.GPUEntityTypes(),
+		false, "", NodeFields(nil), "mode")
 	require.NoError(t, err)
 	require.NoError(t, observedInformers.Run(ctx))
 	for _, mode := range []string{"completion", "unmatched"} {
