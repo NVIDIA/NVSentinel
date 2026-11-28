@@ -85,3 +85,4 @@ Each record states one decision: the context that forced it, what was decided, w
 | 072 | [Architecture — Run the Pod Device Mapper Apart from NVIDIA Discovery (proposed)](072-pod-device-mapper-daemonset.md) |
 | 076 | [Health Monitors — Integration with NVHV (proposed)](076-integration-with-nvhv.md) |
 | 077 | [Architecture — Move NVIDIA Detection out of the Labeler (proposed)](077-nvidia-labeler.md) |
+| 078 | [DCGM — Unified Version-Lane Client Selection for DCGM 4.x and Later (proposed)](078-dcgm-runtime-client-selection.md) |
