@@ -340,6 +340,26 @@ func TestLoadConfig_PortStateHoldDown_RejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_PortStateBootGracePeriod_ParsedFromStateCheckTable(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, "[stateCheck]\nportStateBootGracePeriod = \"10m\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, cfg.StateCheck.BootGrace)
+	assert.True(t, cfg.StateCheck.BootGraceEnd.IsZero(), "the end is set from the host uptime, not the file")
+}
+
+func TestLoadConfig_PortStateBootGracePeriod_UnsetIsOff(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, ""))
+	require.NoError(t, err)
+	assert.Zero(t, cfg.StateCheck.BootGrace)
+}
+
+func TestLoadConfig_PortStateBootGracePeriod_RejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"10", "later", "-1m"} {
+		_, err := LoadConfig(writeConfig(t, "[stateCheck]\nportStateBootGracePeriod = \""+value+"\"\n"))
+		assert.ErrorContains(t, err, "portStateBootGracePeriod", "value %q", value)
+	}
+}
+
 func TestLoadConfig_SuppressedPortReportAfter_ParsedFromStateCheckTable(t *testing.T) {
 	cfg, err := LoadConfig(writeConfig(t, "[stateCheck]\nsuppressedPortReportAfter = \"10m\"\n"))
 	require.NoError(t, err)

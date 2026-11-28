@@ -219,6 +219,24 @@ type StateCheckConfig struct {
 	// HoldDown is PortStateHoldDown parsed by LoadConfig.
 	HoldDown time.Duration `toml:"-"`
 
+	// PortStateBootGracePeriod holds every port that turns unhealthy, and
+	// every device that goes missing, while the host has been up for less
+	// than this duration, until the grace ends. A port or device that is
+	// still unhealthy or missing then is reported; one that recovered first
+	// is not. It covers NIC bring-up after a reboot, which can take minutes,
+	// without a hold-down that would also hide short drops on a running
+	// node. After the grace, PortStateHoldDown applies as usual. Empty or
+	// "0s", the default, turns it off.
+	PortStateBootGracePeriod string `toml:"portStateBootGracePeriod"`
+
+	// BootGrace is PortStateBootGracePeriod parsed by LoadConfig.
+	BootGrace time.Duration `toml:"-"`
+
+	// BootGraceEnd is when the boot grace ends. It is not read from the
+	// config file: main sets it from the host uptime at startup. Zero means
+	// no grace.
+	BootGraceEnd time.Time `toml:"-"`
+
 	// SuppressedPortReportAfter reports a port that the first-poll
 	// peer-evidence gate suppressed once it has stayed unhealthy this long.
 	// Empty or "0s", the default, keeps suppressing it for as long as it
@@ -321,6 +339,10 @@ func parseStateCheck(sc *StateCheckConfig) error {
 	var err error
 
 	if sc.HoldDown, err = parseStateDuration("portStateHoldDown", sc.PortStateHoldDown); err != nil {
+		return err
+	}
+
+	if sc.BootGrace, err = parseStateDuration("portStateBootGracePeriod", sc.PortStateBootGracePeriod); err != nil {
 		return err
 	}
 
