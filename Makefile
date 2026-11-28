@@ -173,18 +173,18 @@ install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobe
 install-golangci-lint:
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		current_version=$$(golangci-lint version 2>/dev/null | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown"); \
-		if [ "$$current_version" = "$(GOLANGCI_LINT_VERSION)" ]; then \
+		current_version=$$(golangci-lint version --short 2>/dev/null || echo "unknown"); \
+		if [ "v$$current_version" = "$(GOLANGCI_LINT_VERSION)" ]; then \
 			echo "golangci-lint $(GOLANGCI_LINT_VERSION) is already installed at $$(which golangci-lint)"; \
 		else \
 			existing_path=$$(which golangci-lint); \
 			install_dir=$$(dirname "$$existing_path"); \
 			echo "Current version: $$current_version at $$existing_path, installing $(GOLANGCI_LINT_VERSION) to $$install_dir..."; \
-			curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$$install_dir" $(GOLANGCI_LINT_VERSION); \
+			curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$install_dir" $(GOLANGCI_LINT_VERSION); \
 		fi; \
 	else \
 		echo "golangci-lint not found, installing $(GOLANGCI_LINT_VERSION) to $(GOPATH)/bin..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
+		curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
 	fi
 	@echo "golangci-lint installation complete"
 
