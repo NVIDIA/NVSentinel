@@ -232,13 +232,26 @@ func (b *baseStateCheck) seedFromPersistedState() {
 // changes. Once the hold-down has elapsed, the real snapshot goes through and
 // the usual transition is reported. A port that recovers first is counted in
 // PortStateBlips and never reported. A port that was not read this poll (its
-// device unreadable or missing) keeps its hold. Off when the hold-down is zero.
+// device unreadable or missing) keeps its hold.
+//
+// During the boot grace (stateCheck.portStateBootGracePeriod) a port is held
+// until the grace ends, however short the hold-down: NIC bring-up after a
+// reboot then recovers as blips, and a port still unhealthy when the grace
+// ends is reported at that poll. Off when the hold-down is zero and the boot
+// grace is over or off.
 func (b *baseStateCheck) applyPortHoldDown(
 	currentPorts map[string]portSnapshot, cardActive map[string]int, portCard map[string]string,
 	unreadable map[string]error,
 ) {
 	holdDown := b.cfg.StateCheck.HoldDown
-	if holdDown <= 0 {
+	now := b.now()
+	inGrace := b.inBootGrace(now)
+
+	if holdDown <= 0 && !inGrace {
+		// Nothing can be held any more. Holds left from the boot grace
+		// are dropped: the ports they covered are now reported as read.
+		b.portHeldSince = nil
+
 		return
 	}
 
@@ -246,14 +259,12 @@ func (b *baseStateCheck) applyPortHoldDown(
 		b.portHeldSince = make(map[string]time.Time)
 	}
 
-	now := b.now()
-
 	for key, current := range currentPorts {
 		if _, retained := unreadable[current.Device]; retained {
 			continue // last committed snapshot, not an observation
 		}
 
-		prev, held := b.holdPort(key, current, now, holdDown)
+		prev, held := b.holdPort(key, current, now, holdDown, inGrace)
 		if !held {
 			continue
 		}
@@ -268,9 +279,9 @@ func (b *baseStateCheck) applyPortHoldDown(
 
 // holdPort updates one port's hold-down and reports whether its current
 // snapshot is held back, returning the last reported snapshot to present
-// instead.
+// instead. inGrace holds the port for as long as the boot grace lasts.
 func (b *baseStateCheck) holdPort(
-	key string, current portSnapshot, now time.Time, holdDown time.Duration,
+	key string, current portSnapshot, now time.Time, holdDown time.Duration, inGrace bool,
 ) (portSnapshot, bool) {
 	since, held := b.portHeldSince[key]
 	prev, hasPrev := b.previousPorts[key]
@@ -281,7 +292,7 @@ func (b *baseStateCheck) holdPort(
 		if held && !reported {
 			slog.Info("Port recovered before the hold-down reported it",
 				"check", b.strategy.checkName(), "device", current.Device, "port", current.Port,
-				"unhealthyFor", now.Sub(since).Round(time.Millisecond))
+				"unhealthyFor", now.Sub(since).Round(time.Millisecond), "bootGrace", inGrace)
 			metrics.PortStateBlips.WithLabelValues(
 				b.nodeName, b.strategy.checkName(), current.Device, strconv.Itoa(current.Port)).Inc()
 		}
@@ -298,7 +309,7 @@ func (b *baseStateCheck) holdPort(
 
 	// Once due, the entry stays until the unhealthy state is committed, so a
 	// discarded poll reports it again next time.
-	return prev, now.Sub(since) < holdDown
+	return prev, inGrace || now.Sub(since) < holdDown
 }
 
 func persistedSuppressionTimes(persisted map[string]statefile.PortStateSnapshot) map[string]time.Time {
@@ -1028,7 +1039,10 @@ func (b *baseStateCheck) cardHealthyEvent(
 
 // detectDeviceDisappearance compares the current device set against the
 // previous poll's set. Missing devices get a FATAL event with the NIC
-// entity.
+// entity. During the boot grace a missing device keeps its last-known state
+// however many polls it misses, so a device that re-enumerates before the
+// grace ends is never reported; one still missing reports at the first poll
+// after the grace.
 func (b *baseStateCheck) detectDeviceDisappearance(
 	seenDevices map[string]bool,
 	currentDevices map[string]bool,
@@ -1041,6 +1055,7 @@ func (b *baseStateCheck) detectDeviceDisappearance(
 	var events []*pb.HealthEvent
 
 	heldMissingState := false
+	inGrace := b.inBootGrace(b.now())
 
 	for device := range b.previousDevices {
 		if seenDevices[device] {
@@ -1049,7 +1064,11 @@ func (b *baseStateCheck) detectDeviceDisappearance(
 		}
 
 		misses := b.deviceMissCounts[device] + 1
-		if misses < deviceMissThreshold {
+		if misses < deviceMissThreshold || inGrace {
+			// Capped below the threshold, so a device still missing
+			// when the boot grace ends is reported at the next poll.
+			misses = min(misses, deviceMissThreshold-1)
+			counted := b.deviceMissCounts[device] != misses
 			heldMissingState = true
 			b.deviceMissCounts[device] = misses
 			currentDevices[device] = true
@@ -1060,9 +1079,11 @@ func (b *baseStateCheck) detectDeviceDisappearance(
 				}
 			}
 
-			slog.Warn("Device absent from sysfs enumeration; holding last-known state",
-				"device", device, "linkLayer", b.strategy.linkLayer(),
-				"misses", misses, "threshold", deviceMissThreshold)
+			if counted { // once per miss, not on every poll of the boot grace
+				slog.Warn("Device absent from sysfs enumeration; holding last-known state",
+					"device", device, "linkLayer", b.strategy.linkLayer(),
+					"misses", misses, "threshold", deviceMissThreshold, "bootGrace", inGrace)
+			}
 
 			continue
 		}

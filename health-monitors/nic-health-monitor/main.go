@@ -86,6 +86,8 @@ var (
 	bootIDPath = flag.String("boot-id-path", statefile.DefaultBootIDPath,
 		"Path to the kernel boot ID file. Used to detect host reboots (state "+
 			"is cleared and healthy baselines are emitted when it changes).")
+	procUptimePath = flag.String("proc-uptime-path", state.DefaultProcUptimePath,
+		"path to the host's /proc/uptime, read at startup to time stateCheck.portStateBootGracePeriod")
 	processingStrategyFlag = flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
 	pollStallDeadline = flag.Duration("poll-stall-deadline", 10*time.Second,
@@ -263,6 +265,8 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 		"sysClassInfinibandPath", cfg.SysClassInfinibandPath,
 	)
 
+	setBootGraceEnd(&cfg.StateCheck, *procUptimePath, time.Now())
+
 	processingStrategy, err := parseProcessingStrategy(*processingStrategyFlag)
 	if err != nil {
 		return nil, err
@@ -289,6 +293,30 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 		statePollingInterval: statePollingInterval,
 		metricsPort:          portInt,
 	}, nil
+}
+
+// setBootGraceEnd times stateCheck.portStateBootGracePeriod from the host
+// uptime. now must come from time.Now so the end carries a monotonic reading.
+// If the uptime cannot be read the grace is off: the monitor then reports as
+// it would without it rather than guess the boot time.
+func setBootGraceEnd(sc *config.StateCheckConfig, uptimePath string, now time.Time) {
+	if sc.BootGrace <= 0 {
+		return
+	}
+
+	uptime, err := state.ReadUptime(uptimePath)
+	if err != nil {
+		slog.Warn("Cannot read host uptime; portStateBootGracePeriod is off",
+			"path", uptimePath, "error", err)
+
+		return
+	}
+
+	sc.BootGraceEnd = state.BootGraceEnd(now, uptime, sc.BootGrace)
+
+	slog.Info("Port-state boot grace",
+		"grace", sc.BootGrace, "uptime", uptime.Round(time.Second),
+		"remaining", max(sc.BootGrace-uptime, 0).Round(time.Second))
 }
 
 // loadConfig reads the TOML config. Only a missing file falls back to

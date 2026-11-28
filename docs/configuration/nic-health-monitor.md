@@ -140,6 +140,26 @@ nic-health-monitor:
 
 The hold-down applies only to port state. The `link_downed` counter (InfiniBandDegradationCheck) is fatal on any increase. It stays latched until the counter resets or the host reboots. Thus, a blip that increments the counter still produces a fatal health event. If you see blips there, you can disable that counter (see [Disable a noisy counter](#disable-a-noisy-counter)).
 
+## Port State Boot Grace Period
+
+After a host reboot, the monitor can start while the node's NICs are still being brought up. During bring-up, ports can go `DOWN` for a few seconds one after another, and RDMA devices can disappear from sysfs for minutes. Without a grace period, the monitor reports this as fatal port, card, and device events. A `portStateHoldDown` long enough to skip bring-up would also hide short drops on a running node.
+
+With `portStateBootGracePeriod`, the monitor holds port-state faults while the host has been up for less than this duration:
+
+```yaml
+nic-health-monitor:
+  portStateBootGracePeriod: "10m"
+```
+
+- **Off by default.** `"0s"` disables the grace period.
+- **Held until the grace ends.** A port that turns unhealthy during the grace is held the same way as with `portStateHoldDown`. The homogeneity check of its card also waits. If the port is still unhealthy when the grace ends, the monitor reports it at that poll.
+- **Bring-up is counted, not reported.** If a port recovers during the grace, the monitor publishes no health event and increments `nic_health_monitor_port_state_blips_total`.
+- **Missing devices.** A device missing from sysfs keeps its last-known state during the grace. If it is still missing when the grace ends, the monitor reports it at the next poll.
+- **After the grace,** `portStateHoldDown` applies as usual. A drop that starts just before the grace ends still gets the full hold-down.
+- **Boot time.** The monitor reads the host uptime from `/proc/uptime` (through the `/nvsentinel/proc` mount) when it starts. A pod restart reads the uptime again, so the grace still ends at the same time. If the uptime cannot be read, the grace period is off.
+- **First poll.** The grace does not change the first poll: a port that is already unhealthy when the monitor starts goes through the first-poll peer-evidence gate (see [Reporting Ports Suppressed on the First Poll](#reporting-ports-suppressed-on-the-first-poll)).
+- **Scope.** The grace applies to `InfiniBandStateCheck` and `EthernetStateCheck` port states and device disappearance. It does not apply to a port that disappears from a device that is still present, to `InfiniBandCharDeviceCheck`, or to counter checks.
+
 ## Reporting Ports Suppressed on the First Poll
 
 On the first poll, the monitor reports an unhealthy port only if peer evidence shows that the port is expected to be up. This evidence is that its card has fewer active ports than the decisive mode of its role group. Otherwise, the monitor suppresses the port, because the port can be uncabled or disabled by design. That happens when:

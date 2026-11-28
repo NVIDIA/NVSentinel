@@ -58,6 +58,16 @@ statePollingInterval: "1s"
 # unhealthy poll.
 portStateHoldDown: "0s"
 
+# While the host has been up for less than this, InfiniBandStateCheck and
+# EthernetStateCheck hold every port that turns unhealthy, and every device
+# missing from sysfs, until the grace ends. Still unhealthy or missing then:
+# reported. Recovered first: counted in
+# nic_health_monitor_port_state_blips_total (ports) and never reported. This
+# covers NIC bring-up after a reboot without a portStateHoldDown that would
+# also hide short drops on a running node; portStateHoldDown applies after the
+# grace. The uptime is read from the host's /proc. "0s" disables.
+portStateBootGracePeriod: "0s"
+
 # Report a first-poll-suppressed port on a card with a compute-classified
 # device once it has stayed unhealthy this long (for example a 2-2 tie).
 # SMI aliases on the same card qualify too. Leave "0s" if some of its ports
