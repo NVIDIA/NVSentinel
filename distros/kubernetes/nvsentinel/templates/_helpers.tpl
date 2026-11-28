@@ -60,16 +60,47 @@ Nil/empty -> default. Strings must be base-10 digits and numbers must be whole
 {{- end }}
 
 {{/*
-<release>-external-mongodb-setup-<ttl>-<scriptHash> so a TTL or init-script
-change is a new Job, not a patch on a completed one.
+<release>-external-mongodb-setup-<ttl>-<hash> so a TTL, init-script or pod
+template change is a new Job, not a patch on a completed one.
 */}}
+{{- /*
+nvsentinel.mongoshImage renders the "repository:tag" of a mongosh helper image:
+mongodb-store mongodb.helperImages.mongosh and psmdb.helperImages.mongosh, and
+global.datastore.setupJob.image. Call it with (dict "image" <map> "key" "<values
+path>"). The default lives here rather than in values.yaml so that a partial
+override can be told apart from the default: set both repository and tag, or
+neither. One alone would be paired with half of the default, such as a tag
+pinned for the previous ghcr.io/rtsp/docker-mongosh default with the new
+repository, and name an image that does not exist. The setup Job would then sit
+in ImagePullBackOff instead of the install failing up front. It lives in the
+umbrella chart because the external setup Job renders while the mongodb-store
+subchart is disabled.
+*/ -}}
+{{- define "nvsentinel.mongoshImage" -}}
+{{- $defaultRepo := "docker.io/percona/percona-server-mongodb" -}}
+{{- $defaultTag := "8.0.26-11" -}}
+{{- $image := .image | default dict -}}
+{{- $repo := $image.repository | default "" | toString -}}
+{{- $tag := $image.tag | default "" | toString -}}
+{{- if and $repo $tag -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- else if $tag -}}
+{{- fail (printf "%s: tag %q is set without repository, so it would be pulled from the default repository %s, which may not have it. Set both repository and tag, or neither for the default %s:%s." .key $tag $defaultRepo $defaultRepo $defaultTag) -}}
+{{- else if $repo -}}
+{{- fail (printf "%s: repository %q is set without tag, so it would be pulled with the default tag %s, which it may not have. Set both repository and tag, or neither for the default %s:%s." .key $repo $defaultTag $defaultRepo $defaultTag) -}}
+{{- else -}}
+{{- printf "%s:%s" $defaultRepo $defaultTag -}}
+{{- end -}}
+{{- end }}
+
 {{- define "nvsentinel.externalMongoInitJobName" -}}
 {{- $ttl := include "nvsentinel.collectionExpirySeconds" . | toString -}}
 {{- /* A completed Job is immutable, so every value that shapes its pod (the
      script, the datastore settings behind image, TLS and auth, pull secrets
      and placement) is part of the name: a change renders a new Job instead of
-     patching the old one. */ -}}
-{{- $hash := print (include "nvsentinel.externalMongoInitEval" .) (toJson .Values.global.datastore) (toJson .Values.global.imagePullSecrets) (toJson .Values.global.systemNodeSelector) (toJson .Values.global.systemNodeTolerations) | sha256sum | trunc 8 -}}
+     patching the old one. The rendered pod template also covers what no value
+     controls, such as the fallback image and the container env. */ -}}
+{{- $hash := print (include "nvsentinel.externalMongoInitEval" .) (toJson .Values.global.datastore) (toJson .Values.global.imagePullSecrets) (toJson .Values.global.systemNodeSelector) (toJson .Values.global.systemNodeTolerations) (include "nvsentinel.externalMongoInitPodTemplate" .) | sha256sum | trunc 8 -}}
 {{- /* The suffix carries the hash, so it is the release name that gives way
      to the 63-character limit, never the hash. */ -}}
 {{- $suffix := printf "-external-mongodb-setup-%s-%s" $ttl $hash -}}

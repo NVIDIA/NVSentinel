@@ -39,7 +39,7 @@ tests:
       - equal:
           path: metadata.name
           # &defaultName names this value; the tests below reuse it as *defaultName.
-          value: &defaultName create-mongodb-database-2592000-77cb9ffa
+          value: &defaultName create-mongodb-database-2592000-95ad72a4
         documentSelector:
           path: kind
           value: Job
@@ -107,6 +107,7 @@ tests:
 
   - it: changes the name when a helper image changes
     set:
+      mongodb-store.mongodb.helperImages.mongosh.repository: registry.example.com/mirror/mongosh
       mongodb-store.mongodb.helperImages.mongosh.tag: "0.0.0-test"
     asserts:
       - notEqual:

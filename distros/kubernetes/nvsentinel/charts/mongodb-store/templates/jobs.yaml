@@ -76,12 +76,14 @@ Its local variables are set inside the define, which cannot see the caller's.
 */}}
 {{- define "mongodb-store.initJobPodTemplate" }}
 {{- $helperImages := .Values.mongodb.helperImages }}
+{{- $helperImagesKey := "mongodb-store.mongodb.helperImages" }}
 {{- $rootUsername := "root" }}
 {{- $issuerSecret := "mongo-root-ca-secret" }}
 {{- $passwordSecretName := "mongodb" }}
 {{- $passwordSecretKey := "mongodb-root-password" }}
 {{- if .Values.usePerconaOperator }}
   {{- $helperImages = .Values.psmdb.helperImages }}
+  {{- $helperImagesKey = "mongodb-store.psmdb.helperImages" }}
   {{- $rootUsername = "$MONGODB_ROOT_USER" }}
   {{- $issuerSecret = "mongodb-ca-cert" }}
   {{- $passwordSecretName = "internal-mongodb-users" }}
@@ -334,8 +336,8 @@ Its local variables are set inside the define, which cannot see the caller's.
 {{- end }}
       containers:
       - name: mongo-client
-        image: "{{ $helperImages.mongosh.repository }}:{{ $helperImages.mongosh.tag }}"
-        imagePullPolicy: {{ $helperImages.mongosh.pullPolicy }}
+        image: {{ include "nvsentinel.mongoshImage" (dict "image" $helperImages.mongosh "key" (printf "%s.mongosh" $helperImagesKey)) | quote }}
+        imagePullPolicy: {{ $helperImages.mongosh.pullPolicy | default "IfNotPresent" }}
         command:
           - sh
           - -c
@@ -440,6 +442,10 @@ Its local variables are set inside the define, which cannot see the caller's.
             echo "mongodb user creation completed."
             echo "=============================="
         env:
+          # mongosh writes its runtime state under $HOME; keep it writable for
+          # any UID the image or a mirrored replacement runs as.
+          - name: HOME
+            value: /tmp
 {{- if .Values.usePerconaOperator }}
           - name: MONGODB_CLUSTER_MONITOR_USER
             valueFrom:
