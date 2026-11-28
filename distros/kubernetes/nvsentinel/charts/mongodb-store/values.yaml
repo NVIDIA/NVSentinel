@@ -111,10 +111,12 @@ mongodb:
       repository: docker.io/bitnamilegacy/kubectl
       tag: "1.30.6"
       pullPolicy: IfNotPresent
-    # mongosh image for MongoDB shell operations
+    # mongosh image for MongoDB shell operations. Empty uses the default,
+    # docker.io/percona/percona-server-mongodb:8.0.26-11. To override it, set
+    # both repository and tag: one alone fails the render.
     mongosh:
-      repository: docker.io/percona/percona-server-mongodb
-      tag: "8.0.26-11"
+      repository: ""
+      tag: ""
       pullPolicy: IfNotPresent
 
   global:
@@ -489,7 +491,9 @@ psmdb:
       repository: docker.io/lachlanevenson/k8s-kubectl
       tag: "v1.25.4"
       pullPolicy: IfNotPresent
+    # Empty uses the default, docker.io/percona/percona-server-mongodb:8.0.26-11.
+    # To override it, set both repository and tag: one alone fails the render.
     mongosh:
-      repository: docker.io/percona/percona-server-mongodb
-      tag: "8.0.26-11"
+      repository: ""
+      tag: ""
       pullPolicy: IfNotPresent

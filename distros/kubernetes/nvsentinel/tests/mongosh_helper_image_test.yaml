@@ -23,6 +23,11 @@
 # SCRAM-SHA-256 or MONGODB-X509. HOME=/tmp lets mongosh write its runtime
 # state under a non-root UID.
 #
+# The default is set in the nvsentinel.mongoshImage helper, not in values.yaml,
+# so an override must set both repository and tag. One alone fails the render
+# instead of pairing it with half of the default, such as a tag pinned for the
+# previous ghcr.io/rtsp/docker-mongosh default with the new repository.
+#
 # Lives in the umbrella suite because the mongodb-store Job calls umbrella
 # helpers, so it cannot render with its subchart alone.
 suite: mongosh helper image
@@ -183,3 +188,70 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].image
           value: registry.example.com/mirror/mongosh:1.2.3
+
+  - it: rejects a tag without a repository for the Bitnami init Job
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: true
+      mongodb-store.usePerconaOperator: false
+      mongodb-store.mongodb.helperImages.mongosh.tag: "2.5.2"
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mongodb-store\.mongodb\.helperImages\.mongosh: tag "2\.5\.2" is set without repository'
+
+  - it: rejects a repository without a tag for the Percona init Job
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.psmdb.helperImages.mongosh.repository: registry.example.com/mirror/docker-mongosh
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mongodb-store\.psmdb\.helperImages\.mongosh: repository "registry\.example\.com/mirror/docker-mongosh" is set without tag'
+
+  - it: ignores the unused backend's partial override
+    template: charts/mongodb-store/templates/jobs.yaml
+    set:
+      global.mongodbStore.enabled: true
+      mongodb-store.useBitnami: false
+      mongodb-store.usePerconaOperator: true
+      mongodb-store.mongodb.helperImages.mongosh.tag: "2.5.2"
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/percona/percona-server-mongodb:8.0.26-11
+
+  - it: rejects a tag without a repository for the external setup Job
+    template: templates/job-external-mongodb-setup.yaml
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+        setupJob:
+          image:
+            tag: "2.5.2"
+      global.mongodbStore.enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: 'global\.datastore\.setupJob\.image: tag "2\.5\.2" is set without repository'
+
+  - it: rejects a repository without a tag for the external setup Job
+    template: templates/job-external-mongodb-setup.yaml
+    set:
+      global.datastore:
+        provider: mongodb
+        credentialsFromSecret:
+          name: external-mongodb
+        setupJob:
+          image:
+            repository: registry.example.com/mirror/docker-mongosh
+      global.mongodbStore.enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: 'global\.datastore\.setupJob\.image: repository "registry\.example\.com/mirror/docker-mongosh" is set without tag'

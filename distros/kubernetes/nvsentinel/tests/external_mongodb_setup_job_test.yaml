@@ -98,6 +98,7 @@ tests:
 
   - it: changes the name when the setup image changes
     set:
+      global.datastore.setupJob.image.repository: registry.example.com/mirror/mongosh
       global.datastore.setupJob.image.tag: "0.0.0-test"
     asserts:
       - notEqual:

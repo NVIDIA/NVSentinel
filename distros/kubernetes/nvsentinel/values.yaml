@@ -238,6 +238,7 @@ global:
   #   # It runs once on install/upgrade when using an external DB.
   #   setupJob:
   #     enabled: true  # Set to false to skip the setup job entirely
+  #     # Set both repository and tag, or neither for this default
   #     image:
   #       repository: docker.io/percona/percona-server-mongodb
   #       tag: "8.0.26-11"

@@ -63,6 +63,36 @@ Nil/empty -> default. Strings must be base-10 digits and numbers must be whole
 <release>-external-mongodb-setup-<ttl>-<hash> so a TTL, init-script or pod
 template change is a new Job, not a patch on a completed one.
 */}}
+{{- /*
+nvsentinel.mongoshImage renders the "repository:tag" of a mongosh helper image:
+mongodb-store mongodb.helperImages.mongosh and psmdb.helperImages.mongosh, and
+global.datastore.setupJob.image. Call it with (dict "image" <map> "key" "<values
+path>"). The default lives here rather than in values.yaml so that a partial
+override can be told apart from the default: set both repository and tag, or
+neither. One alone would be paired with half of the default, such as a tag
+pinned for the previous ghcr.io/rtsp/docker-mongosh default with the new
+repository, and name an image that does not exist. The setup Job would then sit
+in ImagePullBackOff instead of the install failing up front. It lives in the
+umbrella chart because the external setup Job renders while the mongodb-store
+subchart is disabled.
+*/ -}}
+{{- define "nvsentinel.mongoshImage" -}}
+{{- $defaultRepo := "docker.io/percona/percona-server-mongodb" -}}
+{{- $defaultTag := "8.0.26-11" -}}
+{{- $image := .image | default dict -}}
+{{- $repo := $image.repository | default "" | toString -}}
+{{- $tag := $image.tag | default "" | toString -}}
+{{- if and $repo $tag -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- else if $tag -}}
+{{- fail (printf "%s: tag %q is set without repository, so it would be pulled from the default repository %s, which may not have it. Set both repository and tag, or neither for the default %s:%s." .key $tag $defaultRepo $defaultRepo $defaultTag) -}}
+{{- else if $repo -}}
+{{- fail (printf "%s: repository %q is set without tag, so it would be pulled with the default tag %s, which it may not have. Set both repository and tag, or neither for the default %s:%s." .key $repo $defaultTag $defaultRepo $defaultTag) -}}
+{{- else -}}
+{{- printf "%s:%s" $defaultRepo $defaultTag -}}
+{{- end -}}
+{{- end }}
+
 {{- define "nvsentinel.externalMongoInitJobName" -}}
 {{- $ttl := include "nvsentinel.collectionExpirySeconds" . | toString -}}
 {{- /* A completed Job is immutable, so every value that shapes its pod (the

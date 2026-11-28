@@ -61,8 +61,6 @@ variables are set inside the define, which cannot see the caller's.
 {{- define "nvsentinel.externalMongoInitPodTemplate" }}
 {{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
 {{- $image := ($setupJob.image) | default dict }}
-{{- $imageRepo := $image.repository | default "docker.io/percona/percona-server-mongodb" }}
-{{- $imageTag := $image.tag | default "8.0.26-11" }}
 {{- $imagePullPolicy := $image.pullPolicy | default "IfNotPresent" }}
 
 {{- $tlsEnabled := true }}
@@ -100,7 +98,7 @@ variables are set inside the define, which cannot see the caller's.
       {{- end }}
       containers:
       - name: mongo-setup
-        image: "{{ $imageRepo }}:{{ $imageTag }}"
+        image: {{ include "nvsentinel.mongoshImage" (dict "image" $image "key" "global.datastore.setupJob.image") | quote }}
         imagePullPolicy: {{ $imagePullPolicy }}
         command:
           - sh
